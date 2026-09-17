@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  xiaocan-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xiaocan-assistant
+    restart: unless-stopped
+    ports:
+      - "8690:8690"
+    volumes:
+      - ./data:/app/backend/data
+    environment:
+      - TZ=Asia/Shanghai

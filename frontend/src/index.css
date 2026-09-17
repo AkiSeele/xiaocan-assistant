@@ -1,0 +1,348 @@
+@import "tailwindcss";
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/**
+ * Semi Design Token 与 Tailwind CSS v4 集成
+ * 
+ * 原理：
+ * 1. @theme 中用 var(--semi-xxx) 占位，让 Tailwind 生成对应的工具类
+ * 2. body 中重新定义这些变量，指向 Semi 的真实 Token，确保在 Semi 注入 :root 变量后生效
+ * 
+ * 使用示例：
+ *   bg-semi-color-primary      -> 主色背景
+ *   bg-semi-color-fill-0       -> 浅色容器填充
+ *   text-semi-color-text-0     -> 主要文字颜色
+ *   text-semi-color-text-2     -> 次级文字颜色
+ *   border-semi-color-border   -> 标准边框
+ *   rounded-semi-border-radius-medium -> 中等圆角
+ */
+
+@theme {
+  /* ========== 基础色 ========== */
+  --color-semi-color-white: var(--semi-color-white);
+  --color-semi-color-black: var(--semi-color-black);
+
+  /* ========== Primary 主色 ========== */
+  --color-semi-color-primary: var(--semi-color-primary);
+  --color-semi-color-primary-hover: var(--semi-color-primary-hover);
+  --color-semi-color-primary-active: var(--semi-color-primary-active);
+  --color-semi-color-primary-disabled: var(--semi-color-primary-disabled);
+  --color-semi-color-primary-light-default: var(--semi-color-primary-light-default);
+  --color-semi-color-primary-light-hover: var(--semi-color-primary-light-hover);
+  --color-semi-color-primary-light-active: var(--semi-color-primary-light-active);
+
+  /* ========== Secondary 次要色 ========== */
+  --color-semi-color-secondary: var(--semi-color-secondary);
+  --color-semi-color-secondary-hover: var(--semi-color-secondary-hover);
+  --color-semi-color-secondary-active: var(--semi-color-secondary-active);
+  --color-semi-color-secondary-disabled: var(--semi-color-secondary-disabled);
+  --color-semi-color-secondary-light-default: var(--semi-color-secondary-light-default);
+  --color-semi-color-secondary-light-hover: var(--semi-color-secondary-light-hover);
+  --color-semi-color-secondary-light-active: var(--semi-color-secondary-light-active);
+
+  /* ========== Tertiary 第三色 ========== */
+  --color-semi-color-tertiary: var(--semi-color-tertiary);
+  --color-semi-color-tertiary-hover: var(--semi-color-tertiary-hover);
+  --color-semi-color-tertiary-active: var(--semi-color-tertiary-active);
+  --color-semi-color-tertiary-light-default: var(--semi-color-tertiary-light-default);
+  --color-semi-color-tertiary-light-hover: var(--semi-color-tertiary-light-hover);
+  --color-semi-color-tertiary-light-active: var(--semi-color-tertiary-light-active);
+
+  /* ========== Default 默认色 ========== */
+  --color-semi-color-default: var(--semi-color-default);
+  --color-semi-color-default-hover: var(--semi-color-default-hover);
+  --color-semi-color-default-active: var(--semi-color-default-active);
+
+  /* ========== Info 信息色 ========== */
+  --color-semi-color-info: var(--semi-color-info);
+  --color-semi-color-info-hover: var(--semi-color-info-hover);
+  --color-semi-color-info-active: var(--semi-color-info-active);
+  --color-semi-color-info-disabled: var(--semi-color-info-disabled);
+  --color-semi-color-info-light-default: var(--semi-color-info-light-default);
+  --color-semi-color-info-light-hover: var(--semi-color-info-light-hover);
+  --color-semi-color-info-light-active: var(--semi-color-info-light-active);
+
+  /* ========== Success 成功色 ========== */
+  --color-semi-color-success: var(--semi-color-success);
+  --color-semi-color-success-hover: var(--semi-color-success-hover);
+  --color-semi-color-success-active: var(--semi-color-success-active);
+  --color-semi-color-success-disabled: var(--semi-color-success-disabled);
+  --color-semi-color-success-light-default: var(--semi-color-success-light-default);
+  --color-semi-color-success-light-hover: var(--semi-color-success-light-hover);
+  --color-semi-color-success-light-active: var(--semi-color-success-light-active);
+
+  /* ========== Danger 危险色 ========== */
+  --color-semi-color-danger: var(--semi-color-danger);
+  --color-semi-color-danger-hover: var(--semi-color-danger-hover);
+  --color-semi-color-danger-active: var(--semi-color-danger-active);
+  --color-semi-color-danger-light-default: var(--semi-color-danger-light-default);
+  --color-semi-color-danger-light-hover: var(--semi-color-danger-light-hover);
+  --color-semi-color-danger-light-active: var(--semi-color-danger-light-active);
+
+  /* ========== Warning 警告色 ========== */
+  --color-semi-color-warning: var(--semi-color-warning);
+  --color-semi-color-warning-hover: var(--semi-color-warning-hover);
+  --color-semi-color-warning-active: var(--semi-color-warning-active);
+  --color-semi-color-warning-light-default: var(--semi-color-warning-light-default);
+  --color-semi-color-warning-light-hover: var(--semi-color-warning-light-hover);
+  --color-semi-color-warning-light-active: var(--semi-color-warning-light-active);
+
+  /* ========== 功能色 ========== */
+  --color-semi-color-focus-border: var(--semi-color-focus-border);
+  --color-semi-color-disabled-text: var(--semi-color-disabled-text);
+  --color-semi-color-disabled-border: var(--semi-color-disabled-border);
+  --color-semi-color-disabled-bg: var(--semi-color-disabled-bg);
+  --color-semi-color-disabled-fill: var(--semi-color-disabled-fill);
+  --color-semi-color-shadow: var(--semi-color-shadow);
+
+  /* ========== Link 链接色 ========== */
+  --color-semi-color-link: var(--semi-color-link);
+  --color-semi-color-link-hover: var(--semi-color-link-hover);
+  --color-semi-color-link-active: var(--semi-color-link-active);
+  --color-semi-color-link-visited: var(--semi-color-link-visited);
+
+  /* ========== Border 边框 ========== */
+  --color-semi-color-border: var(--semi-color-border);
+  --color-semi-color-border-subtle: var(--semi-color-border);
+
+  /* ========== Background 背景色 ========== */
+  --color-semi-color-nav-bg: var(--semi-color-nav-bg);
+  --color-semi-color-overlay-bg: var(--semi-color-overlay-bg);
+  --color-semi-color-bg-0: var(--semi-color-bg-0);
+  --color-semi-color-bg-1: var(--semi-color-bg-1);
+  --color-semi-color-bg-2: var(--semi-color-bg-2);
+  --color-semi-color-bg-3: var(--semi-color-bg-3);
+  --color-semi-color-bg-4: var(--semi-color-bg-4);
+
+  /* ========== Fill 填充色 ========== */
+  --color-semi-color-fill-0: var(--semi-color-fill-0);
+  --color-semi-color-fill-1: var(--semi-color-fill-1);
+  --color-semi-color-fill-2: var(--semi-color-fill-2);
+
+  /* ========== Text 文字色 ========== */
+  --color-semi-color-text-0: var(--semi-color-text-0);
+  --color-semi-color-text-1: var(--semi-color-text-1);
+  --color-semi-color-text-2: var(--semi-color-text-2);
+  --color-semi-color-text-3: var(--semi-color-text-3);
+
+  /* ========== Highlight 高亮色 ========== */
+  --color-semi-color-highlight-bg: var(--semi-color-highlight-bg);
+  --color-semi-color-highlight: var(--semi-color-highlight);
+
+  /* ========== Border Radius 圆角 ========== */
+  --radius-semi-border-radius-extra-small: var(--semi-border-radius-extra-small);
+  --radius-semi-border-radius-small: var(--semi-border-radius-small);
+  --radius-semi-border-radius-medium: var(--semi-border-radius-medium);
+  --radius-semi-border-radius-large: var(--semi-border-radius-large);
+  --radius-semi-border-radius-circle: var(--semi-border-radius-circle);
+  --radius-semi-border-radius-full: var(--semi-border-radius-full);
+}
+
+body {
+  /* 运行时变量覆盖，保证在 Semi 的 :root 变量注入后生效 */
+  --color-semi-color-white: var(--semi-color-white);
+  --color-semi-color-black: var(--semi-color-black);
+  --color-semi-color-primary: var(--semi-color-primary);
+  --color-semi-color-primary-hover: var(--semi-color-primary-hover);
+  --color-semi-color-primary-active: var(--semi-color-primary-active);
+  --color-semi-color-primary-disabled: var(--semi-color-primary-disabled);
+  --color-semi-color-primary-light-default: var(--semi-color-primary-light-default);
+  --color-semi-color-primary-light-hover: var(--semi-color-primary-light-hover);
+  --color-semi-color-primary-light-active: var(--semi-color-primary-light-active);
+  --color-semi-color-secondary: var(--semi-color-secondary);
+  --color-semi-color-secondary-hover: var(--semi-color-secondary-hover);
+  --color-semi-color-secondary-active: var(--semi-color-secondary-active);
+  --color-semi-color-secondary-disabled: var(--semi-color-secondary-disabled);
+  --color-semi-color-secondary-light-default: var(--semi-color-secondary-light-default);
+  --color-semi-color-secondary-light-hover: var(--semi-color-secondary-light-hover);
+  --color-semi-color-secondary-light-active: var(--semi-color-secondary-light-active);
+  --color-semi-color-tertiary: var(--semi-color-tertiary);
+  --color-semi-color-tertiary-hover: var(--semi-color-tertiary-hover);
+  --color-semi-color-tertiary-active: var(--semi-color-tertiary-active);
+  --color-semi-color-tertiary-light-default: var(--semi-color-tertiary-light-default);
+  --color-semi-color-tertiary-light-hover: var(--semi-color-tertiary-light-hover);
+  --color-semi-color-tertiary-light-active: var(--semi-color-tertiary-light-active);
+  --color-semi-color-default: var(--semi-color-default);
+  --color-semi-color-default-hover: var(--semi-color-default-hover);
+  --color-semi-color-default-active: var(--semi-color-default-active);
+  --color-semi-color-info: var(--semi-color-info);
+  --color-semi-color-info-hover: var(--semi-color-info-hover);
+  --color-semi-color-info-active: var(--semi-color-info-active);
+  --color-semi-color-info-disabled: var(--semi-color-info-disabled);
+  --color-semi-color-info-light-default: var(--semi-color-info-light-default);
+  --color-semi-color-info-light-hover: var(--semi-color-info-light-hover);
+  --color-semi-color-info-light-active: var(--semi-color-info-light-active);
+  --color-semi-color-success: var(--semi-color-success);
+  --color-semi-color-success-hover: var(--semi-color-success-hover);
+  --color-semi-color-success-active: var(--semi-color-success-active);
+  --color-semi-color-success-disabled: var(--semi-color-success-disabled);
+  --color-semi-color-success-light-default: var(--semi-color-success-light-default);
+  --color-semi-color-success-light-hover: var(--semi-color-success-light-hover);
+  --color-semi-color-success-light-active: var(--semi-color-success-light-active);
+  --color-semi-color-danger: var(--semi-color-danger);
+  --color-semi-color-danger-hover: var(--semi-color-danger-hover);
+  --color-semi-color-danger-active: var(--semi-color-danger-active);
+  --color-semi-color-danger-light-default: var(--semi-color-danger-light-default);
+  --color-semi-color-danger-light-hover: var(--semi-color-danger-light-hover);
+  --color-semi-color-danger-light-active: var(--semi-color-danger-light-active);
+  --color-semi-color-warning: var(--semi-color-warning);
+  --color-semi-color-warning-hover: var(--semi-color-warning-hover);
+  --color-semi-color-warning-active: var(--semi-color-warning-active);
+  --color-semi-color-warning-light-default: var(--semi-color-warning-light-default);
+  --color-semi-color-warning-light-hover: var(--semi-color-warning-light-hover);
+  --color-semi-color-warning-light-active: var(--semi-color-warning-light-active);
+  --color-semi-color-focus-border: var(--semi-color-focus-border);
+  --color-semi-color-disabled-text: var(--semi-color-disabled-text);
+  --color-semi-color-disabled-border: var(--semi-color-disabled-border);
+  --color-semi-color-disabled-bg: var(--semi-color-disabled-bg);
+  --color-semi-color-disabled-fill: var(--semi-color-disabled-fill);
+  --color-semi-color-shadow: var(--semi-color-shadow);
+  --color-semi-color-link: var(--semi-color-link);
+  --color-semi-color-link-hover: var(--semi-color-link-hover);
+  --color-semi-color-link-active: var(--semi-color-link-active);
+  --color-semi-color-link-visited: var(--semi-color-link-visited);
+  --color-semi-color-border: var(--semi-color-border);
+  --color-semi-color-border-subtle: var(--semi-color-border);
+  --color-semi-color-nav-bg: var(--semi-color-nav-bg);
+  --color-semi-color-overlay-bg: var(--semi-color-overlay-bg);
+  --color-semi-color-bg-0: var(--semi-color-bg-0);
+  --color-semi-color-bg-1: var(--semi-color-bg-1);
+  --color-semi-color-bg-2: var(--semi-color-bg-2);
+  --color-semi-color-bg-3: var(--semi-color-bg-3);
+  --color-semi-color-bg-4: var(--semi-color-bg-4);
+  --color-semi-color-fill-0: var(--semi-color-fill-0);
+  --color-semi-color-fill-1: var(--semi-color-fill-1);
+  --color-semi-color-fill-2: var(--semi-color-fill-2);
+  --color-semi-color-text-0: var(--semi-color-text-0);
+  --color-semi-color-text-1: var(--semi-color-text-1);
+  --color-semi-color-text-2: var(--semi-color-text-2);
+  --color-semi-color-text-3: var(--semi-color-text-3);
+  --color-semi-color-highlight-bg: var(--semi-color-highlight-bg);
+  --color-semi-color-highlight: var(--semi-color-highlight);
+  --radius-semi-border-radius-extra-small: var(--semi-border-radius-extra-small);
+  --radius-semi-border-radius-small: var(--semi-border-radius-small);
+  --radius-semi-border-radius-medium: var(--semi-border-radius-medium);
+  --radius-semi-border-radius-large: var(--semi-border-radius-large);
+  --radius-semi-border-radius-circle: var(--semi-border-radius-circle);
+  --radius-semi-border-radius-full: var(--semi-border-radius-full);
+
+  background-color: var(--semi-color-bg-0);
+  color: var(--semi-color-text-0);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+}
+
+/* Semi Design 响应式平滑滚动与滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--semi-color-fill-2);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--semi-color-fill-1);
+}
+
+/* Semi Design 动效与微交互系统 */
+@keyframes semiPageFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulseSubtle {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.88;
+    transform: scale(1.02);
+  }
+}
+
+.animate-page-enter {
+  animation: semiPageFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-pulse-subtle {
+  animation: pulseSubtle 2.5s ease-in-out infinite;
+}
+
+/* Semi 卡片悬浮升起与阴影扩散动效 */
+.semi-card-elevate {
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.2s ease;
+}
+
+.semi-card-elevate:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.08), 0 4px 10px -3px rgba(0, 0, 0, 0.04);
+}
+
+/* 顶部栏高斯模糊毛玻璃效果 */
+.semi-glass-header {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* 选中高亮光环效果 */
+.semi-active-ring {
+  box-shadow: 0 0 0 2px var(--semi-color-primary), 0 8px 20px -4px rgba(255, 107, 0, 0.16);
+}
+
+/* 确保所有 Semi 图标与 SVG 元素在任何渲染时机下均具有稳定尺寸，避免重排闪烁 */
+.semi-icon {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.semi-icon > svg {
+  display: inline-block !important;
+  width: 1em !important;
+  height: 1em !important;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* GSAP 卡片预留平滑过渡与性能加速 */
+.gsap-card-item {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+}

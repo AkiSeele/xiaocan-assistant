@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "牛马助手反调试解除插件",
+  "version": "1.0",
+  "description": "解除牛马助手及类似网站的 F12 拦截与 debugger 死循环陷阱",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.xn--7frs77ao7li62b.top/*",
+        "https://*.xn--7frs77ao7li62b.top/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

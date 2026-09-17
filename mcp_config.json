@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "semi-mcp": {
+      "command": "node",
+      "args": [
+        "D:\\nodeV\\node_modules\\@douyinfe\\semi-mcp\\dist\\stdio.js"
+      ]
+    }
+  }
+}

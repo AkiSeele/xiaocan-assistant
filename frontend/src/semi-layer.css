@@ -1,0 +1,6 @@
+/**
+ * Semi Design x Tailwind CSS v4 CSS Cascade Layer 配置
+ * 优先级顺序：theme < base < semi < utilities
+ * 确保原子化样式工具类优先级高于 Semi 组件库，而 Semi 组件库样式高于基础 Preflight
+ */
+@layer theme, base, semi, utilities;
