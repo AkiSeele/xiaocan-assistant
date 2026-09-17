@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # 小蚕会员助手 (XiaoCan Assistant) 开发规范与协作守则
 
 > **版本**：v2.1.0  

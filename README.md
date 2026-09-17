@@ -231,5 +231,5 @@ docker-compose logs -f
 2. **Semi Design 企业级规范**：前端组件全面遵循字节跳动 Semi Design 设计令牌体系与无框轻量化交互规范；
 3. **GSAP 动效规范**：前端复杂动画统一采用 GSAP 官方推荐的 `useGSAP` 与上下文生命周期管理。
 
-完整规范详见：[PROJECT_RULES.md](PROJECT_RULES.md)
+完整规范详见：[.agents/rules/xiaocan-rules.md](.agents/rules/xiaocan-rules.md)
 
