@@ -52,6 +52,8 @@ yarn-error.log*
 logs/
 *.log
 *.txt
+!backend/requirements.txt
+!requirements.txt
 workbench_*.js
 workbench_index.html
 full_scan_test.json
