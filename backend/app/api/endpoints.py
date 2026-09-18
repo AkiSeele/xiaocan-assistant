@@ -22,6 +22,7 @@ from ..core import scheduler, notifier
 from ..core.jwt_utils import extract_token_from_text, decode_jwt_payload, extract_city_code_from_text, extract_silk_id_from_payload, extract_user_id_from_payload
 from ..core.proxy_sniffer import sniffer
 from ..core.wechat_scanner import scan_wechat_credentials, wechat_listener
+from ..core.tianditu import tianditu_client
 from ..protocol.client import XiaoCanClient
 
 router = APIRouter(prefix="/api")
@@ -154,6 +155,119 @@ async def update_account_profile_endpoint(key: str, data: Dict[str, Any] = Body(
     return {"ok": True, "account": updated, "message": "账号资料已更新"}
 
 
+@router.post("/accounts/{key}/sync")
+async def sync_account_endpoint(key: str):
+    """一键同步指定小蚕账号的官方档案与钱包资产"""
+    acc = db.get_account_by_key(key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    try:
+        updated = await _enrich_and_save_account(acc)
+        return {"ok": True, "account": updated, "message": "账号资产与官方档案已成功同步！"}
+    except Exception as e:
+        logger.error(f"同步账号资产失败: {e}")
+        return {"ok": False, "message": f"同步失败: {str(e)}"}
+
+
+@router.get("/accounts/{key}/detail")
+async def get_account_detail_endpoint(key: str):
+    """获取指定小蚕账号的全面详情（包含个人信息、元宝状态、特权卡券列表与可用红包列表）"""
+    acc = db.get_account_by_key(key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    token = acc.get("token")
+    silk_id = acc.get("silk_id")
+    user_id = acc.get("user_id")
+    city_code = acc.get("city_code") or 440303
+
+    card_stats = {"can_use_number": 0, "expiring_soon_number": 0}
+    cards = []
+    redpack_stats = {"num": 0}
+    redpacks = []
+    user_info = {}
+    task_info = {}
+
+    if token:
+        # 1. 抓取用户卡券数量与卡券列表
+        try:
+            cnum_res = await client.get_user_card_number(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+            if isinstance(cnum_res, dict):
+                card_stats["can_use_number"] = cnum_res.get("can_use_number", 0)
+                card_stats["expiring_soon_number"] = cnum_res.get("expiring_soon_number", 0)
+        except Exception as e:
+            logger.warning(f"获取账号卡券统计失败: {e}")
+
+        try:
+            clist_res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, status=0, offset=0, number=100)
+            if isinstance(clist_res, dict) and clist_res.get("list"):
+                cards = clist_res["list"]
+        except Exception as e:
+            logger.warning(f"获取账号可用卡券列表失败: {e}")
+
+        # 2. 抓取红包数量与红包列表
+        try:
+            rp_res = await client.get_user_redpack_num(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+            if isinstance(rp_res, dict):
+                redpack_stats["num"] = rp_res.get("num", 0)
+        except Exception as e:
+            logger.warning(f"获取账号红包数量失败: {e}")
+
+        try:
+            rplist_res = await client.get_app_redpack_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, page=1, page_size=50)
+            if isinstance(rplist_res, dict) and rplist_res.get("unused_items"):
+                redpacks = rplist_res["unused_items"]
+        except Exception as e:
+            logger.warning(f"获取账号红包列表失败: {e}")
+
+        # 3. 抓取用户详情 (VIP, 余额, 头像)
+        try:
+            uinfo_res = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+            if isinstance(uinfo_res, dict) and uinfo_res.get("user_info"):
+                user_info = uinfo_res["user_info"]
+        except Exception as e:
+            logger.warning(f"获取账号用户详情失败: {e}")
+
+        # 4. 抓取天天赚元宝数据
+        try:
+            t_res = await client.get_user_task_v2(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+            if isinstance(t_res, dict) and t_res.get("data"):
+                task_info = t_res["data"]
+        except Exception as e:
+            logger.warning(f"获取账号元宝数据失败: {e}")
+
+    return {
+        "ok": True,
+        "account": acc,
+        "user_info": user_info,
+        "task_info": task_info,
+        "card_stats": card_stats,
+        "cards": cards,
+        "redpack_stats": redpack_stats,
+        "redpacks": redpacks
+    }
+
+
+@router.get("/accounts/{key}/cards")
+async def get_account_cards_endpoint(key: str, status: int = Query(0, description="0未使用, 1已使用, 2已过期")):
+    """按状态获取特权卡券列表 (0未使用, 1已使用, 2已过期)"""
+    acc = db.get_account_by_key(key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    token = acc.get("token")
+    silk_id = acc.get("silk_id")
+    user_id = acc.get("user_id")
+    city_code = acc.get("city_code") or 440303
+    cards = []
+    if token:
+        try:
+            res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, status=status, offset=0, number=100)
+            cards = res.get("list") or []
+        except Exception as e:
+            logger.warning(f"获取卡券失败: {e}")
+    return {"ok": True, "cards": cards, "status": status}
+
+
 @router.delete("/accounts/{key}")
 async def remove_account(key: str):
     """删除/退出小蚕账号，彻底清除内存会话与关联数据"""
@@ -166,6 +280,7 @@ async def remove_account(key: str):
             conn.commit()
     scheduler.reload_schedules()
     return {"ok": True, "message": "账号已安全退出并清除数据"}
+
 
 
 
@@ -1116,7 +1231,7 @@ def _normalize_shangjin_item(poi: Dict[str, Any], user_lat: Optional[float] = No
 
         rebate_desc = f"返{pct_fmt}% (最高¥{cap_fmt})" if cap_val > 0 else f"返{pct_fmt}%"
         cond_code = plan.get("rebate_condition")
-        cond_str = "无需评价" if cond_code == 99 else "用餐反馈（需含字含图）"
+        cond_str = "无需评价" if cond_code == 99 else "用餐反馈"
         left_num = int(plan.get("inventory") or 0)
         pid = str(plan.get("poi_event_id") or f"{store_id}_p{idx}")
 
@@ -1422,9 +1537,9 @@ async def get_stores(
             # sort = 0 为「综合推荐」官方原生推荐排序 (默认)
             official_sort = 1 if sort_by == "distance" else 0
 
-            # 首页初次加载拉取 3 批 (offset, offset+35, offset+70)，后续触底加载每次拉取 2 批
+            # 每次拉取并发 3 批 (offset, offset+35, offset+70)，确保每次触底都能获得足够的新商户增量
             step = 35
-            offsets = [offset, offset + step, offset + (step * 2)] if offset == 0 else [offset, offset + step]
+            offsets = [offset, offset + step, offset + (step * 2)]
             tasks = [
                 client.get_store_list(
                     city_code=city_code,
@@ -1455,7 +1570,8 @@ async def get_stores(
                                 stores.append(item)
                 elif isinstance(br, Exception):
                     logger.warning(f"并发拉取批次异常 (非致命): {br}")
-            has_more = total_raw_count >= 15
+            # 只要本次批次中官方返回了非空数据，说明后续仍有商户可供拉取
+            has_more = total_raw_count > 0
             next_offset = offset + (step * len(offsets))
             logger.info(f"商圈Feed合并返回: offset={offset}, total={len(stores)}, has_more={has_more}")
         except Exception as e:
@@ -2197,7 +2313,7 @@ async def grab_store_now(data: Dict[str, Any] = Body(...)):
         "redpack_id": data.get("redpack_id")
     }
 
-    res = await execute_grab_for_appointment(apt_data, account, advance=bool(data.get("advance", False)))
+    res = await execute_grab_for_appointment(apt_data, account, advance=bool(data.get("advance", False)), action_source="store_grab")
     if res["ok"]:
         return {
             "ok": True,
@@ -2205,16 +2321,21 @@ async def grab_store_now(data: Dict[str, Any] = Body(...)):
             "message": f"小蚕官方抢单成功！已为您锁定【{apt_data['store_name']}】名额 (订单ID: {res.get('order_id')})！"
         }
     else:
+        err_code = res.get("code")
+        err_msg = res.get("message") or "抢单未成功"
+        # 仅当官方提示无名额/开仓已被抢光时才推荐开启名额监听；若为卡券不足(61)、未登录、风控等，不应弹出名额抢空模态框
+        can_monitor = err_code in (40003, 40004, 40037, 40038, 40039, 40040) or "名额" in err_msg or "抢完" in err_msg or "已满" in err_msg
         return {
             "ok": False,
-            "can_monitor": True,
-            "message": f"小蚕官方接口返回: {res.get('message', '名额已被抢完')}"
+            "code": err_code,
+            "can_monitor": can_monitor,
+            "message": err_msg
         }
 
 
 @router.post("/store/cancel-promotion-order")
 async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
-    """取消已抢到的霸王餐订单名额 (对齐小蚕官方 SilkwormService.CancelPromotionQuota)"""
+    """取消已抢到的霸王餐订单名额 (对齐小蚕官方 SilkwormService.CancelPromotionQuota) 并打入运行日志"""
     account_key = data.get("account_key") or data.get("account")
     order_id = data.get("promotion_order_id") or data.get("order_id")
     if not account_key:
@@ -2225,7 +2346,15 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
     if not account or not account.get("token"):
         raise HTTPException(status_code=400, detail="账号凭据失效或未登录")
 
+    job_id = f"job_cancel_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    nickname = account.get("nickname") or account_key
+    cancel_steps = []
+    t_start = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    cancel_steps.append(f"[{t_start}] 启动霸王餐取消名额流程 - 账号: 【{nickname}】, 官方订单号: #{order_id}")
+
     try:
+        t_req = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        cancel_steps.append(f"[{t_req}] 步骤 1/2: 调用官方 SilkwormService.CancelPromotionQuota RPC 接口")
         res = await client.cancel_promotion_quota(
             promotion_order_id=int(order_id),
             token=account["token"],
@@ -2233,10 +2362,29 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
             user_id=account.get("user_id"),
             city_code=account.get("city_code") or 440303
         )
+        t_fin = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        cancel_steps.append(f"[{t_fin}] 步骤 2/2: 官方响应成功，订单名额已退还，本地及远程锁定解除")
+        cancel_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程结束 - 取消名额成功")
+        try:
+            db.add_job_log(job_id, account_key, "store_cancel", "success", "\n".join(cancel_steps))
+        except Exception:
+            pass
         return {"ok": True, "message": "订单名额已成功在官方后台取消", "raw": res}
     except XiaoCanRPCError as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        cancel_steps.append(f"[{t_err}] 官方接口返回失败: {e.msg} (错误码: {e.code})")
+        try:
+            db.add_job_log(job_id, account_key, "store_cancel", "error", "\n".join(cancel_steps))
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail=f"官方取消失败 [{e.code}]: {e.msg}")
     except Exception as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        cancel_steps.append(f"[{t_err}] 取消接口网络或服务异常: {str(e)}")
+        try:
+            db.add_job_log(job_id, account_key, "store_cancel", "error", "\n".join(cancel_steps))
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"取消接口异常: {e}")
 
 
@@ -2282,8 +2430,32 @@ async def create_appointment(data: Dict[str, Any] = Body(...)):
     task_type = data.get("task_type") or ("monitor" if data.get("mode") == "monitor" else "countdown")
     data["task_type"] = task_type
     
-    aid = db.add_appointment(data)
+    # 初始状态设为 running，真实追踪全流程生命周期
     task_name = "实时名额监听捡漏任务" if task_type == "monitor" else "倒计时预约抢单任务"
+    log_tid = "store_monitor" if task_type == "monitor" else "store_appoint"
+    job_id = f"job_create_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    account = db.get_account_by_key(account_key)
+    nick = account.get("nickname") if account else account_key
+    plat_str = "美团外卖" if data.get("platform") == "meituan" else ("饿了么" if data.get("platform") == "eleme" else "京东外卖")
+    s_log = (
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 初始化{task_name}成功 - 任务装载就绪\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标店铺: 【{data.get('store_name', '商户活动')}】 (平台: {plat_str}, 活动ID: {data.get('promotion_id')})\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 预约策略: 开抢/开始时间 {data.get('start_time', '即刻')}, 监听截止 {data.get('until_time', '活动结束')}, 提前量 {data.get('early_ms', 500)}ms\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 执行账号: 【{nick}】，已正式装载入自适应调度队列，持续跟踪执行流水..."
+    )
+    log_id = 0
+    try:
+        log_id = db.add_job_log(job_id, account_key, log_tid, "running", s_log)
+    except Exception:
+        pass
+
+    data["log_id"] = log_id
+    aid = db.add_appointment(data)
+    # 将包含真实 aid 的信息反写至日志中
+    if log_id > 0:
+        updated_s_log = s_log.replace("任务装载就绪", f"任务编号 #{aid}")
+        db.update_job_log(log_id, status="running", output=updated_s_log)
+
     return {"ok": True, "appointment_id": aid, "message": f"{task_name}已创建并加入调度队列"}
 
 
@@ -2302,10 +2474,26 @@ async def create_stock_watch(data: Dict[str, Any] = Body(...)):
     until_dt = now + timedelta(seconds=timeout_sec)
     until_str = until_dt.strftime("%H:%M")
 
+    job_id = f"job_watch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    account = db.get_account_by_key(account_key)
+    nick = account.get("nickname") if account else account_key
+    store_title = data.get("store_name") or data.get("label") or "商户活动"
+    s_log = (
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 启动名额监控捡漏任务 - 调度引擎就绪\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 店铺【{store_title}】(活动ID: {data['promotion_id']})\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听参数: 轮询频率每 {poll_sec} 秒, 最长持续 {timeout_sec//60} 分钟 (截止 {until_str})\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听通道已就绪，检测到名额释放时将执行毫秒级抢单..."
+    )
+    log_id = 0
+    try:
+        log_id = db.add_job_log(job_id, account_key, "store_monitor", "running", s_log)
+    except Exception:
+        pass
+
     apt_data = {
         "account_key": account_key,
         "store_id": str(data.get("store_id") or ""),
-        "store_name": data.get("store_name") or data.get("label") or "商户活动",
+        "store_name": store_title,
         "promotion_id": str(data["promotion_id"]),
         "task_type": "monitor",
         "start_time": now.strftime("%H:%M"),
@@ -2313,9 +2501,14 @@ async def create_stock_watch(data: Dict[str, Any] = Body(...)):
         "check_interval": poll_sec,
         "redpack_mode": 0 if data.get("redpack_mode") == "auto" else (2 if data.get("redpack_mode") == "none" else 1),
         "redpack_id": data.get("redpack_id"),
-        "platform": "meituan" if int(data.get("store_platform") or 1) == 1 else "eleme"
+        "platform": "meituan" if int(data.get("store_platform") or 1) == 1 else "eleme",
+        "log_id": log_id
     }
     aid = db.add_appointment(apt_data)
+    if log_id > 0:
+        updated_s_log = s_log.replace("调度引擎就绪", f"任务编号 #{aid}")
+        db.update_job_log(log_id, status="running", output=updated_s_log)
+
     return {"ok": True, "appointment_id": aid, "message": f"已开始名额监控 · 最长 {timeout_sec//60} 分钟 · 每 {poll_sec} 秒"}
 
 
@@ -2341,6 +2534,21 @@ async def create_keyword_watch(data: Dict[str, Any] = Body(...)):
     until_dt = now + timedelta(seconds=timeout_sec)
     until_str = until_dt.strftime("%H:%M")
 
+    job_id = f"job_kw_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    account = db.get_account_by_key(account_key)
+    nick = account.get("nickname") if account else account_key
+    s_log = (
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 创建商户定时搜索捡漏任务 - 调度引擎就绪\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 搜索关键词: 「{keyword}」 (平台: {plat})\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 检索时段: 开始于 {start_at}, 截止至 {until_str}, 频率每 {poll_sec} 秒\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 账号【{nick}】自动搜索流水已启动，持续监听中..."
+    )
+    log_id = 0
+    try:
+        log_id = db.add_job_log(job_id, account_key, "store_keyword", "running", s_log)
+    except Exception:
+        pass
+
     apt_data = {
         "account_key": account_key,
         "store_id": "0",
@@ -2353,9 +2561,14 @@ async def create_keyword_watch(data: Dict[str, Any] = Body(...)):
         "platform": plat,
         "redpack_mode": 0 if data.get("redpack_mode") == "auto" else (2 if data.get("redpack_mode") == "none" else 1),
         "redpack_id": data.get("redpack_id"),
-        "rebate_desc": f"定时搜索【{keyword}】"
+        "rebate_desc": f"定时搜索【{keyword}】",
+        "log_id": log_id
     }
     aid = db.add_appointment(apt_data)
+    if log_id > 0:
+        updated_s_log = s_log.replace("调度引擎就绪", f"任务编号 #{aid}")
+        db.update_job_log(log_id, status="running", output=updated_s_log)
+
     return {"ok": True, "appointment_id": aid, "appointment": {"id": aid, "start_at": start_at}, "message": f"已添加定时搜索「{keyword}」-> {start_at}"}
 
 
@@ -2376,12 +2589,58 @@ async def stop_appointment(aid: int):
         "status": "cancelled",
         "outcome": f"用户已于 {time.strftime('%H:%M:%S')} 主动停止监听"
     })
+    job_id = f"job_stop_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    acc_key = apt.get("account_key", "")
+    s_log = (
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 用户主动停止监听任务 #{aid}\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标店铺: 【{apt.get('store_name', '商户活动')}】\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听状态已转为 cancelled，定时轮询与突发抢单已解除"
+    )
+    linked_log_id = int(apt.get("log_id") or 0)
+    if linked_log_id > 0:
+        try:
+            with db.get_conn() as conn:
+                row = conn.execute("SELECT output FROM job_logs WHERE id = ?", (linked_log_id,)).fetchone()
+                prev_output = row["output"] if row else ""
+            new_output = (prev_output + "\n" + s_log).strip()
+            db.update_job_log(linked_log_id, status="error", output=new_output)
+        except Exception:
+            db.add_job_log(job_id, acc_key, "store_monitor", "error", s_log)
+    else:
+        try:
+            db.add_job_log(job_id, acc_key, "store_monitor", "error", s_log)
+        except Exception:
+            pass
     return {"ok": True, "message": "已主动停止该名额监听任务"}
 
 
 @router.delete("/store/appointments/{aid}")
 async def cancel_appointment(aid: int):
     """取消店铺预约"""
+    apt = db.get_appointment_by_id(aid)
+    if apt:
+        acc_key = apt.get("account_key", "")
+        job_id = f"job_del_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+        s_log = (
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 用户删除预约/监听任务 #{aid}\n"
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标商户: 【{apt.get('store_name', '商户活动')}】\n"
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 该任务已从系统调度队列永久移除"
+        )
+        linked_log_id = int(apt.get("log_id") or 0)
+        if linked_log_id > 0:
+            try:
+                with db.get_conn() as conn:
+                    row = conn.execute("SELECT output FROM job_logs WHERE id = ?", (linked_log_id,)).fetchone()
+                    prev_output = row["output"] if row else ""
+                new_output = (prev_output + "\n" + s_log).strip()
+                db.update_job_log(linked_log_id, status="error", output=new_output)
+            except Exception:
+                db.add_job_log(job_id, acc_key, "store_appoint", "error", s_log)
+        else:
+            try:
+                db.add_job_log(job_id, acc_key, "store_appoint", "error", s_log)
+            except Exception:
+                pass
     db.delete_appointment(aid)
     return {"ok": True, "message": "已取消预约"}
 
@@ -2462,8 +2721,29 @@ async def list_orders(
             promo = o.get("store_promotion") or {}
             store_obj = promo.get("store") or {}
             store_name = store_obj.get("name") or promo.get("store_name") or "小蚕霸王餐"
-            store_icon = store_obj.get("icon") or ""
+            store_icon = (
+                store_obj.get("icon") or
+                store_obj.get("logo") or
+                store_obj.get("head_img") or
+                promo.get("picture") or
+                promo.get("store_icon") or
+                promo.get("icon") or
+                o.get("store_icon") or
+                ""
+            )
             store_id = str(store_obj.get("store_id") or "")
+            if not store_icon and (store_id or store_name):
+                try:
+                    conn = db.get_db()
+                    cur = conn.cursor()
+                    r_icon = cur.execute(
+                        "SELECT store_icon FROM orders WHERE (store_id = ? OR store_name = ?) AND store_icon != '' LIMIT 1",
+                        (store_id, store_name)
+                    ).fetchone()
+                    if r_icon and r_icon[0]:
+                        store_icon = r_icon[0]
+                except Exception:
+                    pass
             
             raw_om = float(o.get("store_platform_order_money", 0))
             order_money = round(raw_om / 100.0 if raw_om >= 100 else raw_om, 2)
@@ -2508,7 +2788,10 @@ async def list_orders(
                 status_str = "completed" if raw_st in (5, 6) else ("auditing" if platform_order_id else "pending")
 
             cond_val = promo.get("rebate_condition")
-            cond_str = promo.get("rebate_condition_str") or ("无需评价" if cond_val == 99 else ("随心好评" if cond_val == 2 else "图文好评"))
+            cond_raw = promo.get("rebate_condition_str") or ("无需评价" if cond_val == 99 else ("随心好评" if cond_val == 2 else "用餐反馈"))
+            cond_str = cond_raw.replace("（需含字含图）", "").replace("(需含字含图)", "").strip() if cond_raw else "用餐反馈"
+            if not cond_str or cond_str == "图文好评":
+                cond_str = "用餐反馈"
             screens = o.get("platform_evaluation_screenshot") or []
             receipt_img = screens[0] if screens else ""
             ot = o.get("order_time")
@@ -2605,14 +2888,14 @@ _ntp_cache = {
 }
 
 
-def sync_aliyun_ntp(timeout: float = 2.0) -> float:
+def sync_aliyun_ntp(force: bool = False, timeout: float = 2.0) -> float:
     """向 ntp.aliyun.com 查询高精度北京时间 (SNTP 客户端)"""
     global _ntp_cache
     import socket
     import struct
     now = time.time()
-    # 缓存 60 秒内复用时钟偏差
-    if _ntp_cache["synced"] and (now - _ntp_cache["last_sync"] < 60.0):
+    # 缓存 60 秒内复用时钟偏差 (除非要求强制校准)
+    if not force and _ntp_cache["synced"] and (now - _ntp_cache["last_sync"] < 60.0):
         return now + _ntp_cache["offset"]
 
     try:
@@ -2641,9 +2924,9 @@ def sync_aliyun_ntp(timeout: float = 2.0) -> float:
 
 
 @router.get("/time")
-async def get_beijing_time_endpoint():
+async def get_beijing_time_endpoint(force: bool = False):
     """获取经由 ntp.aliyun.com 授时中心校准的高精度北京时间"""
-    ntp_ts = sync_aliyun_ntp()
+    ntp_ts = sync_aliyun_ntp(force=force)
     # 计算精确的北京时间 (UTC+8)
     bj_time_tuple = time.gmtime(ntp_ts + 8 * 3600)
     bj_iso = time.strftime("%Y-%m-%d %H:%M:%S", bj_time_tuple)
@@ -2661,6 +2944,20 @@ async def get_beijing_time_endpoint():
 @router.post("/orders")
 async def create_order_endpoint(data: Dict[str, Any] = Body(...)):
     """手动录入新订单"""
+    if not data.get("store_icon"):
+        sname = (data.get("store_name") or "").strip()
+        if sname:
+            try:
+                conn = db.get_db()
+                cur = conn.cursor()
+                r_icon = cur.execute(
+                    "SELECT store_icon FROM orders WHERE store_name = ? AND store_icon != '' LIMIT 1",
+                    (sname,)
+                ).fetchone()
+                if r_icon and r_icon[0]:
+                    data["store_icon"] = r_icon[0]
+            except Exception:
+                pass
     saved = db.save_order(data)
     return {"ok": True, "order": saved, "message": "订单已成功登记"}
 
@@ -2812,7 +3109,9 @@ async def get_settings():
         # 触发策略
         "notify_on_grab": db.get_setting("notify_on_grab", True),
         "notify_on_appoint": db.get_setting("notify_on_appoint", True),
-        "notify_on_spike": db.get_setting("notify_on_spike", True)
+        "notify_on_spike": db.get_setting("notify_on_spike", True),
+        # 位置服务与天地图 Web API (tianditu.gov.cn)
+        "tianditu_key": db.get_setting("tianditu_key", "109fd484f999e3c0472ab15fa38fe2ac")
     }
 
 
@@ -2823,6 +3122,14 @@ async def save_settings(data: Dict[str, Any] = Body(...)):
         if k != "clawbot_status":
             db.set_setting(k, v)
     return {"ok": True, "message": "设置已保存"}
+
+
+@router.post("/settings/test-tianditu")
+async def test_tianditu_endpoint(data: Dict[str, Any] = Body(...)):
+    """测试天地图 Web API 服务 Token 连通性"""
+    tianditu_key = str(data.get("tianditu_key", "")).strip()
+    res = await tianditu_client.test_connection(tianditu_key)
+    return res
 
 
 @router.post("/settings/test-notify")
@@ -2906,9 +3213,110 @@ CITY_COORDS = {
 }
 
 
+@router.get("/location/search")
+async def search_location(keyword: str = Query("", description="搜索地址或地标关键词")):
+    """根据输入的地址或商圈关键词，通过天地图 Web API 检索详细地址与经纬度坐标候选列表"""
+    clean_kw = (keyword or "").strip()
+    if not clean_kw:
+        return {
+            "ok": True,
+            "keyword": "",
+            "candidates": []
+        }
+
+    try:
+        candidates = await tianditu_client.search_poi(clean_kw)
+    except Exception as e:
+        logger.warning(f"天地图地址多候选检索异常: {e}")
+        candidates = []
+
+    if candidates:
+        for c in candidates:
+            if not c.get("city_code"):
+                c_name = c.get("city_name", "")
+                c["city_code"] = CITY_CODE_MAP.get(c_name) or CITY_CODE_MAP.get(f"{c_name}市") or 420100
+
+        top = candidates[0]
+        return {
+            "ok": True,
+            "keyword": clean_kw,
+            "candidates": candidates,
+            "city_code": top.get("city_code", 420100),
+            "city_name": top.get("city_name", ""),
+            "district_name": top.get("district_name", ""),
+            "town_name": top.get("town_name", ""),
+            "short_name": top.get("short_name", clean_kw),
+            "full_address": top.get("full_address", ""),
+            "latitude": top.get("latitude", ""),
+            "longitude": top.get("longitude", ""),
+            "source": top.get("source", "tianditu")
+        }
+
+    # 兜底：尝试从已有预设城市快速匹配
+    for code, (cname, clng, clat) in CITY_COORDS.items():
+        if cname in clean_kw or clean_kw in cname:
+            c_item = {
+                "city_code": code,
+                "city_name": cname,
+                "district_name": "",
+                "town_name": "",
+                "poi": clean_kw,
+                "short_name": f"{cname} · {clean_kw}",
+                "full_address": f"{cname}市 {clean_kw}",
+                "latitude": clat,
+                "longitude": clng,
+                "source": "preset"
+            }
+            return {
+                "ok": True,
+                "keyword": clean_kw,
+                "candidates": [c_item],
+                "city_code": code,
+                "city_name": cname,
+                "district_name": "",
+                "short_name": f"{cname} · {clean_kw}",
+                "full_address": f"{cname}市 {clean_kw}",
+                "latitude": clat,
+                "longitude": clng,
+                "source": "preset"
+            }
+
+    # 未检索到结果时，正常返回空候选列表，绝不抛出 400 异常
+    return {
+        "ok": True,
+        "keyword": clean_kw,
+        "candidates": []
+    }
+
+
 @router.get("/location/resolve")
 async def resolve_location(latitude: float = Query(...), longitude: float = Query(...)):
-    """逆地理编码：将设备经纬度逆解析为城市名、区县及行政区划代码"""
+    """逆地理编码：优先使用天地图 Web API 查指定经纬度地址，未配置或异常时平滑降级"""
+    # 1. 优先调用天地图
+    try:
+        tianditu_res = await tianditu_client.resolve_location(latitude, longitude)
+        if tianditu_res and tianditu_res.get("city_name"):
+            c_name = tianditu_res["city_name"]
+            loc = tianditu_res.get("district", "")
+            prov = tianditu_res.get("province", "")
+            addr_str = tianditu_res.get("address_name", f"{c_name} · {loc}")
+            c_code = tianditu_res.get("city_code") or CITY_CODE_MAP.get(c_name) or CITY_CODE_MAP.get(f"{c_name}市") or 420100
+            return {
+                "ok": True,
+                "city_code": c_code,
+                "city_name": c_name,
+                "locality": loc,
+                "province": prov,
+                "address_name": addr_str,
+                "latitude": f"{latitude:.6f}",
+                "longitude": f"{longitude:.6f}",
+                "source": "tianditu",
+                "accuracy": "high"
+            }
+    except Exception as e:
+        logger.warning(f"天地图逆地理编码异常，切换降级通道: {e}")
+
+    # 2. 降级备用通道 (BigDataCloud)
     import urllib.request
     import json
 
@@ -2932,7 +3340,7 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
         elif city_name:
             addr = f"{city_name} (本机定位)"
     except Exception as e:
-        logger.warning(f"逆地理编码解析异常: {e}")
+        logger.warning(f"备用逆地理编码解析异常: {e}")
 
     # 匹配 city_code
     city_code = CITY_CODE_MAP.get(city_name) or CITY_CODE_MAP.get(f"{city_name}市") or 420100
@@ -2946,13 +3354,14 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
         "address_name": addr,
         "latitude": f"{latitude:.6f}",
         "longitude": f"{longitude:.6f}",
+        "source": "fallback",
         "accuracy": "high"
     }
 
 
 @router.get("/location/ip")
 async def get_ip_location():
-    """网络 IP 粗略定位兜底：当浏览器拒绝定位权限时获取物理大致所在城市"""
+    """网络 IP 粗略定位兜底：通过 IP 归属地获取城市并结合天地图逆地理补全坐标"""
     import urllib.request
     import json
 
@@ -2966,7 +3375,47 @@ async def get_ip_location():
         addr_text = data.get("addr", "") or f"{raw_city} (网络IP定位)"
 
         code_int = int(c_code_str) if c_code_str and c_code_str.isdigit() else (CITY_CODE_MAP.get(raw_city, 420100))
-        
+
+        # 查找对应城市的预设经纬度
+        c_tuple = CITY_COORDS.get(code_int)
+        if not c_tuple:
+            for code, (cname, clng, clat) in CITY_COORDS.items():
+                if cname in raw_city or raw_city in cname:
+                    code_int = code
+                    c_tuple = (cname, clng, clat)
+                    break
+
+        if not c_tuple:
+            c_tuple = ("武汉", "114.305393", "30.593099")
+
+        return {
+            "ok": True,
+            "city_code": code_int,
+            "city_name": c_tuple[0],
+            "address_name": addr_text,
+            "latitude": c_tuple[2],
+            "longitude": c_tuple[1],
+            "source": "ip",
+            "is_ip": True
+        }
+    except Exception as e:
+        logger.warning(f"备用 IP 定位异常: {e}")
+
+    # 2. 降级备用通道 (PConline)
+    import urllib.request
+    import json
+
+    try:
+        req = urllib.request.Request("https://whois.pconline.com.cn/ipJson.jsp?json=true", headers={"User-Agent": "Mozilla/5.0"})
+        res = urllib.request.urlopen(req, timeout=3.0)
+        raw = res.read().decode("gbk", errors="ignore")
+        data = json.loads(raw)
+        c_code_str = data.get("cityCode", "")
+        raw_city = data.get("city", "").replace("市", "")
+        addr_text = data.get("addr", "") or f"{raw_city} (网络IP定位)"
+
+        code_int = int(c_code_str) if c_code_str and c_code_str.isdigit() else (CITY_CODE_MAP.get(raw_city, 420100))
+
         # 查找对应城市的预设经纬度
         c_tuple = CITY_COORDS.get(code_int)
         if not c_tuple:
@@ -2987,10 +3436,11 @@ async def get_ip_location():
             "address_name": addr_text,
             "latitude": c_tuple[2],
             "longitude": c_tuple[1],
+            "source": "fallback",
             "is_ip": True
         }
     except Exception as e:
-        logger.warning(f"IP定位异常: {e}")
+        logger.warning(f"备用 IP 定位异常: {e}")
         return {
             "ok": True,
             "city_code": 420100,
@@ -2998,6 +3448,7 @@ async def get_ip_location():
             "address_name": "武汉市 (默认)",
             "latitude": "30.593099",
             "longitude": "114.305393",
+            "source": "default",
             "is_ip": True
         }
 

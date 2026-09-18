@@ -28,7 +28,7 @@ export const animateStaggerEnter = (
       stagger: 0.03,
       delay,
       ease: 'power2.out',
-      clearProps: 'transform',
+      clearProps: 'all',
     }
   );
 };

@@ -1311,18 +1311,46 @@ class XiaoCanClient:
             user_id=user_id
         )
 
+    async def get_user_card_number(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """获取用户特权卡券数量统计 (SilkwormCardService.GetUserCardNumber)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "card_number_mode": 1,
+            "app_id": 20
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormCard",
+            method_name="SilkwormCardService.GetUserCardNumber",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
     async def get_user_card_list(
         self,
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
         city_code: int = 440303,
-        status: int = 1
+        status: int = 0,
+        offset: int = 0,
+        number: int = 30
     ) -> Dict[str, Any]:
-        """获取用户专属卡券与特权券列表 (SilkwormCardService.GetUserCardList)"""
+        """获取用户专属卡券与特权券列表 (SilkwormCardService.GetUserCardList, status: 0未使用, 1已使用, 2已过期)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "status": int(status)
+            "status": int(status),
+            "offset": int(offset),
+            "number": int(number),
+            "app_id": 20
         }
         try:
             return await self.invoke_rpc(
@@ -1334,7 +1362,56 @@ class XiaoCanClient:
                 silk_id=silk_id,
                 user_id=user_id
             )
-        except Exception:
-            # 优雅降级到会员特权券与礼包明细
-            return await self.list_vip_gifts(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+        except Exception as e:
+            logger.warning(f"GetUserCardList failed: {e}")
+            return {"status": {"code": 0}, "list": []}
+
+    async def get_user_redpack_num(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """获取用户可用红包总数 (RedPackService.GetUserRedPackNum)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "app_id": 20
+        }
+        return await self.invoke_rpc(
+            server_name="RedPackService",
+            method_name="RedPackService.GetUserRedPackNum",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
+    async def get_app_redpack_list(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303,
+        page: int = 1,
+        page_size: int = 30
+    ) -> Dict[str, Any]:
+        """获取用户霸王餐红包列表 (RedPackService.GetAppRedPackList)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "page": int(page),
+            "page_size": int(page_size),
+            "app_id": 20
+        }
+        return await self.invoke_rpc(
+            server_name="RedPackService",
+            method_name="RedPackService.GetAppRedPackList",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
 

@@ -45,14 +45,13 @@ export const HeaderNav: React.FC = () => {
           logo: (
             <img
               src="/logo.png"
-              alt="小蚕会员助手"
+              alt="小蚕小帮手"
               className="w-8 h-8 rounded-lg object-contain shadow-xs border border-semi-color-border"
             />
           ),
           text: (
             <Space align="center">
-              <span className="font-semibold text-base text-semi-color-text-0">小蚕会员助手</span>
-              <Tag color="green" size="small" shape="circle">全功能·纯净版</Tag>
+              <span className="font-semibold text-base text-semi-color-text-0">小蚕小帮手</span>
             </Space>
           ),
         }}

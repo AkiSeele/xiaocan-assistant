@@ -300,16 +300,14 @@ html, body, #root {
   animation: pulseSubtle 2.5s ease-in-out infinite;
 }
 
-/* Semi 卡片悬浮升起与阴影扩散动效 */
+/* Semi 卡片悬浮动效：仅保留柔和投影与边框色变，禁止任何物理 translateY 位移以防字体发虚与晃动 */
 .semi-card-elevate {
-  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
-              box-shadow 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+  transition: box-shadow 0.2s ease,
               border-color 0.2s ease;
 }
 
 .semi-card-elevate:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.08), 0 4px 10px -3px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 4px 14px -2px rgba(0, 0, 0, 0.06), 0 2px 6px -1px rgba(0, 0, 0, 0.03);
 }
 
 /* 顶部栏高斯模糊毛玻璃效果 */
@@ -346,3 +344,34 @@ html, body, #root {
   will-change: transform, opacity;
   backface-visibility: hidden;
 }
+
+/* Semi Dropdown 下拉选项宽度自适应：解除 280px 硬编码限制，支持全宽展开与长地址平铺 */
+.semi-dropdown-menu .semi-dropdown-item {
+  max-width: none !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* 侧边栏收起时 Logo 居中对齐与容器修整 */
+.semi-navigation-collapsed .semi-navigation-header,
+.semi-navigation-header-collapsed {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  width: 100% !important;
+  text-align: center !important;
+}
+
+.semi-navigation-collapsed .semi-navigation-header-logo,
+.semi-navigation-header-collapsed .semi-navigation-header-logo {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  width: 100% !important;
+}
+
+

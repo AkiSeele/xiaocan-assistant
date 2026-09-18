@@ -48,6 +48,14 @@ const getStoredAccounts = (): Account[] => {
   return [];
 };
 
+const getStoredSidebarCollapsed = (): boolean => {
+  try {
+    return localStorage.getItem('xiaocan_sidebar_collapsed') === 'true';
+  } catch (e) {
+    return false;
+  }
+};
+
 interface AppState {
   activeTab: string;
   accounts: Account[];
@@ -56,11 +64,14 @@ interface AppState {
   userInfo: UserInfo | null;
   loading: boolean;
   activeLocation: ActiveLocation;
+  isSidebarCollapsed: boolean;
   
   setActiveTab: (tab: string) => void;
   setDarkMode: (dark: boolean) => void;
   setCurrentAccountKey: (key: string) => void;
   setActiveLocation: (loc: Partial<ActiveLocation>) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSidebarCollapse: () => void;
   loadAccounts: () => Promise<void>;
   loadUserInfo: () => Promise<void>;
 }
@@ -81,8 +92,24 @@ export const useAppStore = create<AppState>((set, get) => {
     userInfo: null,
     loading: false,
     activeLocation: getStoredLocation(),
+    isSidebarCollapsed: getStoredSidebarCollapsed(),
 
   setActiveTab: (tab: string) => set({ activeTab: tab }),
+
+  setSidebarCollapsed: (collapsed: boolean) => {
+    try {
+      localStorage.setItem('xiaocan_sidebar_collapsed', String(collapsed));
+    } catch (e) {}
+    set({ isSidebarCollapsed: collapsed });
+  },
+
+  toggleSidebarCollapse: () => {
+    const next = !get().isSidebarCollapsed;
+    try {
+      localStorage.setItem('xiaocan_sidebar_collapsed', String(next));
+    } catch (e) {}
+    set({ isSidebarCollapsed: next });
+  },
 
   setActiveLocation: (loc: Partial<ActiveLocation>) => {
     const prev = get().activeLocation;
@@ -111,35 +138,56 @@ export const useAppStore = create<AppState>((set, get) => {
   },
 
   loadAccounts: async () => {
-    try {
-      set({ loading: true });
-      const res = await api.getAccounts();
-      const accounts = res.accounts || [];
-      try {
-        localStorage.setItem('xiaocan_cached_accounts', JSON.stringify(accounts));
-      } catch (e) {}
-      const current = get().currentAccountKey;
-      let newCurrent = current;
-      const exists = accounts.some((a) => a.key === current);
-      if ((!newCurrent || !exists) && accounts.length > 0) {
-        newCurrent = accounts[0].key;
-        try {
-          localStorage.setItem('xiaocan_current_account_key', newCurrent);
-        } catch (e) {}
-      }
-      set({ accounts, currentAccountKey: newCurrent, loading: false });
-    } catch (e) {
-      set({ loading: false });
+    if (loadAccountsInFlight) {
+      return loadAccountsInFlight;
     }
+    loadAccountsInFlight = (async () => {
+      try {
+        set({ loading: true });
+        const res = await api.getAccounts();
+        const accounts = res.accounts || [];
+        try {
+          localStorage.setItem('xiaocan_cached_accounts', JSON.stringify(accounts));
+        } catch (e) {}
+        const current = get().currentAccountKey;
+        let newCurrent = current;
+        const exists = accounts.some((a) => a.key === current);
+        if ((!newCurrent || !exists) && accounts.length > 0) {
+          newCurrent = accounts[0].key;
+          try {
+            localStorage.setItem('xiaocan_current_account_key', newCurrent);
+          } catch (e) {}
+        }
+        set({ accounts, currentAccountKey: newCurrent, loading: false });
+      } catch (e) {
+        set({ loading: false });
+      } finally {
+        loadAccountsInFlight = null;
+      }
+    })();
+    return loadAccountsInFlight;
   },
 
   loadUserInfo: async () => {
-    try {
-      const res = await api.getMe();
-      if (res.ok) {
-        set({ userInfo: res.user });
+    if (loadUserInfoInFlight) {
+      return loadUserInfoInFlight;
+    }
+    loadUserInfoInFlight = (async () => {
+      try {
+        const res = await api.getMe();
+        if (res.ok) {
+          set({ userInfo: res.user });
+        }
+      } catch (e) {
+      } finally {
+        loadUserInfoInFlight = null;
       }
-    } catch (e) {}
+    })();
+    return loadUserInfoInFlight;
   },
   };
 });
+
+let loadAccountsInFlight: Promise<void> | null = null;
+let loadUserInfoInFlight: Promise<void> | null = null;
+

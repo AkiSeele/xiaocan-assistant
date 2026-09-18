@@ -11,7 +11,6 @@ import {
   Empty,
   Tooltip,
   Avatar,
-  Select,
   Popconfirm,
   Modal,
   Notification,
@@ -23,7 +22,6 @@ import {
   IconShoppingBag,
   IconCheckCircleStroked,
   IconArrowRight,
-  IconRefresh,
   IconCalendar,
   IconGift,
   IconPriceTag,
@@ -33,15 +31,13 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
-import { RebateTrendChart } from '../components/charts/RebateTrendChart';
-import { OrderDistributionChart } from '../components/charts/OrderDistributionChart';
-import { useGSAP, animateStaggerEnter } from '../utils/animations';
+import { useGSAP, animateStaggerEnter, gsap } from '../utils/animations';
 import type { JobLog, StoreAppointment, OrderStats, DashboardChartData } from '../types';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 export const Dashboard: React.FC = () => {
-  const { accounts, currentAccountKey, setCurrentAccountKey, setActiveTab } = useAppStore();
+  const { accounts, currentAccountKey, setActiveTab } = useAppStore();
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   // 核心业务数据状态
@@ -68,7 +64,6 @@ export const Dashboard: React.FC = () => {
   const [enabledTaskCount, setEnabledTaskCount] = useState<number>(0);
   const [totalTaskCount, setTotalTaskCount] = useState<number>(12);
   const [loading, setLoading] = useState<boolean>(true);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   // 按钮异步操作 Loading 状态 (防重复点击)
   const [dailySignLoading, setDailySignLoading] = useState<boolean>(false);
@@ -79,79 +74,28 @@ export const Dashboard: React.FC = () => {
   // 日志详情模态框
   const [activeLogModal, setActiveLogModal] = useState<JobLog | null>(null);
 
-  // 动态北京时间秒级时钟 (基于 ntp.aliyun.com 校准)
-  const [currentTimeStr, setCurrentTimeStr] = useState<string>('--:--:--');
-  const [currentDateStr, setCurrentDateStr] = useState<string>('');
-  const [isNtpSynced, setIsNtpSynced] = useState<boolean>(false);
-  const timeOffsetRef = useRef<number>(0);
-
-  // 向后端查询由 ntp.aliyun.com 校准的精确时间差
-  const syncNtpClock = async () => {
-    try {
-      const res = await api.getBeijingTime();
-      if (res && res.ok && res.timestamp) {
-        // res.timestamp 是秒级浮点数 (Unix Epoch)
-        const ntpEpochMs = res.timestamp * 1000;
-        timeOffsetRef.current = ntpEpochMs - performance.now();
-        setIsNtpSynced(Boolean(res.synced));
-      }
-    } catch (e) {
-      // 降级使用本地计算
-    }
-  };
-
-  useEffect(() => {
-    syncNtpClock();
-    // 每 5 分钟向阿里云 NTP 授时中心校验一次时钟偏差
-    const ntpTimer = setInterval(syncNtpClock, 5 * 60 * 1000);
-
-    const updateClock = () => {
-      const epochMs = timeOffsetRef.current
-        ? performance.now() + timeOffsetRef.current
-        : Date.now();
-
-      // 精确转换为 UTC+8 北京时间
-      const d = new Date(epochMs);
-      const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
-      const bjDate = new Date(utcMs + 3600000 * 8);
-
-      const hours = String(bjDate.getHours()).padStart(2, '0');
-      const minutes = String(bjDate.getMinutes()).padStart(2, '0');
-      const seconds = String(bjDate.getSeconds()).padStart(2, '0');
-      setCurrentTimeStr(`${hours}:${minutes}:${seconds}`);
-
-      const days = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-      const year = bjDate.getFullYear();
-      const month = bjDate.getMonth() + 1;
-      const date = bjDate.getDate();
-      const dayName = days[bjDate.getDay()];
-      setCurrentDateStr(`${year}年${month}月${date}日 ${dayName}`);
-    };
-
-    updateClock();
-    const clockTimer = setInterval(updateClock, 1000);
-    return () => {
-      clearInterval(ntpTimer);
-      clearInterval(clockTimer);
-    };
-  }, []);
+  const lastDashboardSignatureRef = useRef<string>('');
+  const inFlightDashboardRef = useRef<boolean>(false);
 
   // 核心数据拉取
-  const loadDashboardData = async (isManual = false) => {
-    if (isManual) {
-      setRefreshing(true);
-      syncNtpClock();
-    } else {
-      setLoading(true);
+  const loadDashboardData = async (force = false) => {
+    const effectiveKey = currentAccountKey || (accounts[0]?.key ?? '');
+    const signature = `dashboard_${effectiveKey}`;
+    if (!force && lastDashboardSignatureRef.current === signature) {
+      return;
     }
+    if (inFlightDashboardRef.current) return;
+    inFlightDashboardRef.current = true;
+    lastDashboardSignatureRef.current = signature;
 
+    setLoading(true);
     try {
       const [jobsRes, apptsRes, statsRes, chartRes, tasksRes] = await Promise.all([
-        api.getJobs(currentAccountKey || undefined, 6),
-        api.getAppointments(currentAccountKey || undefined),
-        api.getOrderStats(currentAccountKey || undefined),
-        api.getDashboardChartData(currentAccountKey || undefined),
-        currentAccountKey ? api.getTasks(currentAccountKey) : Promise.resolve({ ok: false, tasks: [] }),
+        api.getJobs(effectiveKey || undefined, 6),
+        api.getAppointments(effectiveKey || undefined),
+        api.getOrderStats(effectiveKey || undefined),
+        api.getDashboardChartData(effectiveKey || undefined),
+        effectiveKey ? api.getTasks(effectiveKey) : Promise.resolve({ ok: false, tasks: [] }),
       ]);
 
       if (jobsRes.ok) setRecentLogs(jobsRes.jobs || []);
@@ -164,20 +108,17 @@ export const Dashboard: React.FC = () => {
         setEnabledTaskCount(enabled);
         setTotalTaskCount(tasksRes.tasks.length);
       }
-      if (isManual) {
-        Toast.success('仪表盘与阿里云北京时间已同步刷新');
-      }
     } catch (e) {
-      if (isManual) Toast.error('刷新数据失败，请检查网络');
+      // 捕获异常
     } finally {
+      inFlightDashboardRef.current = false;
       setLoading(false);
-      setRefreshing(false);
     }
   };
 
   useEffect(() => {
     loadDashboardData();
-  }, [currentAccountKey]);
+  }, [currentAccountKey, accounts.length]);
 
   // GSAP 进场交错动画 (只在组件挂载时平滑执行一次，避免数据刷新与账号切换时的闪烁)
   useGSAP(
@@ -188,6 +129,27 @@ export const Dashboard: React.FC = () => {
     },
     { scope: dashboardRef }
   );
+
+  // 4 大核心资产 Bento 卡片鼠标移入/移出 GSAP 动效 (遵循 Semi Design 克制、严谨、轻量微动效原则)
+  const { contextSafe } = useGSAP({ scope: dashboardRef });
+
+  const handleBentoEnter = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
+    gsap.to(e.currentTarget, {
+      y: -2,
+      duration: 0.2,
+      ease: 'power1.out',
+      overwrite: 'auto',
+    });
+  });
+
+  const handleBentoLeave = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
+    gsap.to(e.currentTarget, {
+      y: 0,
+      duration: 0.18,
+      ease: 'power1.out',
+      overwrite: 'auto',
+    });
+  });
 
   // 当前激活账号资料
   const currentAccount = accounts.find((a) => a.key === currentAccountKey) || accounts[0];
@@ -207,7 +169,7 @@ export const Dashboard: React.FC = () => {
           content: res.output?.split('\n')[1] || '已成功获取今日签到与积分奖励！',
           duration: 4,
         });
-        loadDashboardData();
+        loadDashboardData(true);
       } else {
         Toast.error(res.output || '签到执行异常');
       }
@@ -233,7 +195,7 @@ export const Dashboard: React.FC = () => {
           content: res.output?.split('\n')[1] || '已成功获取今日SVIP会员成长值与膨胀金！',
           duration: 4,
         });
-        loadDashboardData();
+        loadDashboardData(true);
       } else {
         Toast.error(res.output || '会员打卡异常');
       }
@@ -259,7 +221,7 @@ export const Dashboard: React.FC = () => {
           content: res.output?.split('\n')[1] || '已完成一次元宝转盘抽大奖！',
           duration: 4,
         });
-        loadDashboardData();
+        loadDashboardData(true);
       } else {
         Toast.error(res.output || '转盘抽奖异常');
       }
@@ -296,7 +258,7 @@ export const Dashboard: React.FC = () => {
           ),
           duration: 6,
         });
-        loadDashboardData();
+        loadDashboardData(true);
       } else {
         Toast.error(res.message || '一键打卡失败');
       }
@@ -386,9 +348,9 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div ref={dashboardRef} className="w-full space-y-4">
-      {/* 顶部综合工作台 Bar (对齐牛马助手时钟 + 小蚕省心版主控状态卡片) */}
-      <div className="gsap-card-item bg-gradient-to-r from-semi-color-bg-1 via-semi-color-bg-1 to-blue-50/20 dark:from-semi-color-bg-1 dark:via-semi-color-bg-1 dark:to-blue-950/20 border border-semi-color-border/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:shadow-md hover:border-semi-color-primary-light-active transition-[box-shadow,border-color] duration-200 will-change-[transform,opacity] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        {/* 左侧：当前主控账号实时状态 */}
+      {/* 顶部主控账号概览 Card */}
+      <div className="gsap-card-item bg-gradient-to-r from-semi-color-bg-1 via-semi-color-bg-1 to-blue-50/20 dark:from-semi-color-bg-1 dark:via-semi-color-bg-1 dark:to-blue-950/20 border border-semi-color-border/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-semi-color-primary-light-active transition-colors duration-200 will-change-[transform,opacity] flex items-center justify-between">
+        {/* 当前主控账号实时状态 */}
         <div className="flex items-center gap-4 min-w-0">
           <div className="relative group cursor-pointer shrink-0">
             <Avatar
@@ -399,281 +361,204 @@ export const Dashboard: React.FC = () => {
             >
               {currentAccount?.nickname?.[0] || '蚕'}
             </Avatar>
-            <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-gray-900 shadow-[0_0_8px_rgba(16,185,129,0.8)] animate-pulse" />
+            <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-gray-900 shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-bold text-base text-semi-color-text-0 truncate max-w-[220px]">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="font-bold text-base sm:text-lg text-semi-color-text-0 truncate max-w-[260px]">
                 {currentAccount?.nickname || '未选择主控账号'}
               </span>
               <Tag
                 color={currentAccount?.is_plus ? 'amber' : 'blue'}
                 size="small"
                 shape="square"
-                className="font-semibold shadow-xs"
+                className="font-semibold shadow-2xs"
               >
                 {currentAccount?.is_plus
                   ? `SVIP${currentAccount?.vip_level || 5}`
                   : `VIP${currentAccount?.vip_level || 1}`}
               </Tag>
-              <Tag color="green" size="small" shape="square" className="flex items-center gap-1 font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                <span>正常托管中</span>
-              </Tag>
             </div>
-            <div className="flex items-center gap-3 text-xs text-semi-color-text-2 mt-1.5 flex-wrap font-mono">
+            <div className="flex items-center gap-3 text-xs text-semi-color-text-2 mt-1.5 flex-wrap">
               {currentAccount?.phone && (
-                <span className="bg-semi-color-fill-0 px-1.5 py-0.5 rounded border border-semi-color-border-subtle">
-                  手机: {currentAccount.phone}
+                <span className="bg-semi-color-fill-0 px-2 py-0.5 rounded-md border border-semi-color-border-subtle">
+                  手机: <span className="font-mono">{currentAccount.phone}</span>
                 </span>
               )}
               {Boolean(currentAccount?.vip_score) && (
                 <Tooltip content="小蚕官方会员成长值，决定每日膨胀金档位与返利倍率">
-                  <span className="cursor-help bg-semi-color-fill-0 px-1.5 py-0.5 rounded border border-semi-color-border-subtle text-semi-color-primary flex items-center gap-1 hover:border-semi-color-primary/40 transition-colors">
-                    成长值: {(currentAccount?.vip_score || 0).toLocaleString()} 分
+                  <span className="cursor-help bg-semi-color-fill-0 px-2 py-0.5 rounded-md border border-semi-color-border-subtle text-semi-color-primary flex items-center gap-1 hover:border-semi-color-primary/40 transition-colors">
+                    成长值: <span className="font-mono">{(currentAccount?.vip_score || 0).toLocaleString()}</span> 分
                     <IconHelpCircle size="extra-small" />
                   </span>
                 </Tooltip>
               )}
-              <span className="bg-semi-color-fill-0 px-1.5 py-0.5 rounded border border-semi-color-border-subtle">
-                定位: {currentAccount?.city_name || '武汉'}
-              </span>
             </div>
           </div>
         </div>
-
-        {/* 中间：账号快速切换器 (无需跳出仪表盘即可切换) */}
-        <div className="flex items-center gap-2.5 self-stretch md:self-auto justify-between md:justify-end">
-          <Select
-            value={currentAccountKey}
-            onChange={(val) => {
-              setCurrentAccountKey(val as string);
-              Toast.success('已切换主控账号');
-            }}
-            style={{ width: 190 }}
-            size="small"
-            placeholder="切换主控账号"
-            className="hover:border-semi-color-primary transition-colors"
-          >
-            {accounts.map((acc) => (
-              <Select.Option key={acc.key} value={acc.key}>
-                <div className="flex justify-between items-center w-full">
-                  <span className="truncate">{acc.nickname}</span>
-                  <span className="text-[11px] text-semi-color-text-2 ml-1 font-mono">
-                    {acc.is_plus ? `SVIP${acc.vip_level || 5}` : `VIP${acc.vip_level || 1}`}
-                  </span>
-                </div>
-              </Select.Option>
-            ))}
-          </Select>
-
-          {/* 右侧：高精度秒级时钟 (基于 ntp.aliyun.com 授时中心校准) */}
-          <Tooltip content={isNtpSynced ? "已直连国家授时中心 (ntp.aliyun.com) 完成秒级校对" : "正在连接阿里云 NTP 授时中心..."}>
-            <div className="bg-semi-color-bg-0/90 backdrop-blur-md border border-semi-color-border/80 rounded-xl px-3.5 py-2 text-right shrink-0 cursor-help select-none hover:border-emerald-500/50 hover:bg-emerald-500/5 hover:shadow-sm transition-all duration-200">
-              <div className="flex items-center justify-end gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${isNtpSynced ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] animate-pulse' : 'bg-amber-400'}`} />
-                <span className="font-mono text-lg font-black tracking-wider text-semi-color-text-0 leading-none">
-                  {currentTimeStr}
-                </span>
-              </div>
-              <div className="text-[11px] text-semi-color-text-2 truncate mt-1 flex items-center justify-end gap-1.5 font-medium">
-                <span>{currentDateStr}</span>
-                <span className="text-[9px] px-1 py-0.2 rounded font-mono font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">NTP</span>
-              </div>
-            </div>
-          </Tooltip>
-
-          <Tooltip content="刷新最新数据看板">
-            <Button
-              theme="light"
-              type="tertiary"
-              size="small"
-              icon={<IconRefresh spin={refreshing} />}
-              onClick={() => loadDashboardData(true)}
-              className="shrink-0 hover:scale-105 active:scale-95 transition-transform"
-            />
-          </Tooltip>
-        </div>
       </div>
 
-      {/* 4 大核心资产 Bento 卡片 (高价值业务数据，拒绝废话) */}
+      {/* 4 大核心资产 Bento 卡片 (严格遵循 Semi Design 规范与克制微动效) */}
       <Row gutter={[14, 14]}>
-        <Col xs={24} sm={12} lg={6}>
-          <Card
-            shadows="hover"
-            className="gsap-card-item rounded-2xl border border-semi-color-border/80 shadow-xs hover:shadow-lg hover:-translate-y-1 hover:border-emerald-500/40 transition-[box-shadow,border-color,transform] duration-200 will-change-[transform,opacity] cursor-pointer group bg-gradient-to-br from-emerald-50/50 via-semi-color-bg-1 to-transparent dark:from-emerald-950/25 dark:via-semi-color-bg-1"
-            bodyStyle={{ padding: 18 }}
+        {/* 1. 累计到账返现 */}
+        <Col xs={24} sm={12} xl={6}>
+          <div
+            onMouseEnter={handleBentoEnter}
+            onMouseLeave={handleBentoLeave}
+            onClick={() => setActiveTab('orders')}
+            className="h-full cursor-pointer will-change-transform"
           >
-            <div className="flex justify-between items-start mb-2">
-              <Space align="center" spacing="tight">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-110 group-hover:bg-emerald-500/20 transition-transform duration-200">
-                  <IconCheckCircleStroked size="large" />
-                </div>
-                <Text type="secondary" size="small" className="font-medium">累计到账返现</Text>
-              </Space>
-              <Tooltip content="已成功核销并结算入账的霸王餐总返利">
-                <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer group-hover:text-emerald-500 transition-colors" />
-              </Tooltip>
-            </div>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <span className="text-xs font-semibold text-emerald-600">¥</span>
-              <Title heading={2} className="text-emerald-600 dark:text-emerald-400 tracking-tight font-mono">
-                {orderStats.total_rebate.toFixed(2)}
-              </Title>
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block text-xs">
-              已结算 <strong className="text-semi-color-text-1">{orderStats.completed_orders}</strong> 笔霸王餐订单
-            </Text>
-          </Card>
-        </Col>
-
-        <Col xs={24} sm={12} lg={6}>
-          <Card
-            shadows="hover"
-            className="gsap-card-item rounded-2xl border border-semi-color-border/80 shadow-xs hover:shadow-lg hover:-translate-y-1 hover:border-blue-500/40 transition-[box-shadow,border-color,transform] duration-200 will-change-[transform,opacity] cursor-pointer group bg-gradient-to-br from-blue-50/50 via-semi-color-bg-1 to-transparent dark:from-blue-950/25 dark:via-semi-color-bg-1"
-            bodyStyle={{ padding: 18 }}
-          >
-            <div className="flex justify-between items-start mb-2">
-              <Space align="center" spacing="tight">
-                <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 group-hover:scale-110 group-hover:bg-blue-500/20 transition-transform duration-200">
-                  <IconPriceTag size="large" />
-                </div>
-                <Text type="secondary" size="small" className="font-medium">在途/待入账返现</Text>
-              </Space>
-              <Tooltip content="已提交外卖单号，正由小蚕与商家审核中的返利金额">
-                <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer group-hover:text-blue-500 transition-colors" />
-              </Tooltip>
-            </div>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <span className="text-xs font-semibold text-blue-600">¥</span>
-              <Title heading={2} className="text-blue-600 dark:text-blue-400 tracking-tight font-mono">
-                {orderStats.pending_rebate.toFixed(2)}
-              </Title>
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block text-xs">
-              审核中 <strong className="text-semi-color-text-1">{orderStats.pending_orders}</strong> 单 · 预计2~24h到账
-            </Text>
-          </Card>
-        </Col>
-
-        <Col xs={24} sm={12} lg={6}>
-          <Card
-            shadows="hover"
-            className="gsap-card-item rounded-2xl border border-semi-color-border/80 shadow-xs hover:shadow-lg hover:-translate-y-1 hover:border-amber-500/40 transition-[box-shadow,border-color,transform] duration-200 will-change-[transform,opacity] cursor-pointer group bg-gradient-to-br from-amber-50/50 via-semi-color-bg-1 to-transparent dark:from-amber-950/25 dark:via-semi-color-bg-1"
-            bodyStyle={{ padding: 18 }}
-          >
-            <div className="flex justify-between items-start mb-2">
-              <Space align="center" spacing="tight">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 group-hover:scale-110 group-hover:bg-amber-500/20 transition-transform duration-200">
-                  <IconShoppingBag size="large" />
-                </div>
-                <Text type="secondary" size="small" className="font-medium">今日已省外卖费</Text>
-              </Space>
-              <Tooltip content="今日已实际核销到账的霸王餐返现总额（在途订单待核销后自动计入）">
-                <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer group-hover:text-amber-500 transition-colors" />
-              </Tooltip>
-            </div>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <span className="text-xs font-semibold text-amber-600">¥</span>
-              <Title heading={2} className="text-amber-600 dark:text-amber-400 tracking-tight font-mono">
-                {(chartData?.today_summary?.today_savings || 0).toFixed(2)}
-              </Title>
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block text-xs">
-              今日已到账 <strong className="text-semi-color-text-1">{chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)}</strong> 笔
-              {(chartData?.today_summary?.today_pending_orders ?? 0) > 0 && (
-                <span> · 在途 <strong className="text-semi-color-text-1">{chartData?.today_summary?.today_pending_orders}</strong> 笔</span>
-              )}
-            </Text>
-          </Card>
-        </Col>
-
-        <Col xs={24} sm={12} lg={6}>
-          <Card
-            shadows="hover"
-            className="gsap-card-item rounded-2xl border border-semi-color-border/80 shadow-xs hover:shadow-lg hover:-translate-y-1 hover:border-purple-500/40 transition-[box-shadow,border-color,transform] duration-200 will-change-[transform,opacity] cursor-pointer group bg-gradient-to-br from-purple-50/50 via-semi-color-bg-1 to-transparent dark:from-purple-950/25 dark:via-semi-color-bg-1"
-            bodyStyle={{ padding: 18 }}
-          >
-            <div className="flex justify-between items-start mb-2">
-              <Space align="center" spacing="tight">
-                <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0 group-hover:scale-110 group-hover:bg-purple-500/20 transition-all duration-300">
-                  <IconPlay size="large" />
-                </div>
-                <Text type="secondary" size="small" className="font-medium">自动化任务调度</Text>
-              </Space>
-              <Tooltip content="APScheduler 毫秒级调度中心正全天候监听的定时任务项">
-                <IconActivity size="small" className="text-purple-500 animate-pulse cursor-pointer" />
-              </Tooltip>
-            </div>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <Title heading={2} className="text-purple-600 dark:text-purple-400 tracking-tight font-mono">
-                {enabledTaskCount}
-              </Title>
-              <Text type="tertiary" size="small">/ {totalTaskCount} 项开启</Text>
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block text-xs flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shadow-[0_0_6px_rgba(168,85,247,0.8)] animate-pulse"></span>
-              <span>
-                {enabledTaskCount > 0 ? '定时秒杀全天候就绪' : '任务待开启'}
-                {appointments.length > 0 ? ` · ${appointments.length}家店铺盯单中` : ''}
-              </span>
-            </Text>
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 可视化专业图表区域 (Apache ECharts 双列联动) */}
-      <Row gutter={[14, 14]}>
-        {/* 近 7 天霸王餐返现与单量走势图 */}
-        <Col xs={24} lg={15}>
-          <Card
-            title={
-              <Space align="center">
-                <span className="font-bold text-base text-semi-color-text-0">
-                  近 7 天霸王餐返利趋势
-                </span>
-                <Tooltip content="汇总过去 7 天每天的实际霸王餐返现到账金额与完成单量">
-                  <IconHelpCircle size="small" className="text-semi-color-text-3" />
+            <Card
+              shadows="hover"
+              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+              bodyStyle={{ padding: '16px 18px' }}
+            >
+              <div className="flex justify-between items-start">
+                <Space align="center" spacing="tight">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                    <IconCheckCircleStroked size="default" />
+                  </div>
+                  <Text type="secondary" size="small" className="font-medium">累计到账返现</Text>
+                </Space>
+                <Tooltip content="已成功核销并结算入账的霸王餐总返利">
+                  <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer hover:text-semi-color-text-1 transition-colors" />
                 </Tooltip>
-              </Space>
-            }
-            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs"
-            headerStyle={{ padding: '14px 18px', borderBottom: '1px solid var(--semi-color-border)' }}
-            bodyStyle={{ padding: '16px 18px' }}
-          >
-            <RebateTrendChart data={chartData.trend} loading={loading} />
-          </Card>
+              </div>
+              <div className="flex items-baseline gap-1 my-2">
+                <span className="text-xs font-semibold text-semi-color-text-2">¥</span>
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                  {orderStats.total_rebate.toFixed(2)}
+                </span>
+              </div>
+              <Text type="tertiary" size="small" className="text-xs block truncate">
+                已结算 <span className="text-semi-color-text-1 font-medium">{orderStats.completed_orders}</span> 笔订单
+              </Text>
+            </Card>
+          </div>
         </Col>
 
-        {/* 订单与平台渠道分布环形图 */}
-        <Col xs={24} lg={9}>
-          <Card
-            title={
-              <Space align="center">
-                <span className="font-bold text-base text-semi-color-text-0">
-                  订单状态与渠道构成
-                </span>
-                <Tooltip content="展示所有霸王餐订单的状态归类与外卖平台（美团/饿了么）占比">
-                  <IconHelpCircle size="small" className="text-semi-color-text-3" />
-                </Tooltip>
-              </Space>
-            }
-            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs"
-            headerStyle={{ padding: '14px 18px', borderBottom: '1px solid var(--semi-color-border)' }}
-            bodyStyle={{ padding: '16px 18px' }}
+        {/* 2. 在途/待入账返现 */}
+        <Col xs={24} sm={12} xl={6}>
+          <div
+            onMouseEnter={handleBentoEnter}
+            onMouseLeave={handleBentoLeave}
+            onClick={() => setActiveTab('orders')}
+            className="h-full cursor-pointer will-change-transform"
           >
-            <OrderDistributionChart
-              statusData={chartData.status_distribution}
-              platformData={chartData.platform_distribution}
-              loading={loading}
-            />
-          </Card>
+            <Card
+              shadows="hover"
+              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+              bodyStyle={{ padding: '16px 18px' }}
+            >
+              <div className="flex justify-between items-start">
+                <Space align="center" spacing="tight">
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                    <IconPriceTag size="default" />
+                  </div>
+                  <Text type="secondary" size="small" className="font-medium">在途/待入账返现</Text>
+                </Space>
+                <Tooltip content="已提交外卖单号，正由小蚕与商家审核中的返利金额">
+                  <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer hover:text-semi-color-text-1 transition-colors" />
+                </Tooltip>
+              </div>
+              <div className="flex items-baseline gap-1 my-2">
+                <span className="text-xs font-semibold text-semi-color-text-2">¥</span>
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                  {orderStats.pending_rebate.toFixed(2)}
+                </span>
+              </div>
+              <Text type="tertiary" size="small" className="text-xs block truncate">
+                审核中 <span className="text-semi-color-text-1 font-medium">{orderStats.pending_orders}</span> 单 · 预计2~24h
+              </Text>
+            </Card>
+          </div>
+        </Col>
+
+        {/* 3. 今日已省外卖费 */}
+        <Col xs={24} sm={12} xl={6}>
+          <div
+            onMouseEnter={handleBentoEnter}
+            onMouseLeave={handleBentoLeave}
+            onClick={() => setActiveTab('orders')}
+            className="h-full cursor-pointer will-change-transform"
+          >
+            <Card
+              shadows="hover"
+              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+              bodyStyle={{ padding: '16px 18px' }}
+            >
+              <div className="flex justify-between items-start">
+                <Space align="center" spacing="tight">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                    <IconShoppingBag size="default" />
+                  </div>
+                  <Text type="secondary" size="small" className="font-medium">今日已省外卖费</Text>
+                </Space>
+                <Tooltip content="今日已实际核销到账的霸王餐返现总额（在途订单待核销后自动计入）">
+                  <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer hover:text-semi-color-text-1 transition-colors" />
+                </Tooltip>
+              </div>
+              <div className="flex items-baseline gap-1 my-2">
+                <span className="text-xs font-semibold text-semi-color-text-2">¥</span>
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                  {(chartData?.today_summary?.today_savings || 0).toFixed(2)}
+                </span>
+              </div>
+              <Text type="tertiary" size="small" className="text-xs block truncate">
+                今日到账 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)}</span> 笔
+                {(chartData?.today_summary?.today_pending_orders ?? 0) > 0 && (
+                  <span> · 在途 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_pending_orders}</span> 笔</span>
+                )}
+              </Text>
+            </Card>
+          </div>
+        </Col>
+
+        {/* 4. 自动化任务调度 */}
+        <Col xs={24} sm={12} xl={6}>
+          <div
+            onMouseEnter={handleBentoEnter}
+            onMouseLeave={handleBentoLeave}
+            onClick={() => setActiveTab('automation')}
+            className="h-full cursor-pointer will-change-transform"
+          >
+            <Card
+              shadows="hover"
+              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+              bodyStyle={{ padding: '16px 18px' }}
+            >
+              <div className="flex justify-between items-start">
+                <Space align="center" spacing="tight">
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                    <IconPlay size="default" />
+                  </div>
+                  <Text type="secondary" size="small" className="font-medium">自动化任务调度</Text>
+                </Space>
+                <Tooltip content="APScheduler 毫秒级调度中心正全天候监听的定时任务项">
+                  <IconActivity size="small" className="text-purple-500 cursor-pointer" />
+                </Tooltip>
+              </div>
+              <div className="flex items-baseline gap-1.5 my-2">
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                  {enabledTaskCount}
+                </span>
+                <span className="text-xs font-medium text-semi-color-text-2">/ {totalTaskCount} 项开启</span>
+              </div>
+              <Text type="tertiary" size="small" className="text-xs flex items-center gap-1.5 truncate">
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0"></span>
+                <span className="truncate">
+                  {enabledTaskCount > 0 ? '定时秒杀就绪' : '任务待开启'}
+                  {appointments.length > 0 ? ` · ${appointments.length}家店铺盯单` : ''}
+                </span>
+              </Text>
+            </Card>
+          </div>
         </Col>
       </Row>
 
       {/* 快捷工作流操作网格 (对齐牛马助手工作台 + 小蚕省心版极速打卡) */}
       <Row gutter={[14, 14]}>
-        <Col xs={24} lg={10}>
+        <Col xs={24} xl={10}>
           <Card
             title={
               <div className="flex justify-between items-center w-full">
@@ -788,7 +673,7 @@ export const Dashboard: React.FC = () => {
         </Col>
 
         {/* 最近执行流水与监控 */}
-        <Col xs={24} lg={14}>
+        <Col xs={24} xl={14}>
           <Card
             title={
               <div className="flex justify-between items-center w-full">

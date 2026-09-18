@@ -356,14 +356,32 @@ export const Automation: React.FC = () => {
 
   const currentAccount = accounts.find((a) => a.key === currentAccountKey);
 
+  const accountsRef = useRef(accounts);
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
+  const accountKeys = useMemo(() => accounts.map((a) => a.key).join(','), [accounts]);
+
+  const lastAutomationSignatureRef = useRef<string>('');
+  const inFlightAutomationRef = useRef<boolean>(false);
+
   // 拉取所有账号的任务列表
-  const fetchAllTasks = useCallback(async () => {
-    if (accounts.length === 0) return;
+  const fetchAllTasks = useCallback(async (force = false) => {
+    if (!accountKeys) return;
+    const accs = accountsRef.current;
+    if (accs.length === 0) return;
+    if (!force && lastAutomationSignatureRef.current === accountKeys) {
+      return;
+    }
+    if (inFlightAutomationRef.current) return;
+    inFlightAutomationRef.current = true;
+    lastAutomationSignatureRef.current = accountKeys;
+
     setLoading(true);
     try {
       const map: Record<string, TaskItem[]> = {};
       await Promise.all(
-        accounts.map(async (acc) => {
+        accs.map(async (acc) => {
           try {
             const res = await api.getTasks(acc.key);
             if (res.ok) {
@@ -376,11 +394,13 @@ export const Automation: React.FC = () => {
       );
       setAccountTasksMap(map);
     } catch (e) {
+      lastAutomationSignatureRef.current = '';
       Toast.error('拉取任务列表失败');
     } finally {
+      inFlightAutomationRef.current = false;
       setLoading(false);
     }
-  }, [accounts]);
+  }, [accountKeys]);
 
   useEffect(() => {
     fetchAllTasks();
@@ -568,7 +588,7 @@ export const Automation: React.FC = () => {
   // 保存快捷时间
   const handleSaveQuickTime = async () => {
     if (!timeEditingTask) return;
-    const val = editingTimeValue.trim();
+    const val = (editingTimeValue || '').trim();
     if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(val)) {
       Toast.warning('时间格式为 24小时制 HH:mm (例如: 09:30 或 22:05)');
       return;
@@ -774,7 +794,7 @@ export const Automation: React.FC = () => {
             theme="light"
             type="tertiary"
             icon={<IconRefresh />}
-            onClick={fetchAllTasks}
+            onClick={() => fetchAllTasks(true)}
           >
             刷新状态
           </Button>

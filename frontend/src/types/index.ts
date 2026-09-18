@@ -282,6 +282,8 @@ export interface SystemSettings {
   notify_on_grab: boolean;
   notify_on_appoint: boolean;
   notify_on_spike: boolean;
+  // 位置服务与天地图 Web API (tianditu.gov.cn)
+  tianditu_key?: string;
 }
 
 export interface NotifyTestResult {
@@ -289,5 +291,113 @@ export interface NotifyTestResult {
   channel: string;
   message: string;
   errors?: string[];
+}
+
+export interface UserCardItem {
+  id: number;
+  card: {
+    id: number;
+    card_type?: number;
+    name: string;
+    desc: string;
+    pic?: string;
+  };
+  expire_time: number;
+  created_at?: number;
+  status?: number;
+  key_id?: number;
+}
+
+export interface UserRedPackItem {
+  user_red_pack_id: number;
+  name: string;
+  info: string;
+  value_num: number; // 单位：分
+  reward_num: number; // 单位：分
+  threshold_num: number; // 单位：分
+  begin_time: number;
+  end_time: number;
+  type?: number;
+  tag?: string;
+  icon?: string;
+  limit?: {
+    platform_items?: number[];
+    bwc_types?: number[];
+    is_not_threshold?: boolean;
+    valid_time_frame_lower?: string;
+    valid_time_frame_upper?: string;
+    bwc_platforms?: number[];
+  };
+}
+
+export interface AccountDetailData {
+  ok: boolean;
+  account: Account;
+  user_info?: {
+    silk_id?: number;
+    nickname?: string;
+    avatar?: string;
+    phone?: string;
+    real_name?: string;
+    silk?: number;
+    withdrawing?: number;
+    withdraw_total?: number;
+    completed_number?: number;
+    register_time?: number;
+    alipay_account?: string;
+    if_bind_wxid?: boolean;
+    if_auto_audit?: boolean;
+    vip_level_info?: {
+      new_level?: number;
+      score?: number;
+      next_level_score?: number;
+      current_level_score?: number;
+      is_plus?: boolean;
+      expired_at?: number;
+    };
+  };
+  task_info?: {
+    yb_point?: number;
+    unreceived_points?: number;
+    exchanged_yb_point?: number;
+  };
+  card_stats: {
+    can_use_number: number;
+    expiring_soon_number: number;
+  };
+  cards: UserCardItem[];
+  redpack_stats: {
+    num: number;
+  };
+  redpacks: UserRedPackItem[];
+}
+
+export interface LocationCandidate {
+  city_code: number;
+  city_name: string;
+  province?: string;
+  district_name?: string;
+  town_name?: string;
+  poi?: string;
+  short_name: string;
+  full_address: string;
+  latitude: string;
+  longitude: string;
+  source?: string;
+}
+
+export interface LocationSearchResult {
+  ok: boolean;
+  keyword: string;
+  candidates: LocationCandidate[];
+  city_code?: number;
+  city_name?: string;
+  district_name?: string;
+  town_name?: string;
+  short_name?: string;
+  full_address?: string;
+  latitude?: string;
+  longitude?: string;
+  source?: string;
 }
 

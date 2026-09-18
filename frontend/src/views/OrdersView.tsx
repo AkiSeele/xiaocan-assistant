@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Card,
   Table,
@@ -6,106 +6,148 @@ import {
   Tag,
   Button,
   Space,
-  Modal,
-  Select,
   Toast,
   Tabs,
   TabPane,
   Avatar,
-  Popconfirm,
   Input,
   RadioGroup,
   Radio,
-  Row,
-  Col,
-  Empty,
-  Tooltip
+  Empty
 } from '@douyinfe/semi-ui';
-import { useGSAP, animateStaggerEnter } from '../utils/animations';
+import { gsap, useGSAP } from '../utils/animations';
 
 import type { ColumnProps } from '@douyinfe/semi-ui/lib/es/table';
 import {
   IconRefresh,
   IconCopy,
-  IconSearch,
-  IconPlus,
-  IconDelete
+  IconSearch
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
-import type { Order, OrderStats } from '../types';
+import type { Order } from '../types';
 
 const { Title, Text } = Typography;
 
+const getConditionTagColor = (condition?: string): 'green' | 'cyan' | 'blue' | 'amber' | 'grey' => {
+  if (!condition) return 'green';
+  const c = condition.trim();
+  if (c.includes('无需') || c.includes('免评')) {
+    return 'green';
+  }
+  if (c.includes('用餐反馈') || c.includes('反馈')) {
+    return 'cyan';
+  }
+  if (c.includes('随心')) {
+    return 'blue';
+  }
+  if (c.includes('图文') || c.includes('好评') || c.includes('字') || c.includes('图')) {
+    return 'amber';
+  }
+  return 'cyan';
+};
+
 export const OrdersView: React.FC = () => {
-  const { currentAccountKey, accounts, setActiveTab } = useAppStore();
-  const ordersRef = useRef<HTMLDivElement>(null);
+  const { currentAccountKey, accounts, setActiveTab, activeTab } = useAppStore();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const [tableScrollY, setTableScrollY] = useState<number>(460);
 
   const [orders, setOrders] = useState<Order[]>([]);
-  const [stats, setStats] = useState<OrderStats>({
-
-    total_orders: 0,
-    completed_orders: 0,
-    pending_orders: 0,
-    total_rebate: 0,
-    pending_rebate: 0,
-    total_spent: 0
-  });
   const [loading, setLoading] = useState(false);
   const [activeStatusTab, setActiveStatusTab] = useState<string>('all');
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
 
-  // 提交外卖单号核销弹窗
-  const [submitModalVisible, setSubmitModalVisible] = useState(false);
-  const [currentSubmittingOrder, setCurrentSubmittingOrder] = useState<Order | null>(null);
-  const [platformOrderIdInput, setPlatformOrderIdInput] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  // 动态自适应屏幕高度计算：消除外层滚动条，使表格撑满视口剩余空间
+  const updateTableHeight = useCallback(() => {
+    if (!tableContainerRef.current) return;
+    const targetEl = tableContainerRef.current;
+    const rect = targetEl.getBoundingClientRect();
+    const headerEl = targetEl.querySelector('.semi-table-header') as HTMLElement;
+    const paginationEl = targetEl.querySelector('.semi-table-pagination-outer') as HTMLElement;
+    const headerH = headerEl ? headerEl.offsetHeight : 44;
+    const paginationH = paginationEl ? paginationEl.offsetHeight : 48;
 
-  // 手动登记新订单弹窗
-  const [createModalVisible, setCreateModalVisible] = useState(false);
-  const [newStoreName, setNewStoreName] = useState('');
-  const [newPlatform, setNewPlatform] = useState<'meituan' | 'eleme' | 'jingdong'>('meituan');
-  const [newOrderMoney, setNewOrderMoney] = useState<number>(30);
-  const [newRebateMoney, setNewRebateMoney] = useState<number>(18);
-  const [newPlatformOrderId, setNewPlatformOrderId] = useState('');
-  const [newCondition, setNewCondition] = useState('无需评价');
+    let calculated = 0;
+    if (targetEl.clientHeight > 0) {
+      calculated = targetEl.clientHeight - headerH - paginationH;
+    } else {
+      const bottomReserve = headerH + paginationH + 25;
+      calculated = window.innerHeight - rect.top - bottomReserve;
+    }
+    setTableScrollY(Math.max(260, Math.floor(calculated)));
+  }, []);
 
-  const fetchOrders = async (kw?: string) => {
+  useEffect(() => {
+    updateTableHeight();
+    const rafId = requestAnimationFrame(updateTableHeight);
+    const timer = setTimeout(updateTableHeight, 60);
+
+    const handleResize = () => {
+      requestAnimationFrame(updateTableHeight);
+    };
+    window.addEventListener('resize', handleResize);
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        requestAnimationFrame(updateTableHeight);
+      });
+      if (containerRef.current) ro.observe(containerRef.current);
+      if (tableContainerRef.current) ro.observe(tableContainerRef.current);
+    }
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      clearTimeout(timer);
+      window.removeEventListener('resize', handleResize);
+      ro?.disconnect();
+    };
+  }, [updateTableHeight]);
+
+  useEffect(() => {
+    if (activeTab === 'orders') {
+      updateTableHeight();
+    }
+  }, [activeTab, updateTableHeight]);
+
+  const lastOrdersSignatureRef = useRef<string>('');
+  const inFlightOrdersRef = useRef<boolean>(false);
+
+  const fetchOrders = async (kw?: string, force = false) => {
     if (accounts.length === 0) {
       setOrders([]);
-      setStats({
-        total_orders: 0,
-        completed_orders: 0,
-        pending_orders: 0,
-        total_rebate: 0,
-        pending_rebate: 0,
-        total_spent: 0
-      });
       return;
     }
-    const keywordToSearch = typeof kw === 'string' ? kw : searchKeyword.trim();
+    const keywordToSearch = typeof kw === 'string' ? kw.trim() : (searchKeyword || '').trim();
+    const effectiveKey = currentAccountKey || accounts[0]?.key || '';
+    const queryKey = `${effectiveKey}_${activeStatusTab}_${platformFilter}_${keywordToSearch}`;
+
+    if (!force && lastOrdersSignatureRef.current === queryKey) {
+      return;
+    }
+    if (inFlightOrdersRef.current) return;
+    inFlightOrdersRef.current = true;
+    lastOrdersSignatureRef.current = queryKey;
+
     setLoading(true);
     try {
-      const [ordersRes, statsRes] = await Promise.all([
-        api.getOrders({
-          account_key: currentAccountKey || undefined,
-          status: activeStatusTab,
-          platform: platformFilter,
-          keyword: keywordToSearch
-        }),
-        api.getOrderStats(currentAccountKey || undefined)
-      ]);
+      const ordersRes = await api.getOrders({
+        account_key: effectiveKey || undefined,
+        status: activeStatusTab,
+        platform: platformFilter,
+        keyword: keywordToSearch
+      });
 
       if (ordersRes.ok) {
         setOrders(ordersRes.orders || []);
       }
-      if (statsRes.ok && statsRes.stats) {
-        setStats(statsRes.stats);
-      }
     } catch (e) {
+      lastOrdersSignatureRef.current = '';
       Toast.error('拉取订单列表失败');
     } finally {
+      inFlightOrdersRef.current = false;
       setLoading(false);
     }
   };
@@ -116,11 +158,18 @@ export const OrdersView: React.FC = () => {
 
   useGSAP(
     () => {
-      if (ordersRef.current) {
-        animateStaggerEnter(ordersRef.current, '.gsap-order-card', 0.03);
+      if (containerRef.current && containerRef.current.querySelector('.gsap-order-fade')) {
+        gsap.from('.gsap-order-fade', {
+          y: 10,
+          autoAlpha: 0,
+          duration: 0.3,
+          stagger: 0.05,
+          ease: 'power2.out',
+          clearProps: 'all',
+        });
       }
     },
-    { scope: ordersRef, dependencies: [activeStatusTab, platformFilter] }
+    { scope: containerRef, dependencies: [activeStatusTab, platformFilter] }
   );
 
   // 复制文本快捷方法
@@ -129,75 +178,12 @@ export const OrdersView: React.FC = () => {
     Toast.success(`${label}已复制到剪贴板`);
   };
 
-  // 打开提交单号弹窗
-  const handleOpenSubmitModal = (order: Order) => {
-    setCurrentSubmittingOrder(order);
-    setPlatformOrderIdInput(order.platform_order_id || '');
-    setSubmitModalVisible(true);
-  };
-
-  // 确认提交外卖单号
-  const handleConfirmSubmitPlatformId = async () => {
-    if (!currentSubmittingOrder) return;
-    const cleanId = platformOrderIdInput.trim();
-    if (!cleanId) {
-      Toast.warning('请输入有效的美团或饿了么外卖订单号');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const res = await api.submitPlatformOrderId(currentSubmittingOrder.id, cleanId);
-      if (res.ok) {
-        Toast.success('外卖单号已提交，小蚕平台审核中！预计 2~24 小时返利到账');
-        setSubmitModalVisible(false);
-        fetchOrders();
-      } else {
-        Toast.error(res.message || '提交失败');
-      }
-    } catch (e) {
-      Toast.error('提交外卖单号失败');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // 确认手动登记新订单
-  const handleCreateOrder = async () => {
-    if (!newStoreName.trim()) {
-      Toast.warning('请输入店铺名称');
-      return;
-    }
-    try {
-      await api.createOrder({
-        account_key: currentAccountKey || (accounts[0]?.key ?? 'acc_default'),
-        store_name: newStoreName.trim(),
-        platform: newPlatform,
-        order_money: Number(newOrderMoney) || 0,
-        rebate_money: Number(newRebateMoney) || 0,
-        platform_order_id: newPlatformOrderId.trim(),
-        status: newPlatformOrderId.trim() ? 'auditing' : 'pending',
-        condition: newCondition
-      });
-      Toast.success('新霸王餐订单已成功登记！');
-      setCreateModalVisible(false);
-      setNewStoreName('');
-      setNewPlatformOrderId('');
-      fetchOrders();
-    } catch (e) {
-      Toast.error('创建订单失败');
-    }
-  };
-
-  // 删除订单
-  const handleDeleteOrder = async (id: number) => {
-    try {
-      await api.deleteOrder(id);
-      Toast.success('订单记录已删除');
-      fetchOrders();
-    } catch (e) {
-      Toast.error('删除订单失败');
-    }
+  const DEFAULT_PLATFORM_ICONS: Record<string, string> = {
+    jingdong: 'https://img10.360buyimg.com/imagetools/jfs/t1/282159/28/8442/32950/67e10a0dFb8e53ae1/3a4d405ef2b69aff.jpg',
+    jd: 'https://img10.360buyimg.com/imagetools/jfs/t1/282159/28/8442/32950/67e10a0dFb8e53ae1/3a4d405ef2b69aff.jpg',
+    eleme: 'https://cube.elemecdn.com/8/FF/D6D23A46B485F85152E1F9A855510jpg.jpg',
+    taobao: 'https://cube.elemecdn.com/8/FF/D6D23A46B485F85152E1F9A855510jpg.jpg',
+    meituan: 'http://p0.meituan.net/business/cf047871536dfa726936dfdc834b23c7211376.jpg'
   };
 
   const getPlatformBadge = (plat?: string) => {
@@ -217,12 +203,13 @@ export const OrdersView: React.FC = () => {
       width: 340,
       render: (name: string, row?: Order) => {
         const platInfo = getPlatformBadge(row?.platform);
+        const avatarSrc = row?.store_icon || DEFAULT_PLATFORM_ICONS[row?.platform || 'meituan'];
         return (
           <div className="flex items-start gap-3 max-w-[340px]">
             <Avatar
               size="medium"
               shape="square"
-              src={row?.store_icon || undefined}
+              src={avatarSrc}
               color={platInfo.avatarColor}
               className="flex-shrink-0"
             >
@@ -337,17 +324,9 @@ export const OrdersView: React.FC = () => {
                     onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
                   />
                 </div>
-              ) : row?.status === 'pending' ? (
-                <Button
-                  theme="solid"
-                  type="warning"
-                  size="small"
-                  className="mt-1 text-xs"
-                  onClick={() => row && handleOpenSubmitModal(row)}
-                >
-                  点击填写外卖单号
-                </Button>
-              ) : null}
+              ) : (
+                <span className="text-semi-color-text-3">未绑定外卖单号</span>
+              )}
             </div>
           </div>
         );
@@ -356,73 +335,42 @@ export const OrdersView: React.FC = () => {
     {
       title: '评价门槛',
       dataIndex: 'condition',
-      width: 120,
-      render: (cond: string) => (
-        <Tag color={cond === '无需评价' ? 'green' : 'cyan'} size="small">
-          {cond || '无需评价'}
-        </Tag>
-      ),
+      width: 140,
+      render: (cond: string) => {
+        const cleanCond = String(cond || '无需评价')
+          .replace(/[（(].*?需含字含图.*?[）)]/g, '')
+          .replace(/[（(]需含字含图[）)]/g, '')
+          .trim() || '无需评价';
+        return (
+          <Tag color={getConditionTagColor(cleanCond)} size="small">
+            {cleanCond}
+          </Tag>
+        );
+      },
     },
     {
       title: '下单时间',
       dataIndex: 'created_at',
-      width: 170,
+      width: 180,
       render: (timeStr: string) => (
         <Text size="small" type="secondary">{timeStr}</Text>
       ),
-    },
-    {
-      title: '操作',
-      dataIndex: 'actions',
-      width: 150,
-      fixed: 'right',
-      render: (_: any, row?: Order) => (
-        <Space>
-          {(row?.status === 'pending' || row?.status === 'auditing') && (
-            <Button
-              theme="borderless"
-              type="primary"
-              size="small"
-              onClick={() => row && handleOpenSubmitModal(row)}
-            >
-              {row?.platform_order_id ? '修改单号' : '核销提交'}
-            </Button>
-          )}
-          <Popconfirm
-            title="确定删除此订单记录？"
-            content="删除后将无法通过助手自动追踪该订单的返利到账状态。"
-            okType="danger"
-            okText="确定删除"
-            cancelText="取消"
-            onConfirm={() => row && handleDeleteOrder(row.id)}
-          >
-            <Tooltip content="删除订单记录">
-              <Button
-                theme="borderless"
-                type="danger"
-                size="small"
-                icon={<IconDelete />}
-              />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
-    },
+    }
   ];
 
   if (accounts.length === 0) {
     return (
-      <div className="w-full">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-5">
+      <div className="w-full flex flex-col h-full min-h-0 space-y-3">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shrink-0">
           <div>
-            <Title heading={3}>我的霸王餐订单与返利</Title>
-            <Text type="secondary">实时跟踪已抢霸王餐状态、外卖单号核销与返利到账明细</Text>
+            <Title heading={3} className="!text-lg md:!text-xl font-bold">我的霸王餐订单与返利</Title>
+            <Text type="secondary" size="small">实时跟踪已抢霸王餐状态与返利到账明细</Text>
           </div>
         </div>
-        <Card className="rounded-xl border border-semi-color-border py-16 flex flex-col items-center justify-center text-center bg-semi-color-bg-0">
+        <Card className="flex-1 min-h-0 rounded-xl border border-semi-color-border py-16 flex flex-col items-center justify-center text-center bg-semi-color-bg-0">
           <Empty
             title="当前未登录或未托管小蚕账号"
-            description="查看已抢霸王餐订单、核销外卖单号与返利明细需要真实小蚕账号凭证。当前已退出或无登录账号，系统已停止拉取任何订单数据。"
+            description="查看已抢霸王餐订单与返利明细需要真实小蚕账号凭证。当前已退出或无登录账号，系统已停止拉取任何订单数据。"
           >
             <Button
               theme="solid"
@@ -439,253 +387,154 @@ export const OrdersView: React.FC = () => {
   }
 
   return (
-    <div ref={ordersRef} className="w-full">
+    <div ref={containerRef} className="w-full flex flex-col h-full min-h-0 space-y-3">
+      {/* 注入表格高度自适应与分页规范样式 */}
+      <style>{`
+        .orders-table-container .semi-table-body {
+          height: var(--table-scroll-y) !important;
+          min-height: var(--table-scroll-y) !important;
+          max-height: var(--table-scroll-y) !important;
+          overflow-y: auto !important;
+          contain: content;
+          will-change: transform;
+          transform: translateZ(0);
+          -webkit-overflow-scrolling: touch;
+        }
+        .orders-table-container .semi-table-placeholder {
+          min-height: var(--table-scroll-y) !important;
+          display: flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+        }
+        .orders-table-container .semi-spin-wrapper {
+          display: flex !important;
+          flex-direction: column !important;
+          align-items: center !important;
+          justify-content: center !important;
+          position: absolute !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          width: auto !important;
+          height: auto !important;
+          z-index: 10 !important;
+        }
+        .orders-table-container .semi-table-pagination-outer {
+          padding: 10px 16px !important;
+          margin: 0 !important;
+          margin-top: auto !important;
+          flex-shrink: 0 !important;
+          border-top: 1px solid var(--semi-color-border) !important;
+          display: flex !important;
+          align-items: center !important;
+          justify-content: space-between !important;
+          background-color: var(--semi-color-bg-0) !important;
+        }
+      `}</style>
+
       {/* 头部标题与操作 */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-5">
+      <div className="gsap-order-fade flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shrink-0">
         <div>
-          <Title heading={3}>我的霸王餐订单与返利</Title>
-          <Text type="secondary">实时跟踪已抢霸王餐状态、外卖单号核销与返利到账明细</Text>
+          <Title heading={3} className="!text-lg md:!text-xl font-bold">我的霸王餐订单与返利</Title>
+          <Text type="secondary" size="small">实时跟踪已抢霸王餐状态与返利到账明细</Text>
         </div>
 
-        <Space>
-          <Button
-            icon={<IconRefresh spin={loading} />}
-            loading={loading}
-            onClick={() => fetchOrders()}
-          >
-            刷新订单
-          </Button>
-          <Button
-            theme="solid"
-            type="primary"
-            icon={<IconPlus />}
-            onClick={() => setCreateModalVisible(true)}
-          >
-            登记新订单
-          </Button>
-        </Space>
+        <Button
+          icon={<IconRefresh spin={loading} />}
+          loading={loading}
+          onClick={() => fetchOrders(undefined, true)}
+        >
+          刷新订单
+        </Button>
       </div>
 
-      {/* 收益看板统计指标 */}
-      <Row gutter={[16, 16]} className="mb-5">
-        <Col xs={24} sm={12} lg={6}>
-          <Card className="gsap-order-card rounded-xl border border-semi-color-border semi-card-elevate bg-gradient-to-br from-green-50/50 via-transparent to-transparent dark:from-green-950/20 shadow-xs">
-            <Text type="secondary" size="small">累计已到账返利</Text>
-            <div className="text-2xl font-bold text-semi-color-success mt-1 font-mono">
-              ¥ {stats.total_rebate.toFixed(2)}
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block">已直接抵扣或提现</Text>
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card className="gsap-order-card rounded-xl border border-semi-color-border semi-card-elevate bg-gradient-to-br from-amber-50/50 via-transparent to-transparent dark:from-amber-950/20 shadow-xs">
-            <Text type="secondary" size="small">待入账返利</Text>
-            <div className="text-2xl font-bold text-semi-color-warning mt-1 font-mono">
-              ¥ {stats.pending_rebate.toFixed(2)}
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block">{stats.pending_orders} 笔审核/待提交中</Text>
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card className="gsap-order-card rounded-xl border border-semi-color-border semi-card-elevate shadow-xs">
-            <Text type="secondary" size="small">已完成霸王餐单数</Text>
-            <div className="text-2xl font-bold text-semi-color-text-0 mt-1">
-              {stats.completed_orders} <span className="text-sm font-normal text-semi-color-text-2">单</span>
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block">核销成功率 100%</Text>
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card className="gsap-order-card rounded-xl border border-semi-color-border semi-card-elevate shadow-xs">
-            <Text type="secondary" size="small">累计外卖消费总额</Text>
-            <div className="text-2xl font-bold text-semi-color-text-0 mt-1 font-mono">
-              ¥ {stats.total_spent.toFixed(2)}
-            </div>
-            <Text type="tertiary" size="small" className="mt-1 block">综合实付门槛金额</Text>
-          </Card>
-        </Col>
-      </Row>
+      {/* 状态分类与平台过滤控制栏 */}
+      <div className="gsap-order-fade flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shrink-0">
+        <Tabs
+          type="button"
+          activeKey={activeStatusTab}
+          onChange={(k) => setActiveStatusTab(String(k))}
+          className="shrink-0"
+        >
+          <TabPane tab="全部" itemKey="all" />
+          <TabPane tab="待上传" itemKey="pending" />
+          <TabPane tab="审核中" itemKey="auditing" />
+          <TabPane tab="已完成" itemKey="completed" />
+          <TabPane tab="已驳回" itemKey="rejected" />
+          <TabPane tab="已取消" itemKey="cancelled" />
+        </Tabs>
 
+        <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+          <RadioGroup
+            type="button"
+            value={platformFilter}
+            onChange={(e) => setPlatformFilter(e.target.value)}
+          >
+            <Radio value="all">全部</Radio>
+            <Radio value="meituan">美团</Radio>
+            <Radio value="eleme">饿了么</Radio>
+            <Radio value="jingdong">京东</Radio>
+          </RadioGroup>
 
-      {/* 搜索与工具栏 */}
-      <Card className="rounded-xl mb-4 p-3 border border-semi-color-border">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div>
-              <Text type="secondary" size="small" className="mr-2">外卖平台:</Text>
-              <RadioGroup
-                type="button"
-                value={platformFilter}
-                onChange={(e) => setPlatformFilter(e.target.value)}
-              >
-                <Radio value="all">全部</Radio>
-                <Radio value="meituan">美团</Radio>
-                <Radio value="eleme">饿了么</Radio>
-                <Radio value="jingdong">京东</Radio>
-              </RadioGroup>
-            </div>
-          </div>
+          <Input
+            prefix={<IconSearch />}
+            placeholder="搜索店铺名、单号..."
+            value={searchKeyword}
+            onChange={(val) => setSearchKeyword(val || '')}
+            onEnterPress={() => fetchOrders()}
+            showClear
+            onClear={() => {
+              setSearchKeyword('');
+              fetchOrders('');
+            }}
+            style={{ width: 220 }}
+          />
+        </div>
+      </div>
 
-          <div className="w-full sm:w-72">
-            <Input
-              prefix={<IconSearch />}
-              placeholder="搜索店铺名、单号..."
-              value={searchKeyword}
-              onChange={(val) => setSearchKeyword(val)}
-              onEnterPress={() => fetchOrders()}
-              showClear
-              onClear={() => {
-                setSearchKeyword('');
-                fetchOrders('');
-              }}
-            />
-          </div>
+      {/* 主体表格卡片：撑满视口垂直剩余高度，杜绝超出页面滚动 */}
+      <Card
+        className="gsap-order-fade flex-1 min-h-0 flex flex-col rounded-xl border border-semi-color-border shadow-xs overflow-hidden bg-semi-color-bg-0"
+        bodyStyle={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: 0 }}
+      >
+        <div
+          ref={tableContainerRef}
+          className="orders-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
+          style={{
+            ['--table-scroll-y' as any]: `${tableScrollY}px`
+          }}
+        >
+          <Table
+            rowKey="id"
+            columns={columns}
+            dataSource={orders}
+            loading={loading}
+            pagination={{
+              pageSize: 20,
+              showSizeChanger: true,
+              pageSizeOpts: [10, 20, 50, 100],
+            }}
+            scroll={{ y: tableScrollY, x: 1000 }}
+            size="middle"
+            empty={
+              loading ? (
+                <div className="py-20 text-center flex flex-col items-center justify-center m-auto">
+                  <div className="text-sm font-medium text-semi-color-text-0 mt-8">
+                    正在同步霸王餐订单记录...
+                  </div>
+                </div>
+              ) : (
+                <div className="py-16 text-center flex flex-col items-center justify-center m-auto">
+                  <Empty
+                    title="暂无匹配的霸王餐订单记录"
+                    description="已抢到的霸王餐订单将自动同步展示于此，支持返利明细与审核进度实时追踪"
+                  />
+                </div>
+              )
+            }
+          />
         </div>
       </Card>
-
-      {/* 订单列表 Tabs */}
-      <Tabs activeKey={activeStatusTab} onChange={(k) => setActiveStatusTab(String(k))}>
-        <TabPane tab="全部" itemKey="all" />
-        <TabPane tab="待上传" itemKey="pending" />
-        <TabPane tab="审核中" itemKey="auditing" />
-        <TabPane tab="已完成" itemKey="completed" />
-        <TabPane tab="已驳回" itemKey="rejected" />
-        <TabPane tab="已取消" itemKey="cancelled" />
-      </Tabs>
-
-      <Card className="rounded-xl mt-3 shadow-sm border border-semi-color-border">
-        <Table
-          columns={columns}
-          dataSource={orders}
-          loading={loading}
-          pagination={{ pageSize: 10 }}
-          scroll={{ y: 'calc(100vh - 430px)', x: 1050 }}
-          empty={
-            <div className="py-12 text-center text-semi-color-text-3">
-              暂无匹配的霸王餐订单记录
-            </div>
-          }
-        />
-      </Card>
-
-      {/* 提交外卖单号核销模态框 */}
-      <Modal
-        title="提交外卖单号核销返利"
-        visible={submitModalVisible}
-        onOk={handleConfirmSubmitPlatformId}
-        onCancel={() => setSubmitModalVisible(false)}
-        confirmLoading={submitting}
-        okText="确认提交并进入审核"
-        cancelText="取消"
-        width={480}
-      >
-        <div className="space-y-4 py-2">
-          <div className="bg-semi-color-fill-0 p-3 rounded-lg text-sm">
-            <div className="flex justify-between mb-1">
-              <Text type="secondary">店铺名称：</Text>
-              <Text strong>{currentSubmittingOrder?.store_name}</Text>
-            </div>
-            <div className="flex justify-between mb-1">
-              <Text type="secondary">外卖平台：</Text>
-              <Text>{currentSubmittingOrder?.platform === 'meituan' ? '美团外卖' : '饿了么'}</Text>
-            </div>
-            <div className="flex justify-between">
-              <Text type="secondary">预计立返：</Text>
-              <Text className="text-semi-color-danger font-bold">¥ {currentSubmittingOrder?.rebate_money}</Text>
-            </div>
-          </div>
-
-          <div>
-            <Text strong className="block mb-1.5 text-sm">
-              外卖平台订单号（美团或饿了么）
-            </Text>
-            <Input
-              value={platformOrderIdInput}
-              placeholder="请输入外卖 App 订单详情中的 16~24 位订单编号"
-              onChange={(val) => setPlatformOrderIdInput(val)}
-            />
-            <Text type="tertiary" size="small" className="mt-1 block">
-              请打开美团或饿了么 App，在「我的订单」复制对应的订单编号后粘贴至此处。
-            </Text>
-          </div>
-        </div>
-      </Modal>
-
-      {/* 手动登记新订单模态框 */}
-      <Modal
-        title="登记新霸王餐订单"
-        visible={createModalVisible}
-        onOk={handleCreateOrder}
-        onCancel={() => setCreateModalVisible(false)}
-        okText="保存订单"
-        cancelText="取消"
-        width={500}
-      >
-        <div className="space-y-3 py-1">
-          <div>
-            <Text strong className="block mb-1 text-sm">店铺名称</Text>
-            <Input
-              value={newStoreName}
-              placeholder="例如：肯德基（首义路餐厅）"
-              onChange={(val) => setNewStoreName(val)}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Text strong className="block mb-1 text-sm">外卖平台</Text>
-              <Select
-                value={newPlatform}
-                style={{ width: '100%' }}
-                onChange={(val) => setNewPlatform(val as any)}
-              >
-                <Select.Option value="meituan">美团外卖</Select.Option>
-                <Select.Option value="eleme">饿了么</Select.Option>
-                <Select.Option value="jingdong">京东外卖</Select.Option>
-              </Select>
-            </div>
-            <div>
-              <Text strong className="block mb-1 text-sm">评价要求</Text>
-              <Select
-                value={newCondition}
-                style={{ width: '100%' }}
-                onChange={(val) => setNewCondition(String(val))}
-              >
-                <Select.Option value="无需评价">无需评价</Select.Option>
-                <Select.Option value="图文好评">图文好评</Select.Option>
-              </Select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Text strong className="block mb-1 text-sm">门槛实付金额 (¥)</Text>
-              <Input
-                value={String(newOrderMoney)}
-                placeholder="30"
-                onChange={(val) => setNewOrderMoney(Number(val) || 0)}
-              />
-            </div>
-            <div>
-              <Text strong className="block mb-1 text-sm">返利金额 (¥)</Text>
-              <Input
-                value={String(newRebateMoney)}
-                placeholder="18"
-                onChange={(val) => setNewRebateMoney(Number(val) || 0)}
-              />
-            </div>
-          </div>
-
-          <div>
-            <Text strong className="block mb-1 text-sm">外卖单号 (选填，已下单可直接填入)</Text>
-            <Input
-              value={newPlatformOrderId}
-              placeholder="例如：2609148819230491"
-              onChange={(val) => setNewPlatformOrderId(val)}
-            />
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 };

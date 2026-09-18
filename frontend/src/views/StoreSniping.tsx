@@ -17,29 +17,30 @@ import {
   Input,
   RadioGroup,
   Radio,
-  Checkbox,
-  Divider,
   Empty,
   Spin,
   Tooltip,
   Banner,
-  Switch
+  Switch,
+  Badge
 } from '@douyinfe/semi-ui';
 import type { ColumnProps } from '@douyinfe/semi-ui/lib/es/table';
 import {
   IconRefresh,
-  IconMapPin,
   IconSearch,
-  IconEdit,
-  IconDesktop,
   IconArrowUp,
-  IconClock
+  IconClock,
+  IconAlertCircle,
+  IconTicketCode,
+  IconGift,
+  IconFastForward,
+  IconChevronRight
 } from '@douyinfe/semi-icons';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
-import type { StoreItem, StorePromotion, StoreAppointment } from '../types';
+import type { StoreItem, StorePromotion, StoreAppointment, AccountDetailData } from '../types';
 
 gsap.registerPlugin(useGSAP);
 
@@ -50,88 +51,34 @@ const cleanEmoji = (text?: string): string => {
   return text.replace(/[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}]|[\u{2300}-\u{23FF}]|[\u{2B50}-\u{2B55}]|[\u{FE00}-\u{FE0F}]|[\u{200D}]/gu, '').trim();
 };
 
-interface DistrictPreset {
-  name: string;
-  lng: number;
-  lat: number;
-}
-
-interface CityPreset {
-  code: number;
-  name: string;
-  districts: DistrictPreset[];
-}
-
-const CITY_PRESETS: CityPreset[] = [
-  {
-    code: 420100,
-    name: '武汉',
-    districts: [
-      { name: '武昌首义 / 阅马场', lng: 114.305393, lat: 30.593099 },
-      { name: '光谷步行街 / 大悦城', lng: 114.401123, lat: 30.501432 },
-      { name: '街道口 / 群光广场', lng: 114.358241, lat: 30.528419 },
-      { name: '江汉路 / 吉庆街', lng: 114.288412, lat: 30.584321 },
-      { name: '楚河汉街 / 万达', lng: 114.341512, lat: 30.556214 },
-      { name: '汉口江滩 / 武广商圈', lng: 114.269321, lat: 30.581452 }
-    ]
-  },
-  {
-    code: 110100,
-    name: '北京',
-    districts: [
-      { name: '西单大悦城', lng: 116.373241, lat: 39.911521 },
-      { name: '三里屯太古里', lng: 116.455321, lat: 39.936214 },
-      { name: '海淀中关村 / 五道口', lng: 116.316412, lat: 39.983142 },
-      { name: '朝阳大悦城 / 青年路', lng: 116.518421, lat: 39.924312 }
-    ]
-  },
-  {
-    code: 310100,
-    name: '上海',
-    districts: [
-      { name: '徐家汇 / 美罗城', lng: 121.437412, lat: 31.196321 },
-      { name: '陆家嘴 / 东方明珠', lng: 121.506321, lat: 31.239412 },
-      { name: '南京东路 / 人民广场', lng: 121.482412, lat: 31.238412 },
-      { name: '五角场 / 大学路', lng: 121.514213, lat: 31.302142 }
-    ]
-  },
-  {
-    code: 440100,
-    name: '广州',
-    districts: [
-      { name: '天河城 / 体育西路', lng: 113.322412, lat: 23.134214 },
-      { name: '北京路步行街', lng: 113.269321, lat: 23.125412 },
-      { name: '大学城北 / 广大商业中心', lng: 113.385412, lat: 23.056321 }
-    ]
-  },
-  {
-    code: 440300,
-    name: '深圳',
-    districts: [
-      { name: '华强北商圈', lng: 114.086412, lat: 22.547321 },
-      { name: '南山科技园 / 万象天地', lng: 113.948321, lat: 22.540412 },
-      { name: '东门老街 / 罗湖万象城', lng: 114.118412, lat: 22.545214 }
-    ]
-  },
-  {
-    code: 510100,
-    name: '成都',
-    districts: [
-      { name: '春熙路 / 太古里', lng: 104.082412, lat: 30.657321 },
-      { name: '高新区天府三街', lng: 104.067321, lat: 30.553412 },
-      { name: '建设路美食街', lng: 104.108412, lat: 30.672321 }
-    ]
-  },
-  {
-    code: 330100,
-    name: '杭州',
-    districts: [
-      { name: '西湖湖滨银泰 in77', lng: 120.163412, lat: 30.254321 },
-      { name: '滨江宝龙城', lng: 120.189321, lat: 30.183412 },
-      { name: '城西银泰城', lng: 120.103412, lat: 30.301412 }
-    ]
+export const getConditionTagColor = (condition?: string): 'green' | 'cyan' | 'blue' | 'amber' | 'grey' => {
+  if (!condition) return 'green';
+  const c = condition.trim();
+  if (c.includes('无需') || c.includes('免评')) {
+    return 'green';
   }
-];
+  if (c.includes('用餐反馈') || c.includes('反馈')) {
+    return 'cyan';
+  }
+  if (c.includes('随心')) {
+    return 'blue';
+  }
+  if (c.includes('图文') || c.includes('好评') || c.includes('字') || c.includes('图')) {
+    return 'amber';
+  }
+  return 'cyan';
+};
+
+export const getConditionShortText = (cond?: string): string => {
+  if (!cond) return '免评';
+  if (cond.includes('无需') || cond.includes('免评')) return '免评';
+  if (cond.includes('用餐反馈') || cond.includes('反馈')) return '反馈';
+  if (cond.includes('随心')) return '随心';
+  if (cond.includes('图文') || cond.includes('好评')) return '图文';
+  return cond.slice(0, 2);
+};
+
+
 
 const getPlatformBadge = (plat?: string) => {
   if (plat === 'jingdong' || plat === 'jd') {
@@ -197,22 +144,172 @@ const StoreSearchBar: React.FC<StoreSearchBarProps> = React.memo(({
   );
 });
 
+const DEFAULT_MEAL_TICKET_PIC = 'https://web.xinyifm.cn/oss/xc-backend/176526866545920fc03aff56677a51f3748e03e4df433.png';
+const DEFAULT_ADVANCE_COUPON_PIC = 'https://web.xinyifm.cn/oss/xc-backend/17757248992739a34eb5de1a242b29fd70684cd44bce8.png';
+
 export const StoreSniping: React.FC = () => {
-  const { accounts, currentAccountKey, loadAccounts, activeLocation, setActiveLocation, setActiveTab } = useAppStore();
+  const { accounts, currentAccountKey, activeLocation, setActiveTab } = useAppStore();
+  const currentAccount = useMemo(() => accounts.find(a => a.key === currentAccountKey) || accounts[0], [accounts, currentAccountKey]);
 
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [appointments, setAppointments] = useState<StoreAppointment[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTabKey, setActiveTabKey] = useState<string>('stores');
 
-  // 地址修改模态框状态
-  const [locModalVisible, setLocModalVisible] = useState(false);
-  const [editCityCode, setEditCityCode] = useState<number>(activeLocation.cityCode);
-  const [editAddressName, setEditAddressName] = useState<string>(activeLocation.addressName);
-  const [editLng, setEditLng] = useState<string>(activeLocation.longitude);
-  const [editLat, setEditLat] = useState<string>(activeLocation.latitude);
-  const [saveToAccountDefault, setSaveToAccountDefault] = useState(true);
-  const [locating, setLocating] = useState(false);
+  // 当前账号资产概览状态（直观展示饭票、超前抢单券、外卖红包等）
+  const [assetStats, setAssetStats] = useState<{
+    canUseCards: number;
+    expiringSoonCards: number;
+    mealTicketCount: number;
+    advanceCouponCount: number;
+    mealTicketPic: string;
+    advanceCouponPic: string;
+    redpackCount: number;
+    loading: boolean;
+  }>({
+    canUseCards: 0,
+    expiringSoonCards: 0,
+    mealTicketCount: 0,
+    advanceCouponCount: 0,
+    mealTicketPic: DEFAULT_MEAL_TICKET_PIC,
+    advanceCouponPic: DEFAULT_ADVANCE_COUPON_PIC,
+    redpackCount: 0,
+    loading: false,
+  });
+
+  // 资产明细弹窗状态
+  const [assetDetail, setAssetDetail] = useState<AccountDetailData | null>(null);
+  const [assetModalVisible, setAssetModalVisible] = useState(false);
+  const [assetModalTab, setAssetModalTab] = useState<'cards' | 'redpacks'>('cards');
+  const [cardFilterStatus, setCardFilterStatus] = useState<number>(0);
+  const [cardsLoading, setCardsLoading] = useState<boolean>(false);
+
+  // 时间戳格式化辅助函数
+  const formatTimestamp = useCallback((ts?: number | string) => {
+    if (!ts) return '长期有效';
+    const num = Number(ts);
+    if (isNaN(num) || num <= 0) return String(ts);
+    const d = new Date(num > 10000000000 ? num : num * 1000);
+    const Y = d.getFullYear();
+    const M = String(d.getMonth() + 1).padStart(2, '0');
+    const D = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return `${Y}-${M}-${D} ${h}:${m}`;
+  }, []);
+
+  // 卡券叠加聚合：同类型卡券若过期时间一致则自动叠加展示
+  const stackedCards = useMemo(() => {
+    const rawCards = assetDetail?.cards || [];
+    if (rawCards.length === 0) return [];
+
+    const map = new Map<string, { item: typeof rawCards[0]; count: number }>();
+    for (const item of rawCards) {
+      const cardType = item.card?.id || item.card?.card_type || item.card?.name || 'card';
+      const expireStr = formatTimestamp(item.expire_time);
+      const groupKey = `${cardType}_${expireStr}`;
+
+      if (map.has(groupKey)) {
+        map.get(groupKey)!.count += 1;
+      } else {
+        map.set(groupKey, { item, count: 1 });
+      }
+    }
+    return Array.from(map.values());
+  }, [assetDetail?.cards, formatTimestamp]);
+
+  const lastAssetsAccountKeyRef = useRef<string>('');
+  const inFlightAssetsRef = useRef<boolean>(false);
+
+  const fetchAccountAssets = useCallback(async (accountKey?: string, force = false) => {
+    const key = accountKey || currentAccountKey;
+    if (!key) return;
+    if (!force && lastAssetsAccountKeyRef.current === key) {
+      return;
+    }
+    if (inFlightAssetsRef.current) return;
+    inFlightAssetsRef.current = true;
+    lastAssetsAccountKeyRef.current = key;
+
+    setAssetStats(prev => ({ ...prev, loading: true }));
+    try {
+      const res = await api.getAccountDetail(key);
+      if (res && res.ok) {
+        setAssetDetail(res);
+        const rawCards = res.cards || [];
+        let mealCount = 0;
+        let advanceCount = 0;
+        let mealPic = DEFAULT_MEAL_TICKET_PIC;
+        let advancePic = DEFAULT_ADVANCE_COUPON_PIC;
+
+        for (const c of rawCards) {
+          const cname = c.card?.name || '';
+          const ctype = c.card?.card_type;
+          if (cname.includes('饭票') || ctype === 0) {
+            mealCount++;
+            if (c.card?.pic) {
+              mealPic = c.card.pic;
+            }
+          } else if (cname.includes('超前') || ctype === 1) {
+            advanceCount++;
+            if (c.card?.pic) {
+              advancePic = c.card.pic;
+            }
+          }
+        }
+
+        setAssetStats({
+          canUseCards: res.card_stats?.can_use_number ?? rawCards.length,
+          expiringSoonCards: res.card_stats?.expiring_soon_number ?? 0,
+          mealTicketCount: mealCount,
+          advanceCouponCount: advanceCount,
+          mealTicketPic: mealPic,
+          advanceCouponPic: advancePic,
+          redpackCount: res.redpack_stats?.num ?? (res.redpacks ? res.redpacks.length : 0),
+          loading: false,
+        });
+      } else {
+        setAssetStats(prev => ({ ...prev, loading: false }));
+      }
+    } catch {
+      setAssetStats(prev => ({ ...prev, loading: false }));
+    } finally {
+      inFlightAssetsRef.current = false;
+    }
+  }, [currentAccountKey]);
+
+  const handleChangeCardStatus = useCallback(async (status: number) => {
+    if (!currentAccountKey) return;
+    setCardFilterStatus(status);
+    setCardsLoading(true);
+    try {
+      const res = await api.getAccountCards(currentAccountKey, status);
+      if (res.ok && assetDetail) {
+        setAssetDetail(prev => prev ? {
+          ...prev,
+          cards: res.cards || []
+        } : null);
+      }
+    } catch {
+      Toast.error('切换卡券状态失败');
+    } finally {
+      setCardsLoading(false);
+    }
+  }, [currentAccountKey, assetDetail]);
+
+  const handleOpenAssetModal = useCallback((tab: 'cards' | 'redpacks') => {
+    setAssetModalTab(tab);
+    setAssetModalVisible(true);
+    if (!assetDetail && currentAccountKey) {
+      fetchAccountAssets(currentAccountKey, true);
+    }
+  }, [assetDetail, currentAccountKey, fetchAccountAssets]);
+
+  useEffect(() => {
+    if (currentAccountKey) {
+      fetchAccountAssets(currentAccountKey);
+    }
+  }, [currentAccountKey, fetchAccountAssets]);
 
   // 筛选与搜索条件
   const [platformFilter, setPlatformFilter] = useState<'all' | 'meituan' | 'eleme' | 'jingdong'>('all');
@@ -225,6 +322,7 @@ export const StoreSniping: React.FC = () => {
   // 流式触底加载状态
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [loadMoreError, setLoadMoreError] = useState(false);
   const [showBackTop, setShowBackTop] = useState(false);
 
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
@@ -232,7 +330,12 @@ export const StoreSniping: React.FC = () => {
   const brandContainerRef = useRef<HTMLDivElement | null>(null);
   const appointContainerRef = useRef<HTMLDivElement | null>(null);
   const dualContainerRef = useRef<HTMLDivElement | null>(null);
-  const [tableScrollY, setTableScrollY] = useState<number>(560);
+  const [tabScrollHeights, setTabScrollHeights] = useState<Record<string, number>>({
+    stores: 480,
+    brand_coupon: 480,
+    dual_rebate: 440,
+    appointments: 480,
+  });
   const showBackTopRef = useRef<boolean>(false);
   const scrollRafRef = useRef<number | null>(null);
   const hasMoreRef = useRef<boolean>(true);
@@ -336,54 +439,7 @@ export const StoreSniping: React.FC = () => {
     return list;
   }, [stores, isBrandCouponStore, onlyDualRebate, dualRebateStoreKeys]);
 
-  // 动态自适应屏幕高度计算：底部边距与左侧侧边栏边距保持严格一致 (24px)
-  const updateTableHeight = useCallback(() => {
-    let targetEl: HTMLElement | null = null;
-    if (activeTabKey === 'appointments') {
-      targetEl = appointContainerRef.current;
-    } else if (activeTabKey === 'brand_coupon') {
-      targetEl = brandContainerRef.current;
-    } else if (activeTabKey === 'dual_rebate') {
-      targetEl = dualContainerRef.current;
-    } else {
-      targetEl = tableContainerRef.current;
-    }
 
-    if (!targetEl) return;
-    const rect = targetEl.getBoundingClientRect();
-    // 使得卡片底部到视口底部的间距刚好等于侧边栏外边距 (24px)：
-    // stores & brand_coupon: 表头(44px) + 底部状态条(40px) + 卡片边框(1px) + 视口底距(24px) = 109px
-    // appointments: 表头(44px) + 分页器(48px) + 卡片边框(1px) + 视口底距(24px) = 117px
-    const bottomReserve = activeTabKey === 'appointments' ? 117 : 109;
-    const available = window.innerHeight - rect.top - bottomReserve;
-    setTableScrollY(Math.max(260, Math.floor(available)));
-  }, [activeTabKey]);
-
-  useEffect(() => {
-    updateTableHeight();
-    const rafId = requestAnimationFrame(updateTableHeight);
-    const timer = setTimeout(updateTableHeight, 60);
-
-    const handleResize = () => {
-      requestAnimationFrame(updateTableHeight);
-    };
-    window.addEventListener('resize', handleResize);
-
-    let ro: ResizeObserver | null = null;
-    if (mainContainerRef.current && typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => {
-        requestAnimationFrame(updateTableHeight);
-      });
-      ro.observe(mainContainerRef.current);
-    }
-
-    return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timer);
-      window.removeEventListener('resize', handleResize);
-      ro?.disconnect();
-    };
-  }, [updateTableHeight]);
 
   // 预约配置弹窗
   const [appointModalVisible, setAppointModalVisible] = useState(false);
@@ -450,6 +506,102 @@ export const StoreSniping: React.FC = () => {
     );
   }, [dualStores, deferredDualKeyword]);
 
+  // 动态自适应屏幕高度计算：使得表格与底部状态栏紧密贴合 Card 底部，消除遮挡与底部截断
+  const updateTableHeight = useCallback(() => {
+    const tabs: Array<{ key: string; ref: React.RefObject<HTMLDivElement | null> }> = [
+      { key: 'stores', ref: tableContainerRef },
+      { key: 'brand_coupon', ref: brandContainerRef },
+      { key: 'dual_rebate', ref: dualContainerRef },
+      { key: 'appointments', ref: appointContainerRef },
+    ];
+
+    let baselineContainerH = 0;
+    for (const tab of tabs) {
+      if (tab.ref.current && tab.ref.current.clientHeight > 0) {
+        baselineContainerH = tab.ref.current.clientHeight;
+        break;
+      }
+    }
+
+    const newHeights: Record<string, number> = {};
+
+    for (const tab of tabs) {
+      const el = tab.ref.current;
+      if (!el) continue;
+
+      const containerH = el.clientHeight > 0 ? el.clientHeight : baselineContainerH;
+      if (containerH <= 0) continue;
+
+      const subheaderEl = el.querySelector('.store-table-subheader') as HTMLElement;
+      const subheaderH = subheaderEl ? subheaderEl.offsetHeight : 0;
+
+      const headerEl = el.querySelector('.semi-table-header') as HTMLElement;
+      const headerH = headerEl ? headerEl.offsetHeight : 44;
+
+      const footerEl = el.querySelector('.store-table-footer') as HTMLElement;
+      const paginationEl = el.querySelector('.semi-table-pagination-outer') as HTMLElement;
+      const footerH = footerEl
+        ? footerEl.offsetHeight
+        : (paginationEl ? paginationEl.offsetHeight : (tab.key === 'appointments' ? 49 : 41));
+
+      // 精确填满卡片容器空间，配合 footer 的 margin-top: auto 实现 0 缝隙贴底
+      const available = containerH - subheaderH - headerH - footerH;
+      newHeights[tab.key] = Math.max(220, Math.floor(available));
+    }
+
+    if (Object.keys(newHeights).length > 0) {
+      setTabScrollHeights(prev => {
+        let changed = false;
+        for (const k of Object.keys(newHeights)) {
+          if (prev[k] !== newHeights[k]) {
+            changed = true;
+            break;
+          }
+        }
+        return changed ? { ...prev, ...newHeights } : prev;
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    updateTableHeight();
+    const rafId = requestAnimationFrame(updateTableHeight);
+    const timer = setTimeout(updateTableHeight, 60);
+
+    const handleResize = () => {
+      requestAnimationFrame(updateTableHeight);
+    };
+    window.addEventListener('resize', handleResize);
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        requestAnimationFrame(updateTableHeight);
+      });
+      if (mainContainerRef.current) ro.observe(mainContainerRef.current);
+      if (tableContainerRef.current) ro.observe(tableContainerRef.current);
+      if (brandContainerRef.current) ro.observe(brandContainerRef.current);
+      if (dualContainerRef.current) ro.observe(dualContainerRef.current);
+      if (appointContainerRef.current) ro.observe(appointContainerRef.current);
+    }
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      clearTimeout(timer);
+      window.removeEventListener('resize', handleResize);
+      ro?.disconnect();
+    };
+  }, [
+    updateTableHeight,
+    activeTabKey,
+    dualScanDone,
+    dualScanLoading,
+    displayedDualStores.length,
+    regularStores.length,
+    brandCouponStores.length,
+    appointments.length
+  ]);
+
   // GSAP: 遵循 gsap-skills 规范，Tab 切换纯透明度平滑淡入，完全走 GPU 合成通道无回流开销
   useGSAP(() => {
     gsap.killTweensOf('.tab-content-anim');
@@ -499,7 +651,10 @@ export const StoreSniping: React.FC = () => {
     }
   };
 
-  const fetchStores = useCallback(async (kw?: string) => {
+  const lastStoresQuerySignatureRef = useRef<string>('');
+  const inFlightStoresRef = useRef<boolean>(false);
+
+  const fetchStores = useCallback(async (kw?: string, force = false) => {
     if (accounts.length === 0) {
       setStores([]);
       setHasMore(false);
@@ -507,6 +662,15 @@ export const StoreSniping: React.FC = () => {
       return;
     }
     const keywordToSearch = kw !== undefined ? kw : activeSearchKeywordRef.current;
+    const querySignature = `${activeLocation.cityCode}_${activeLocation.longitude}_${activeLocation.latitude}_${currentAccountKey}_${platformFilter}_${conditionFilter}_${rebateTypeFilter}_${sortBy}_${keywordToSearch}`;
+
+    if (!force && lastStoresQuerySignatureRef.current === querySignature) {
+      return;
+    }
+    if (inFlightStoresRef.current) return;
+    inFlightStoresRef.current = true;
+    lastStoresQuerySignatureRef.current = querySignature;
+
     setLoading(true);
     loadingRef.current = true;
     setHasMore(true);
@@ -552,10 +716,12 @@ export const StoreSniping: React.FC = () => {
         }
       }
     } catch {
+      lastStoresQuerySignatureRef.current = '';
       Toast.error('获取店铺列表失败');
       setHasMore(false);
       hasMoreRef.current = false;
     } finally {
+      inFlightStoresRef.current = false;
       setLoading(false);
       loadingRef.current = false;
     }
@@ -568,6 +734,7 @@ export const StoreSniping: React.FC = () => {
 
     setLoadingMore(true);
     loadingMoreRef.current = true;
+    setLoadMoreError(false);
 
     try {
       const res = await api.getStores({
@@ -597,6 +764,7 @@ export const StoreSniping: React.FC = () => {
             const newOffset = res.next_offset !== undefined ? res.next_offset : (nextOffsetRef.current + 20);
             nextOffsetRef.current = newOffset;
           }
+        } else {
           setStores(prev => {
             const mergedList = [...prev];
             const identityIndexMap = new Map<string, number>();
@@ -715,7 +883,7 @@ export const StoreSniping: React.FC = () => {
         hasMoreRef.current = false;
       }
     } catch {
-      // ignore
+      setLoadMoreError(true);
     } finally {
       setLoadingMore(false);
       loadingMoreRef.current = false;
@@ -842,24 +1010,38 @@ export const StoreSniping: React.FC = () => {
     setSearchKeyword(kw);
     setActiveSearchKeyword(kw);
     activeSearchKeywordRef.current = kw;
-    fetchStores(kw);
+    fetchStores(kw, true);
   }, [searchKeyword, fetchStores]);
 
   const handleClearSearch = useCallback(() => {
     setSearchKeyword('');
     setActiveSearchKeyword('');
     activeSearchKeywordRef.current = '';
-    fetchStores('');
+    fetchStores('', true);
   }, [fetchStores]);
 
-  const fetchAppointments = useCallback(async () => {
+  const lastAppointmentsKeyRef = useRef<string>('');
+  const inFlightAppointmentsRef = useRef<boolean>(false);
+
+  const fetchAppointments = useCallback(async (force = false) => {
+    const key = currentAccountKey || '';
+    if (!force && lastAppointmentsKeyRef.current === key) {
+      return;
+    }
+    if (inFlightAppointmentsRef.current) return;
+    inFlightAppointmentsRef.current = true;
+    lastAppointmentsKeyRef.current = key;
+
     try {
-      const res = await api.getAppointments(currentAccountKey);
+      const res = await api.getAppointments(key);
       if (res.ok) {
         setAppointments(res.appointments || []);
       }
     } catch {
+      lastAppointmentsKeyRef.current = '';
       // ignore
+    } finally {
+      inFlightAppointmentsRef.current = false;
     }
   }, [currentAccountKey]);
 
@@ -868,179 +1050,7 @@ export const StoreSniping: React.FC = () => {
     fetchAppointments();
   }, [fetchStores, fetchAppointments]);
 
-  const handleOpenLocModal = () => {
-    setEditCityCode(activeLocation.cityCode);
-    setEditAddressName(activeLocation.addressName);
-    setEditLng(activeLocation.longitude);
-    setEditLat(activeLocation.latitude);
-    setLocModalVisible(true);
-  };
 
-  const handleSelectDistrict = (dist: DistrictPreset) => {
-    setEditAddressName(dist.name);
-    setEditLng(dist.lng.toFixed(6));
-    setEditLat(dist.lat.toFixed(6));
-  };
-
-  const handleConfirmLocation = async () => {
-    const city = CITY_PRESETS.find(c => c.code === editCityCode) || { name: activeLocation.cityName, code: editCityCode };
-    const addr = editAddressName.trim() || '自定义定位点';
-
-    const newLoc = {
-      cityCode: city.code,
-      cityName: city.name,
-      addressName: addr,
-      longitude: editLng,
-      latitude: editLat
-    };
-    setActiveLocation(newLoc);
-
-    if (saveToAccountDefault && currentAccountKey) {
-      try {
-        await api.updateAccount(currentAccountKey, {
-          city_code: city.code,
-          city_name: city.name,
-          longitude: editLng,
-          latitude: editLat
-        });
-        await loadAccounts();
-        Toast.success(`已保存 [${addr}] 为当前账号默认地址`);
-      } catch {
-        Toast.warning('定位已应用，保存至账号设置失败');
-      }
-    } else {
-      Toast.success(`定位已更新：${city.name} · ${addr}`);
-    }
-
-    setLocModalVisible(false);
-  };
-
-  const handleGetDeviceLocation = () => {
-    setLocating(true);
-    Toast.info('正在获取设备定位...');
-
-    const fallbackToIp = async (reason?: string) => {
-      try {
-        if (reason) Toast.info(reason);
-        const ipRes = await api.getIpLocation();
-        if (ipRes.ok) {
-          const loc = {
-            cityCode: ipRes.city_code,
-            cityName: ipRes.city_name,
-            addressName: ipRes.address_name || `${ipRes.city_name} (网络定位)`,
-            longitude: ipRes.longitude,
-            latitude: ipRes.latitude
-          };
-          setActiveLocation(loc);
-          setEditCityCode(loc.cityCode);
-          setEditAddressName(loc.addressName);
-          setEditLng(loc.longitude);
-          setEditLat(loc.latitude);
-
-          if (currentAccountKey) {
-            api.updateAccount(currentAccountKey, {
-              city_code: loc.cityCode,
-              city_name: loc.cityName,
-              longitude: loc.longitude,
-              latitude: loc.latitude
-            }).catch(() => {});
-          }
-
-          Toast.success(`网络定位成功：${ipRes.city_name} · ${ipRes.address_name}`);
-        }
-      } catch {
-        Toast.error('网络定位请求失败，请手动选择商圈');
-      } finally {
-        setLocating(false);
-      }
-    };
-
-    if (!navigator.geolocation) {
-      fallbackToIp('当前浏览器暂不支持物理定位，正在切换至网络定位...');
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          const res = await api.resolveLocation(lat, lng);
-          if (res.ok) {
-            const loc = {
-              cityCode: res.city_code,
-              cityName: res.city_name,
-              addressName: res.address_name,
-              longitude: res.longitude,
-              latitude: res.latitude
-            };
-            setActiveLocation(loc);
-            setEditCityCode(loc.cityCode);
-            setEditAddressName(loc.addressName);
-            setEditLng(loc.longitude);
-            setEditLat(loc.latitude);
-
-            if (currentAccountKey) {
-              api.updateAccount(currentAccountKey, {
-                city_code: loc.cityCode,
-                city_name: loc.cityName,
-                longitude: loc.longitude,
-                latitude: loc.latitude
-              }).catch(() => {});
-            }
-
-            Toast.success(`定位成功：${res.city_name} · ${res.address_name}`);
-          } else {
-            const latStr = lat.toFixed(6);
-            const lngStr = lng.toFixed(6);
-            const loc = {
-              cityCode: activeLocation.cityCode,
-              cityName: activeLocation.cityName,
-              addressName: '设备定位',
-              longitude: lngStr,
-              latitude: latStr
-            };
-            setActiveLocation(loc);
-            setEditLng(lngStr);
-            setEditLat(latStr);
-            Toast.success(`已对准经纬度：${lngStr}, ${latStr}`);
-          }
-        } catch {
-          const latStr = position.coords.latitude.toFixed(6);
-          const lngStr = position.coords.longitude.toFixed(6);
-          const loc = {
-            cityCode: activeLocation.cityCode,
-            cityName: activeLocation.cityName,
-            addressName: '设备定位',
-            longitude: lngStr,
-            latitude: latStr
-          };
-          setActiveLocation(loc);
-          setEditLng(lngStr);
-          setEditLat(latStr);
-          Toast.success(`已对准经纬度：${lngStr}, ${latStr}`);
-        } finally {
-          setLocating(false);
-        }
-      },
-      (err) => {
-        let msg = '无法直接读取设备位置';
-        if (err.code === err.PERMISSION_DENIED) {
-          msg = '未授予定位权限，已切换至网络定位';
-        } else if (err.code === err.TIMEOUT) {
-          msg = '定位响应超时，已切换至网络定位';
-        } else if (err.code === err.POSITION_UNAVAILABLE) {
-          msg = '设备定位暂不可用，已切换至网络定位';
-        }
-        fallbackToIp(msg);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 8000,
-        maximumAge: 0
-      }
-    );
-  };
 
   const timeStatusCache = useRef<Map<string, { status: 'before' | 'active' | 'ended'; label: string; diffMinutes: number }>>(new Map());
   const lastCacheClearTime = useRef<number>(Date.now());
@@ -1137,8 +1147,8 @@ export const StoreSniping: React.FC = () => {
 
       if (res.ok) {
         Toast.success(res.message || '抢单成功，名额已锁定');
-        fetchStores();
-        fetchAppointments();
+        fetchStores(undefined, true);
+        fetchAppointments(true);
       } else {
         if (res.can_monitor) {
           Modal.confirm({
@@ -1250,7 +1260,7 @@ export const StoreSniping: React.FC = () => {
                 <Tag size="small" color="grey">
                   {row.distance_text && row.distance_text !== '0m' ? row.distance_text : '附近'}
                 </Tag>
-                <Tag size="small" color={row.condition === '无需评价' ? 'green' : 'amber'}>
+                <Tag size="small" color={getConditionTagColor(row.condition)}>
                   {row.condition}
                 </Tag>
                 {row.if_use_red_pack && (
@@ -1485,7 +1495,7 @@ export const StoreSniping: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                <Tag size="small" color={row.condition === '无需评价' ? 'green' : 'amber'}>
+                <Tag size="small" color={getConditionTagColor(row.condition)}>
                   {row.condition}
                 </Tag>
                 <Tag size="small" color="grey">
@@ -1758,7 +1768,7 @@ export const StoreSniping: React.FC = () => {
                   已结束
                 </Tag>
               )}
-              <Tag color={activePercent.condition === '无需评价' ? 'green' : 'amber'} size="small" shape="square">
+              <Tag color={getConditionTagColor(activePercent.condition)} size="small" shape="square">
                 {activePercent.condition}
               </Tag>
               {activePercent.delivery_time_tip && (
@@ -1782,7 +1792,7 @@ export const StoreSniping: React.FC = () => {
                 >
                   {percentPlans.map((pp, pIdx) => {
                     const ppLeft = Math.max(0, pp.left_number ?? 0);
-                    const condShort = pp.condition === '无需评价' ? '免评' : '图文';
+                    const condShort = getConditionShortText(pp.condition);
                     return (
                       <Radio key={pp.promotion_id || pIdx} value={pp.promotion_id}>
                         <span className="font-medium">档位{pIdx + 1}</span>
@@ -2000,10 +2010,7 @@ export const StoreSniping: React.FC = () => {
     },
   ], [handleStopAppoint, handleCancelAppoint]);
 
-  const currentDistricts = useMemo(() => {
-    const c = CITY_PRESETS.find(item => item.code === editCityCode);
-    return c ? c.districts : [];
-  }, [editCityCode]);
+
 
   if (accounts.length === 0) {
     return (
@@ -2047,6 +2054,16 @@ export const StoreSniping: React.FC = () => {
           transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
         }
+        .store-table-footer {
+          flex-shrink: 0 !important;
+          margin-top: auto !important;
+        }
+        /* 列表最后一行增加底部安全边距，防止在最底部时内容与底栏或横向滚动条产生视觉遮挡 */
+        .store-table-container .semi-table-body table tr:last-child td,
+        .dual-table-container .semi-table-body table tr:last-child td,
+        .appointment-table-container .semi-table-body table tr:last-child td {
+          padding-bottom: 16px !important;
+        }
         .store-table-container .semi-table-placeholder,
         .appointment-table-container .semi-table-placeholder,
         .dual-table-container .semi-table-placeholder {
@@ -2071,52 +2088,128 @@ export const StoreSniping: React.FC = () => {
         }
       `}</style>
 
-      {/* 顶部区域：页面标题与定位信息栏高度整合，消除多余卡片堆叠 */}
+      {/* 顶部区域：页面标题与当前账号及资产概览信息栏 */}
       <div className="flex-shrink-0 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 pb-1">
         <div>
           <Title heading={3}>霸王餐抢单与预约</Title>
           <Text type="secondary" size="small">查看附近外卖返利活动，支持即时抢单、定时预约与名额监听</Text>
         </div>
 
-        {/* 顶部定位与操作小工具条（优化按钮主题与样式，更具层次感） */}
-        <div className="flex items-center gap-2 flex-wrap bg-semi-color-fill-0 px-3.5 py-1.5 rounded-lg border border-semi-color-border">
-          <div className="flex items-center gap-1.5 text-xs text-semi-color-text-1">
-            <IconMapPin style={{ color: 'var(--semi-color-primary)' }} />
-            <span>当前位置:</span>
-            <Text strong className="text-xs">{activeLocation.cityName} · {activeLocation.addressName}</Text>
-          </div>
-          <Divider layout="vertical" margin="6px" />
-          <Space spacing={6}>
-            <Button
-              theme="light"
-              type="tertiary"
-              size="small"
-              icon={<IconDesktop />}
-              loading={locating}
-              onClick={handleGetDeviceLocation}
+        {/* 顶部卡券与红包资产栏 (合为一个Card，直观展示饭票、超前抢单券、红包数量，点击查看明细) */}
+        <div className="flex items-center gap-2 flex-wrap select-none">
+          {/* 合并资产卡片 */}
+          <Tooltip content="点击查看饭票、超前抢单券与外卖红包明细">
+            <div
+              className="group h-8 box-border flex items-center px-2.5 rounded-[var(--semi-border-radius-medium)] border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-fill-1 hover:border-semi-color-primary transition-all cursor-pointer shadow-2xs leading-none gap-2.5"
+              onClick={() => handleOpenAssetModal('cards')}
             >
-              读取定位
-            </Button>
-            <Button
-              theme="light"
-              type="primary"
-              size="small"
-              icon={<IconEdit />}
-              onClick={handleOpenLocModal}
-            >
-              修改位置
-            </Button>
-            <Button
-              theme="light"
-              type="tertiary"
-              size="small"
-              icon={<IconRefresh />}
-              loading={loading}
-              onClick={() => fetchStores()}
-            >
-              刷新
-            </Button>
-          </Space>
+              {/* 饭票 */}
+              <div
+                className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenAssetModal('cards');
+                }}
+              >
+                {assetStats.mealTicketPic ? (
+                  <img
+                    src={assetStats.mealTicketPic}
+                    alt="饭票"
+                    className="w-5 h-5 object-contain shrink-0"
+                  />
+                ) : (
+                  <div className="w-5 h-5 rounded-sm bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                    <IconTicketCode size="small" />
+                  </div>
+                )}
+                <span className="text-xs text-semi-color-text-2">饭票</span>
+                {assetStats.loading ? (
+                  <Spin size="small" style={{ width: 12, height: 12 }} />
+                ) : (
+                  <Text strong className="text-xs text-amber-600">
+                    {assetStats.mealTicketCount} 张
+                  </Text>
+                )}
+              </div>
+
+              {/* 分隔竖线 */}
+              <div className="w-[1px] h-3 bg-semi-color-border shrink-0" />
+
+              {/* 超前抢单券 */}
+              <div
+                className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenAssetModal('cards');
+                }}
+              >
+                {assetStats.advanceCouponPic ? (
+                  <img
+                    src={assetStats.advanceCouponPic}
+                    alt="超前抢单券"
+                    className="w-5 h-5 object-contain shrink-0"
+                  />
+                ) : (
+                  <div className="w-5 h-5 rounded-sm bg-blue-50 text-semi-color-primary flex items-center justify-center shrink-0">
+                    <IconFastForward size="small" />
+                  </div>
+                )}
+                <span className="text-xs text-semi-color-text-2">超前抢单券</span>
+                {assetStats.loading ? (
+                  <Spin size="small" style={{ width: 12, height: 12 }} />
+                ) : (
+                  <Text strong className="text-xs" style={{ color: 'var(--semi-color-primary)' }}>
+                    {assetStats.advanceCouponCount} 张
+                  </Text>
+                )}
+              </div>
+
+              {/* 分隔竖线 */}
+              <div className="w-[1px] h-3 bg-semi-color-border shrink-0" />
+
+              {/* 红包 */}
+              <div
+                className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenAssetModal('redpacks');
+                }}
+              >
+                <div className="w-5 h-5 rounded-sm bg-rose-50 text-rose-500 flex items-center justify-center shrink-0">
+                  <IconGift size="small" />
+                </div>
+                <span className="text-xs text-semi-color-text-2">红包</span>
+                {assetStats.loading ? (
+                  <Spin size="small" style={{ width: 12, height: 12 }} />
+                ) : (
+                  <Text strong className="text-xs text-rose-500">
+                    {assetStats.redpackCount} 个
+                  </Text>
+                )}
+              </div>
+
+              {/* 展开/详情指示图标，使用 > (IconChevronRight) */}
+              <IconChevronRight
+                size="small"
+                className="text-semi-color-text-3 group-hover:text-semi-color-primary group-hover:translate-x-0.5 transition-all text-xs shrink-0"
+              />
+            </div>
+          </Tooltip>
+
+          {/* 刷新按钮 */}
+          <Button
+            theme="light"
+            type="tertiary"
+            icon={<IconRefresh spin={loading || assetStats.loading} />}
+            loading={loading || assetStats.loading}
+            onClick={() => {
+              fetchStores(undefined, true);
+              fetchAppointments(true);
+              fetchAccountAssets(undefined, true);
+            }}
+          >
+            刷新
+          </Button>
         </div>
       </div>
 
@@ -2361,7 +2454,7 @@ export const StoreSniping: React.FC = () => {
             className="store-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
             style={{
               display: activeTabKey === 'stores' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tableScrollY}px`
+              ['--table-scroll-y' as any]: `${tabScrollHeights.stores || 480}px`
             }}
           >
             <Table
@@ -2370,66 +2463,78 @@ export const StoreSniping: React.FC = () => {
               dataSource={regularStores}
               loading={loading}
               pagination={false}
-              scroll={{ y: tableScrollY, x: '100%' }}
+              scroll={{ y: tabScrollHeights.stores || 480, x: '100%' }}
               empty={
-                <div className="py-16 text-center text-semi-color-text-3">
-                  {onlyDualRebate ? (
-                    <div>
-                      <div className="mb-2 text-base font-medium text-semi-color-text-1">
-                        当前已加载的 {stores.length} 家附近商户中暂未发现同时支持双返利的店铺
+                loading ? (
+                  <div className="py-24" />
+                ) : (
+                  <div className="py-16 text-center text-semi-color-text-3">
+                    {onlyDualRebate ? (
+                      <div>
+                        <div className="mb-2 text-base font-medium text-semi-color-text-1">
+                          当前已加载的 {stores.length} 家附近商户中暂未发现同时支持双返利的店铺
+                        </div>
+                        <div className="text-xs mb-4">
+                          您可以选择上方「获取范围」下拉框自动批量加载更多商户进行扫描筛选
+                        </div>
+                        <Space spacing={8}>
+                          <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(300)}>
+                            自动加载 300 家
+                          </Button>
+                          <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(500)}>
+                            自动加载 500 家
+                          </Button>
+                          <Button theme="borderless" size="small" onClick={() => setOnlyDualRebate(false)}>
+                            关闭双返利筛选
+                          </Button>
+                        </Space>
                       </div>
-                      <div className="text-xs mb-4">
-                        您可以选择上方「获取范围」下拉框自动批量加载更多商户进行扫描筛选
+                    ) : activeSearchKeyword ? (
+                      <div>
+                        <div className="mb-2 text-base font-medium text-semi-color-text-1">
+                          未找到与「{activeSearchKeyword}」相关的附近店铺
+                        </div>
+                        <div className="text-xs mb-4">您可以尝试更换搜索词，或查看「大牌券专享」分栏</div>
+                        <Button theme="light" type="primary" size="small" onClick={handleClearSearch}>
+                          清空搜索词
+                        </Button>
                       </div>
-                      <Space spacing={8}>
-                        <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(300)}>
-                          自动加载 300 家
-                        </Button>
-                        <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(500)}>
-                          自动加载 500 家
-                        </Button>
-                        <Button theme="borderless" size="small" onClick={() => setOnlyDualRebate(false)}>
-                          关闭双返利筛选
-                        </Button>
-                      </Space>
-                    </div>
-                  ) : activeSearchKeyword ? (
-                    <div>
-                      <div className="mb-2 text-base font-medium text-semi-color-text-1">
-                        未找到与「{activeSearchKeyword}」相关的附近店铺
-                      </div>
-                      <div className="text-xs mb-4">您可以尝试更换搜索词，或查看「大牌券专享」分栏</div>
-                      <Button theme="light" type="primary" size="small" onClick={handleClearSearch}>
-                        清空搜索词
-                      </Button>
-                    </div>
-                  ) : (
-                    <div>暂无符合条件的附近店铺，您可以尝试点击右上角「修改位置」更换商圈坐标</div>
-                  )}
-                </div>
+                    ) : (
+                      <div>暂无符合条件的附近店铺，您可以尝试更换定位坐标或调整筛选条件</div>
+                    )}
+                  </div>
+                )
               }
             />
 
             {/* 触底加载状态栏 */}
             {regularStores.length > 0 && (
-              <div className="flex-shrink-0 border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
+              <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
                 {loadingMore ? (
                   <div className="flex items-center gap-2 text-semi-color-primary text-xs font-medium">
                     <Spin size="small" />
-                    <span>正在加载更多商户...</span>
+                    <span>正在获取更多商户数据...</span>
+                  </div>
+                ) : loadMoreError ? (
+                  <div
+                    className="text-xs text-semi-color-danger cursor-pointer hover:underline flex items-center gap-1.5"
+                    onClick={() => loadMoreStores()}
+                  >
+                    <IconAlertCircle size="small" />
+                    <span>网络连接稍慢，点击重新加载</span>
                   </div>
                 ) : hasMore ? (
                   <div
-                    className="text-xs text-semi-color-text-2 cursor-pointer hover:text-semi-color-primary transition-colors flex items-center gap-1.5"
-                    onClick={loadMoreStores}
+                    className="text-xs text-semi-color-text-2 cursor-pointer hover:text-semi-color-primary transition-colors flex items-center gap-2"
+                    onClick={() => loadMoreStores()}
                   >
-                    <Tag color="blue" size="small">自动加载</Tag>
-                    <span>已加载 {regularStores.length} 家附近店铺 · 向下滚动继续加载</span>
+                    <Tag color="blue" size="small">触底加载</Tag>
+                    <span>已展示 {regularStores.length} 家附近店铺 · 向下滚动或点击加载更多</span>
                   </div>
                 ) : (
                   <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
-                    <Tag color="green" size="small">加载完成</Tag>
-                    <span>已加载全部 {regularStores.length} 家附近店铺</span>
+                    <Tag color="grey" size="small">已到底部</Tag>
+                    <span>已呈现全部 {regularStores.length} 家附近店铺</span>
                   </div>
                 )}
               </div>
@@ -2454,7 +2559,7 @@ export const StoreSniping: React.FC = () => {
             className="store-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
             style={{
               display: activeTabKey === 'brand_coupon' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tableScrollY}px`
+              ['--table-scroll-y' as any]: `${tabScrollHeights.brand_coupon || 480}px`
             }}
           >
             <Table
@@ -2463,18 +2568,23 @@ export const StoreSniping: React.FC = () => {
               dataSource={brandCouponStores}
               loading={loading}
               pagination={false}
-              scroll={{ y: tableScrollY, x: '100%' }}
+              scroll={{ y: tabScrollHeights.brand_coupon || 480, x: '100%' }}
               empty={
-                <div className="py-16 text-center text-semi-color-text-3">
-                  <div>暂未检测到周边门店通用的商户，您可以在「附近店铺」中查看所有常规返利门店</div>
-                </div>
+                loading ? (
+                  <div className="py-24" />
+                ) : (
+                  <div className="py-16 text-center text-semi-color-text-3">
+                    <div>暂未检测到周边门店通用的商户，您可以在「附近店铺」中查看所有常规返利门店</div>
+                  </div>
+                )
               }
             />
 
             {brandCouponStores.length > 0 && (
-              <div className="flex-shrink-0 border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
-                <div className="text-xs text-semi-color-text-2 flex items-center gap-2">
-                  <span>共检索到 {brandCouponStores.length} 家周边门店通用商户</span>
+              <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
+                <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
+                  <Tag color="grey" size="small">已到底部</Tag>
+                  <span>已呈现全部 {brandCouponStores.length} 家周边门店通用商户</span>
                 </div>
               </div>
             )}
@@ -2486,17 +2596,14 @@ export const StoreSniping: React.FC = () => {
             className="dual-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
             style={{
               display: activeTabKey === 'dual_rebate' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tableScrollY}px`
+              ['--table-scroll-y' as any]: `${tabScrollHeights.dual_rebate || 440}px`
             }}
           >
             {dualScanLoading ? (
-              <div className="p-16 text-center flex flex-col items-center justify-center">
+              <div className="flex-1 w-full h-full flex flex-col items-center justify-center p-16 m-auto">
                 <Spin size="large" />
                 <div className="text-base font-medium text-semi-color-text-0 mt-4">
-                  正在流式触底加载附近店铺并筛选...
-                </div>
-                <div className="text-xs text-semi-color-text-2 mt-1">
-                  模拟下拉触底分页加载附近美团商户，累计获取商户数达到设定范围即停止加载，并严格按双规则筛选
+                  正在加载附近店铺并筛选...
                 </div>
               </div>
             ) : !dualScanDone ? (
@@ -2534,8 +2641,8 @@ export const StoreSniping: React.FC = () => {
                 </Empty>
               </div>
             ) : (
-              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <div className="flex-shrink-0 px-4 py-2.5 border-b border-semi-color-border bg-semi-color-fill-0 flex items-center justify-between">
+              <>
+                <div className="store-table-subheader flex-shrink-0 px-4 py-2.5 border-b border-semi-color-border bg-semi-color-fill-0 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs">
                     <Tag color="amber" size="small">美团外卖专享</Tag>
                     <span className="text-semi-color-text-1">
@@ -2556,35 +2663,38 @@ export const StoreSniping: React.FC = () => {
                   </Button>
                 </div>
 
-                <div className="flex-1 min-h-0 relative overflow-hidden">
-                  <Table
-                    rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'meituan'}`}
-                    columns={dualColumns}
-                    dataSource={displayedDualStores}
-                    loading={dualScanLoading}
-                    pagination={false}
-                    scroll={{ y: tableScrollY, x: '100%' }}
-                    empty={
+                <Table
+                  rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'meituan'}`}
+                  columns={dualColumns}
+                  dataSource={displayedDualStores}
+                  loading={dualScanLoading}
+                  pagination={false}
+                  scroll={{ y: tabScrollHeights.dual_rebate || 440, x: '100%' }}
+                  empty={
+                    dualScanLoading ? (
+                      <div className="py-24" />
+                    ) : (
                       <div className="py-16 text-center text-semi-color-text-3">
                         <div>
-                          {dualSearchKeyword.trim()
+                          {(dualSearchKeyword || '').trim()
                             ? `未发现包含「${dualSearchKeyword}」的美团同店双返利店铺`
                             : `在检索的 ${dualTotalStores} 家美团商户中未发现同时开放双返利规则的店铺`}
                         </div>
                         <div className="text-xs mt-2">您可以尝试清除搜索词或切换商圈定位后再次扫描</div>
                       </div>
-                    }
-                  />
-                </div>
+                    )
+                  }
+                />
 
                 {displayedDualStores.length > 0 && (
-                  <div className="flex-shrink-0 border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-between">
-                    <div className="text-xs text-semi-color-text-2">
-                      <span>已展示 {displayedDualStores.length} 家美团同店双返利商户（同时支持实付满返与按比例返）</span>
+                  <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-between">
+                    <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
+                      <Tag color="grey" size="small">已到底部</Tag>
+                      <span>已呈现全部 {displayedDualStores.length} 家美团同店双返利商户</span>
                     </div>
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
 
@@ -2593,7 +2703,7 @@ export const StoreSniping: React.FC = () => {
             className="appointment-table-container flex-1 min-h-0 flex flex-col relative"
             style={{
               display: activeTabKey === 'appointments' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tableScrollY}px`
+              ['--table-scroll-y' as any]: `${tabScrollHeights.appointments || 480}px`
             }}
           >
             <Table
@@ -2604,124 +2714,14 @@ export const StoreSniping: React.FC = () => {
                 pageSize: 10,
                 showTotal: true,
               }}
-              scroll={{ y: tableScrollY, x: '100%' }}
+              scroll={{ y: tabScrollHeights.appointments || 480, x: '100%' }}
               empty={<div className="py-16 text-center text-semi-color-text-3">暂无预约或监听中的任务</div>}
             />
           </div>
         </div>
       </Card>
 
-      {/* 修改地址与定位模态框 */}
-      <Modal
-        title="修改定位地址"
-        visible={locModalVisible}
-        onOk={handleConfirmLocation}
-        onCancel={() => setLocModalVisible(false)}
-        okText="确认应用"
-        cancelText="取消"
-        width={540}
-      >
-        <div className="space-y-4 py-1">
-          {/* 一键读取设备定位 */}
-          <div className="p-3 rounded-lg bg-semi-color-fill-0 flex items-center justify-between border border-semi-color-border">
-            <div className="flex items-center gap-2.5">
-              <IconDesktop size="large" style={{ color: 'var(--semi-color-primary)' }} />
-              <div>
-                <div className="text-sm font-medium text-semi-color-text-0">读取本机设备定位</div>
-                <div className="text-xs text-semi-color-text-2">通过浏览器授权获取精确位置，未授权时自动通过网络IP定位</div>
-              </div>
-            </div>
-            <Button
-              theme="light"
-              type="primary"
-              size="small"
-              loading={locating}
-              onClick={handleGetDeviceLocation}
-            >
-              读取定位
-            </Button>
-          </div>
 
-          <div>
-            <Text strong className="block mb-1.5 text-sm">选择城市</Text>
-            <Select
-              value={editCityCode}
-              style={{ width: '100%' }}
-              onChange={(val) => {
-                const code = Number(val);
-                setEditCityCode(code);
-                const found = CITY_PRESETS.find(c => c.code === code);
-                if (found && found.districts.length > 0) {
-                  handleSelectDistrict(found.districts[0]);
-                }
-              }}
-            >
-              {CITY_PRESETS.map(c => (
-                <Select.Option key={c.code} value={c.code}>{c.name} ({c.code})</Select.Option>
-              ))}
-            </Select>
-          </div>
-
-          <div>
-            <Text strong className="block mb-1.5 text-sm">热门商圈快速选择</Text>
-            <div className="flex flex-wrap gap-2">
-              {currentDistricts.map(d => {
-                const isPicked = editAddressName === d.name;
-                return (
-                  <Tag
-                    key={d.name}
-                    color={isPicked ? 'blue' : 'grey'}
-                    type={isPicked ? 'solid' : 'light'}
-                    className="cursor-pointer transition-all"
-                    onClick={() => handleSelectDistrict(d)}
-                  >
-                    {d.name}
-                  </Tag>
-                );
-              })}
-            </div>
-          </div>
-
-          <Divider />
-
-          <div>
-            <Text strong className="block mb-1.5 text-sm">地址名称 / 备注</Text>
-            <Input
-              value={editAddressName}
-              placeholder="例如：公司 / 光谷广场 / 住所"
-              onChange={(val) => setEditAddressName(val)}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Text strong className="block mb-1.5 text-sm">中心经度 (Longitude)</Text>
-              <Input
-                value={editLng}
-                placeholder="例如：114.305393"
-                onChange={(val) => setEditLng(val)}
-              />
-            </div>
-            <div>
-              <Text strong className="block mb-1.5 text-sm">中心纬度 (Latitude)</Text>
-              <Input
-                value={editLat}
-                placeholder="例如：30.593099"
-                onChange={(val) => setEditLat(val)}
-              />
-            </div>
-          </div>
-
-          <div className="pt-1">
-            <Checkbox
-              checked={saveToAccountDefault}
-              onChange={(e) => setSaveToAccountDefault(!!e.target?.checked)}
-            >
-              同时保存为当前主账号的默认位置
-            </Checkbox>
-          </div>
-        </div>
-      </Modal>
 
       {/* 预约与监听配置弹窗 */}
       <Modal
@@ -2891,6 +2891,245 @@ export const StoreSniping: React.FC = () => {
             {appointModalMode === 'countdown' ? '确认添加预约抢单' : '启动名额监听'}
           </Button>
         </Form>
+      </Modal>
+
+      {/* 卡券与外卖红包资产明细弹窗 */}
+      <Modal
+        title={
+          <div className="flex items-center justify-between w-full pr-8">
+            <div className="flex items-center gap-2">
+              <IconTicketCode style={{ color: 'var(--semi-color-primary)' }} />
+              <span className="font-semibold text-base">卡券与红包资产明细</span>
+              {currentAccount?.nickname && (
+                <Tag color="blue" size="small" type="light">
+                  {cleanEmoji(currentAccount.nickname)}
+                </Tag>
+              )}
+            </div>
+            <Button
+              theme="light"
+              size="small"
+              icon={<IconRefresh spin={assetStats.loading} />}
+              loading={assetStats.loading}
+              onClick={() => fetchAccountAssets()}
+            >
+              刷新明细
+            </Button>
+          </div>
+        }
+        visible={assetModalVisible}
+        onCancel={() => setAssetModalVisible(false)}
+        footer={null}
+        width={620}
+        bodyStyle={{ maxHeight: '68vh', overflowY: 'auto', padding: '12px 20px' }}
+      >
+        <Tabs
+          type="line"
+          activeKey={assetModalTab}
+          onChange={(k) => setAssetModalTab(k as 'cards' | 'redpacks')}
+        >
+          {/* Tab 1: 特权卡券 */}
+          <TabPane
+            tab={
+              <span className="flex items-center gap-1.5">
+                <IconTicketCode />
+                <span>特权卡券</span>
+                {assetStats.canUseCards > 0 ? (
+                  <Badge count={assetStats.canUseCards} overflowCount={99} type="warning" />
+                ) : null}
+              </span>
+            }
+            itemKey="cards"
+          >
+            <div className="py-2 flex flex-col gap-2.5">
+              <div className="flex justify-between items-center">
+                <RadioGroup
+                  type="button"
+                  value={cardFilterStatus}
+                  onChange={(e) => handleChangeCardStatus(Number(e.target.value))}
+                >
+                  <Radio value={0}>未使用 ({assetDetail?.card_stats?.can_use_number || (cardFilterStatus === 0 ? (assetDetail?.cards?.length || 0) : 0)})</Radio>
+                  <Radio value={1}>已使用</Radio>
+                  <Radio value={2}>已过期</Radio>
+                </RadioGroup>
+
+                {Boolean(assetStats.expiringSoonCards) && cardFilterStatus === 0 && (
+                  <Tag size="small" color="red">
+                    {assetStats.expiringSoonCards} 张今日到期
+                  </Tag>
+                )}
+              </div>
+
+              {cardFilterStatus === 0 && Boolean(assetStats.expiringSoonCards) && (
+                <Banner
+                  type="warning"
+                  description={`账户有 ${assetStats.expiringSoonCards} 张特权卡券即将在今日到期，抢单预约时请优先勾选使用！`}
+                />
+              )}
+
+              {assetStats.loading || cardsLoading ? (
+                <div className="py-14 flex flex-col items-center justify-center">
+                  <Space vertical align="center" spacing="medium">
+                    <Spin size="large" />
+                    <Text type="secondary" className="text-xs text-semi-color-text-2">
+                      正在同步特权卡券数据...
+                    </Text>
+                  </Space>
+                </div>
+              ) : stackedCards.length === 0 ? (
+                <div className="py-10 text-center">
+                  <Empty
+                    title="暂无对应状态的卡券"
+                    description="特权卡券可用于返利加成或霸王餐免评资格"
+                  />
+                </div>
+              ) : (
+                stackedCards.map(({ item, count }) => {
+                  const card = item.card || { name: '特权卡券', desc: '' };
+                  return (
+                    <div
+                      key={`${item.id}_${count}`}
+                      className="border border-semi-color-border rounded-lg p-3 bg-semi-color-bg-0 hover:border-semi-color-primary-light-active transition-all shadow-xs flex items-center gap-3"
+                    >
+                      <div className="relative shrink-0">
+                        {card.pic ? (
+                          <img
+                            src={card.pic}
+                            alt={card.name}
+                            className="w-11 h-11 object-contain rounded-md border border-semi-color-border p-0.5 bg-semi-color-fill-0 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-11 h-11 rounded-md bg-semi-color-fill-1 flex items-center justify-center text-semi-color-primary shrink-0">
+                            <IconTicketCode size="large" />
+                          </div>
+                        )}
+                        {count > 1 && (
+                          <span className="absolute -top-1.5 -right-1.5 bg-semi-color-primary text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-xs leading-none">
+                            x{count}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Text strong className="text-sm text-semi-color-text-0">
+                            {card.name}
+                          </Text>
+                          {count > 1 && (
+                            <Tag size="small" color="blue" shape="square">
+                              x {count} 张
+                            </Tag>
+                          )}
+                          {cardFilterStatus === 0 && <Tag size="small" color="green">可使用</Tag>}
+                          {cardFilterStatus === 1 && <Tag size="small" color="grey">已使用</Tag>}
+                          {cardFilterStatus === 2 && <Tag size="small" color="red">已过期</Tag>}
+                        </div>
+                        <div className="text-xs text-semi-color-text-2 mt-0.5 line-clamp-1">
+                          {card.desc || '用于霸王餐活动名额与特权资格'}
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0 text-xs text-semi-color-text-2">
+                        <div className="text-[11px] text-semi-color-text-3">有效期至</div>
+                        <div className="font-medium text-semi-color-text-1 mt-0.5">
+                          {formatTimestamp(item.expire_time)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </TabPane>
+
+          {/* Tab 2: 外卖红包 */}
+          <TabPane
+            tab={
+              <span className="flex items-center gap-1.5">
+                <IconGift />
+                <span>外卖红包</span>
+                {assetStats.redpackCount > 0 ? (
+                  <Badge count={assetStats.redpackCount} overflowCount={99} type="danger" />
+                ) : null}
+              </span>
+            }
+            itemKey="redpacks"
+          >
+            <div className="py-2 flex flex-col gap-2.5">
+              <div className="flex justify-between items-center bg-semi-color-fill-0 px-3 py-2 rounded-lg text-xs text-semi-color-text-2 border border-semi-color-border">
+                <span>当前可用外卖红包共 <strong>{assetStats.redpackCount}</strong> 个</span>
+                <span>抢单结算时可在对应外卖平台直接抵扣立减</span>
+              </div>
+
+              {assetStats.loading ? (
+                <div className="py-14 flex flex-col items-center justify-center">
+                  <Space vertical align="center" spacing="medium">
+                    <Spin size="large" />
+                    <Text type="secondary" className="text-xs text-semi-color-text-2">
+                      正在从官方同步红包资产...
+                    </Text>
+                  </Space>
+                </div>
+              ) : !assetDetail?.redpacks || assetDetail.redpacks.length === 0 ? (
+                <div className="py-10 text-center">
+                  <Empty
+                    title="暂无可用的霸王餐红包"
+                    description="每日可通过整点红包雨、签到打卡或会员中心领取外卖红包"
+                  />
+                </div>
+              ) : (
+                assetDetail.redpacks.map((item) => {
+                  const amountYuan = ((item.value_num || item.reward_num || 0) / 100).toFixed(2);
+                  const isExpiringSoon = item.end_time && (item.end_time * 1000 - Date.now() < 24 * 3600 * 1000);
+                  const platforms = item.limit?.platform_items || item.limit?.bwc_platforms || [];
+
+                  return (
+                    <div
+                      key={item.user_red_pack_id}
+                      className="border border-semi-color-border rounded-lg p-3 bg-semi-color-bg-0 hover:border-semi-color-primary-light-active transition-all shadow-xs flex items-center gap-3"
+                    >
+                      {/* 左侧金额 */}
+                      <div className="w-18 text-center shrink-0 border-r border-semi-color-border pr-2">
+                        <div className="text-rose-500 font-bold text-lg leading-tight">
+                          <span className="text-xs font-normal">¥</span>{amountYuan}
+                        </div>
+                        <div className="text-[10px] text-semi-color-text-2 mt-0.5">
+                          {item.threshold_num ? `满${(item.threshold_num / 100).toFixed(0)}可用` : '无门槛'}
+                        </div>
+                      </div>
+
+                      {/* 中间红包描述 */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Text strong className="text-sm text-semi-color-text-0">
+                            {item.name || '霸王餐红包'}
+                          </Text>
+                          {platforms.includes(1) && <Tag size="small" color="amber">美团</Tag>}
+                          {platforms.includes(2) && <Tag size="small" color="blue">饿了么</Tag>}
+                          {platforms.includes(3) && <Tag size="small" color="orange">大众点评</Tag>}
+                          {platforms.length === 0 && <Tag size="small" color="cyan">外卖全通用</Tag>}
+                        </div>
+                        <div className="text-xs text-semi-color-text-2 mt-0.5 truncate">
+                          {item.info || '活动满返通用红包'}
+                        </div>
+                      </div>
+
+                      {/* 右侧到期时间 */}
+                      <div className="text-right shrink-0">
+                        {isExpiringSoon && (
+                          <Tag size="small" color="red" className="mb-0.5">即将失效</Tag>
+                        )}
+                        <div className="text-[11px] text-semi-color-text-2">
+                          {formatTimestamp(item.end_time)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </TabPane>
+        </Tabs>
       </Modal>
     </div>
   );

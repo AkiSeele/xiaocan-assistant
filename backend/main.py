@@ -1,5 +1,5 @@
 """
-小蚕会员助手 · 纯净私有自研版 (XiaoCan Assistant)
+小蚕小帮手 (XiaoCan Assistant)
 基于 FastAPI + APScheduler + 逆向 RPC 协议驱动
 """
 import os
@@ -32,8 +32,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="小蚕会员助手 · 纯净自研版",
-    description="对齐原版全部自动化挂机、秒杀与抢单能力，彻底废除付费商业化限制",
+    title="小蚕小帮手",
+    description="自动化挂机、秒杀与抢单小帮手",
     version="2.0.0",
     lifespan=lifespan
 )

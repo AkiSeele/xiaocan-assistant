@@ -23,6 +23,8 @@ import {
   IconInfoCircle,
   IconBell,
   IconServer,
+  IconMapPin,
+  IconExternalOpen,
 } from '@douyinfe/semi-icons';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -38,6 +40,7 @@ export const SettingsView: React.FC = () => {
   const formApiRef = useRef<any>(null);
   const [loading, setLoading] = useState(false);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
+  const [testingTianditu, setTestingTianditu] = useState(false);
   const [clawbotStatus, setClawbotStatus] = useState<ClawBotStatus | null>(null);
   const [activeTab, setActiveTab] = useState('channels');
   const [initialValues, setInitialValues] = useState<Partial<SystemSettings>>({
@@ -59,6 +62,7 @@ export const SettingsView: React.FC = () => {
     notify_on_grab: true,
     notify_on_appoint: true,
     notify_on_spike: true,
+    tianditu_key: '109fd484f999e3c0472ab15fa38fe2ac',
   });
 
   useGSAP(() => {
@@ -126,6 +130,27 @@ export const SettingsView: React.FC = () => {
       Toast.error(`测试通信异常: ${e?.response?.data?.detail || e.message || '未知错误'}`);
     } finally {
       setTestingChannel(null);
+    }
+  };
+
+  const handleTestTianditu = async () => {
+    const key = formApiRef.current?.getValue('tianditu_key') || '';
+    if (!String(key).trim()) {
+      Toast.warning('请先填写天地图服务密钥 (Token / tk)');
+      return;
+    }
+    setTestingTianditu(true);
+    try {
+      const res = await api.testTianditu({ tianditu_key: String(key).trim() });
+      if (res.ok) {
+        Toast.success(`[成功] ${res.message || '天地图 API 鉴权连通成功！通道运行正常'}`);
+      } else {
+        Toast.error(`[失败] ${res.message || '天地图鉴权失败'}`);
+      }
+    } catch (e: any) {
+      Toast.error(`测试通信异常: ${e?.response?.data?.detail || e.message || '网络连接超时'}`);
+    } finally {
+      setTestingTianditu(false);
     }
   };
 
@@ -615,7 +640,76 @@ export const SettingsView: React.FC = () => {
                 </div>
               </TabPane>
 
-              {/* Tab 3: 系统架构与关于 */}
+              {/* Tab 3: 位置与地理服务 (天地图 Web API) */}
+              <TabPane
+                tab={
+                  <span className="flex items-center gap-2 font-medium px-1">
+                    <IconMapPin className="text-semi-color-primary" />
+                    位置与地理服务
+                  </span>
+                }
+                itemKey="location"
+              >
+                <div className="pt-4 space-y-6">
+                  <Card
+                    className="settings-card rounded-xl border border-semi-color-border shadow-xs"
+                    title={
+                      <div>
+                        <span className="font-semibold text-base">天地图 (tianditu.gov.cn) Web API 服务设置</span>
+                        <Text type="secondary" size="small" className="block mt-0.5">
+                          国家地理信息公共服务平台，用于全平台抢单基准定位、经纬度高精度逆地理编码与商圈检索
+                        </Text>
+                      </div>
+                    }
+                    headerExtraContent={
+                      <div className="flex items-center gap-2">
+                        <Tag
+                          color={values?.tianditu_key ? 'green' : 'amber'}
+                          size="small"
+                        >
+                          {values?.tianditu_key ? '已配置天地图密钥' : '待配置密钥'}
+                        </Tag>
+                      </div>
+                    }
+                  >
+                    <div className="space-y-4">
+                      <Banner
+                        type="info"
+                        closeIcon={null}
+                        description="天地图 (tianditu.gov.cn) 是国家测绘地理信息局建设的权威国家地理信息公共服务平台。配置服务密钥 (Token / tk) 后，全平台店铺抢单基准位置搜索、高精逆地理编码与商圈检索将由天地图官方服务直连驱动，无调用量配额与频次阻碍。"
+                      />
+
+                      <Form.Input
+                        field="tianditu_key"
+                        label="天地图服务密钥 (Token / tk)"
+                        placeholder="例如: 109fd484f999e3c0472ab15fa38fe2ac"
+                        extraText="国家地理信息公共服务平台控制台生成的 Web API 专属 Token (tk)"
+                      />
+
+                      <div className="flex items-center justify-between pt-2 border-t border-semi-color-border">
+                        <Button
+                          theme="light"
+                          icon={<IconExternalOpen />}
+                          onClick={() => window.open('https://console.tianditu.gov.cn/api/key', '_blank')}
+                        >
+                          前往天地图控制台申请密钥
+                        </Button>
+                        <Button
+                          type="primary"
+                          theme="light"
+                          icon={<IconSend />}
+                          loading={testingTianditu}
+                          onClick={handleTestTianditu}
+                        >
+                          测试天地图连通性
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                </div>
+              </TabPane>
+
+              {/* Tab 4: 系统架构与关于 */}
               <TabPane
                 tab={
                   <span className="flex items-center gap-2 font-medium px-1">

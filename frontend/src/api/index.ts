@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -16,12 +16,7 @@ client.interceptors.response.use(
     if (axios.isCancel(error)) {
       return Promise.reject(error);
     }
-    const status = error?.response?.status;
-    if (status === 401) {
-      Toast.warning('账号凭据已失效，请重新同步 Token');
-    } else if (status === 500) {
-      Toast.error('后端服务异常，请稍后重试');
-    } else if (error.code === 'ECONNABORTED') {
+    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
       Toast.error('请求超时，请检查后端服务是否正常响应');
     } else if (error.message === 'Network Error') {
       Toast.error('网络连接失败，请确认后端服务已在 8690 端口启动');
@@ -30,12 +25,55 @@ client.interceptors.response.use(
   }
 );
 
+// 在途 GET 请求复用池：避免同一时间点多个并发相同 GET 请求重复打到后端
+const inFlightGetRequests = new Map<string, Promise<any>>();
+
+const getQueryKey = (url: string, params?: any): string => {
+  if (!params) return url;
+  try {
+    const searchParams = new URLSearchParams();
+    const sortedKeys = Object.keys(params).sort();
+    for (const key of sortedKeys) {
+      const val = params[key];
+      if (val !== undefined && val !== null) {
+        searchParams.append(key, String(val));
+      }
+    }
+    const qs = searchParams.toString();
+    return qs ? `${url}?${qs}` : url;
+  } catch {
+    return `${url}?${JSON.stringify(params)}`;
+  }
+};
+
+const originalGet = client.get.bind(client);
+
+(client as any).get = function (url: string, config?: any): Promise<any> {
+  // 如果调用方显式提供了 AbortSignal，不进行在途共享，保证 AbortSignal 精确控制
+  if (config?.signal) {
+    return originalGet(url, config);
+  }
+  const key = getQueryKey(url, config?.params);
+  const existing = inFlightGetRequests.get(key);
+  if (existing) {
+    return existing;
+  }
+  const promise = originalGet(url, config)
+    .finally(() => {
+      inFlightGetRequests.delete(key);
+    });
+  inFlightGetRequests.set(key, promise);
+  return promise;
+};
+
 export const api = {
   // 账号管理
   getAccounts: () => client.get<{ ok: boolean; accounts: Account[]; total: number }>('/accounts').then(r => r.data),
   createAccount: (data: Partial<Account>) => client.post<{ ok: boolean; account: Account }>('/accounts', data).then(r => r.data),
   updateAccount: (key: string, data: Partial<Account>) => client.post<{ ok: boolean; account: Account; message: string }>(`/accounts/${key}/profile`, data).then(r => r.data),
   syncAccount: (key: string) => client.post<{ ok: boolean; account: Account; message: string }>(`/accounts/${key}/sync`).then(r => r.data),
+  getAccountDetail: (key: string) => client.get<AccountDetailData>(`/accounts/${key}/detail`).then(r => r.data),
+  getAccountCards: (key: string, status = 0) => client.get<{ ok: boolean; cards: UserCardItem[]; status: number }>(`/accounts/${key}/cards`, { params: { status } }).then(r => r.data),
   deleteAccount: (key: string) => client.delete<{ ok: boolean; message: string }>(`/accounts/${key}`).then(r => r.data),
   
   // 账号解析与嗅探接入
@@ -86,10 +124,16 @@ export const api = {
   cancelAppointment: (id: number) => client.delete<{ ok: boolean; message: string }>(`/store/appointments/${id}`).then(r => r.data),
 
   // 设备定位与逆地理编码
+  searchLocation: (keyword: string) =>
+    client.get<LocationSearchResult>('/location/search', { params: { keyword } }).then(r => r.data),
   resolveLocation: (latitude: number, longitude: number) =>
-    client.get<{ ok: boolean; city_code: number; city_name: string; locality?: string; province?: string; address_name: string; latitude: string; longitude: string }>('/location/resolve', { params: { latitude, longitude } }).then(r => r.data),
+    client.get<{ ok: boolean; city_code: number; city_name: string; locality?: string; province?: string; address_name: string; latitude: string; longitude: string; source?: string; accuracy?: string }>('/location/resolve', { params: { latitude, longitude } }).then(r => r.data),
   getIpLocation: () =>
     client.get<{ ok: boolean; city_code: number; city_name: string; address_name: string; latitude: string; longitude: string; is_ip?: boolean }>('/location/ip').then(r => r.data),
+
+  // 阿里云 NTP 高精度授时校准
+  getTime: (force?: boolean) =>
+    client.get<{ ok: boolean; timestamp: number; beijing_time: string; server: string; synced: boolean; offset: number }>('/time', { params: { force } }).then(r => r.data),
 
   // 霸王餐订单管理
   getOrders: (params?: { account_key?: string; status?: string; platform?: string; keyword?: string; limit?: number; offset?: number }) => 
@@ -119,6 +163,8 @@ export const api = {
   saveSettings: (data: Partial<SystemSettings>) => client.post<{ ok: boolean; message: string }>('/settings', data).then(r => r.data),
   testNotify: (channel: string, config: Record<string, any>) => 
     client.post<NotifyTestResult>('/settings/test-notify', { channel, config }).then(r => r.data),
+  testTianditu: (data: { tianditu_key: string }) =>
+    client.post<{ ok: boolean; message: string; data?: any }>('/settings/test-tianditu', data).then(r => r.data),
   getClawBotStatus: (customPath?: string) => 
     client.get<{ ok: boolean; ready: boolean; message: string; user_id?: string; account_id?: string; has_context_token?: boolean; saved_at?: string }>('/settings/clawbot-status', { params: { custom_path: customPath } }).then(r => r.data),
 

@@ -1,12 +1,12 @@
 @echo off
 chcp 65001 >nul
-title 小蚕会员助手 · 纯净自研版 (XiaoCan Assistant v2.0)
+title 小蚕小帮手 (XiaoCan Assistant)
 
 echo ========================================================
-echo   小蚕会员助手 · 纯净自研版 (XiaoCan Assistant v2.0)
+echo   小蚕小帮手 (XiaoCan Assistant)
 echo   前端技术栈: React 19 + 字节跳动 Semi Design
 echo   后端技术栈: Python FastAPI + APScheduler
-echo   授权状态: 纯净免付费 · 无车位限制 · 本地全自动
+echo   授权状态: 本地全自动 · 无车位限制
 echo ========================================================
 echo.
 

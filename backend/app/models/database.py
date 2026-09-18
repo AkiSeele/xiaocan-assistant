@@ -167,6 +167,22 @@ def init_db():
     if "original_user_rebate" not in cols:
         c.execute("ALTER TABLE orders ADD COLUMN original_user_rebate REAL DEFAULT 0")
 
+    # 自动自愈 orders 中缺失 store_icon 的记录 (从已有历史同名/同 store_id 记录回填)
+    try:
+        c.execute("""
+            UPDATE orders
+            SET store_icon = (
+                SELECT o2.store_icon FROM orders o2
+                WHERE (o2.store_id = orders.store_id OR o2.store_name = orders.store_name)
+                  AND o2.store_icon IS NOT NULL
+                  AND o2.store_icon != ''
+                LIMIT 1
+            )
+            WHERE (store_icon IS NULL OR store_icon = '')
+        """)
+    except Exception:
+        pass
+
     # 动态检查补充 store_appointments 调度与监控字段
     apt_cols = [r[1] for r in c.execute("PRAGMA table_info(store_appointments)").fetchall()]
     if "task_type" not in apt_cols:
@@ -193,6 +209,8 @@ def init_db():
         c.execute("ALTER TABLE store_appointments ADD COLUMN rebate_type TEXT DEFAULT 'fixed'")
     if "last_checked_at" not in apt_cols:
         c.execute("ALTER TABLE store_appointments ADD COLUMN last_checked_at TEXT")
+    if "log_id" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN log_id INTEGER DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -469,14 +487,36 @@ def save_task_config(account_key: str, task_id: str, enabled: bool, cron_time: O
         conn.commit()
 
 
-def add_job_log(job_id: str, account_key: str, task_id: str, status: str, output: str):
+def add_job_log(job_id: str, account_key: str, task_id: str, status: str, output: str) -> int:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
-        conn.execute("""
+        cur = conn.execute("""
         INSERT INTO job_logs (job_id, account_key, task_id, status, output, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
         """, (job_id, account_key, task_id, status, output, now))
         conn.commit()
+        return cur.lastrowid
+
+
+def update_job_log(log_id: int, status: Optional[str] = None, output: Optional[str] = None) -> bool:
+    """动态更新某条日志的状态与详细步骤输出"""
+    if not log_id:
+        return False
+    updates = []
+    vals = []
+    if status is not None:
+        updates.append("status = ?")
+        vals.append(status)
+    if output is not None:
+        updates.append("output = ?")
+        vals.append(output)
+    if not updates:
+        return False
+    vals.append(log_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE job_logs SET {', '.join(updates)} WHERE id = ?", vals)
+        conn.commit()
+        return True
 
 
 def get_job_logs(account_key: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
@@ -534,9 +574,9 @@ def add_appointment(data: Dict[str, Any]) -> int:
             account_key, store_id, store_name, promotion_id, status, 
             early_ms, rebate_card_id, redpack_mode, outcome, created_at,
             task_type, start_time, until_time, notified_31m, notified_1m,
-            check_interval, platform, order_money, rebate_price, rebate_desc, rebate_type
+            check_interval, platform, order_money, rebate_price, rebate_desc, rebate_type, log_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["account_key"],
             str(data.get("store_id", "")),
@@ -558,7 +598,8 @@ def add_appointment(data: Dict[str, Any]) -> int:
             float(data.get("order_money", 0.0)),
             float(data.get("rebate_price", 0.0)),
             data.get("rebate_desc", ""),
-            data.get("rebate_type", "fixed")
+            data.get("rebate_type", "fixed"),
+            int(data.get("log_id") or 0)
         ))
         conn.commit()
         return cur.lastrowid

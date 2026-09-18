@@ -70,6 +70,27 @@ export const TaskIcon: React.FC<TaskIconProps> = ({ taskId, className = 'w-9 h-9
       return (
         <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><rect x="8" y="8" width="32" height="32" rx="8" fill="#1677ff"/><path d="M14 20h20v2.2H14V20zm0 6.5h14v2.2H14v-2.2z" fill="#fff"/><circle cx="33" cy="30" r="5.5" fill="#fff"/><path d="M30.8 30h4.4M33 27.8v4.4" stroke="#1677ff" strokeWidth="1.8" strokeLinecap="round"/></svg>
       );
+    case 'store_grab':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><circle cx="24" cy="24" r="18" fill="#ff4d4f"/><path d="M22 14l-6 10h6l-2 10 10-12h-6l2-8z" fill="#fff"/></svg>
+      );
+    case 'store_appoint':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><circle cx="24" cy="24" r="18" fill="#1890ff"/><path d="M24 14v10l7 4" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"/><circle cx="24" cy="24" r="2.5" fill="#fff"/></svg>
+      );
+    case 'store_monitor':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><circle cx="24" cy="24" r="18" fill="#fa8c16"/><path d="M14 24a10 10 0 0 1 20 0M18 24a6 6 0 0 1 12 0" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round"/><circle cx="24" cy="25" r="3" fill="#fff"/></svg>
+      );
+    case 'store_search':
+    case 'store_keyword':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><circle cx="24" cy="24" r="18" fill="#13c2c2"/><circle cx="22" cy="22" r="7" fill="none" stroke="#fff" strokeWidth="3"/><path d="M27 27l7 7" stroke="#fff" strokeWidth="3" strokeLinecap="round"/></svg>
+      );
+    case 'store_cancel':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><circle cx="24" cy="24" r="18" fill="#8c8c8c"/><path d="M17 17l14 14M31 17l-14 14" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/></svg>
+      );
     default:
       return (
         <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}>

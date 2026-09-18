@@ -122,7 +122,12 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
     user_id = account.get("user_id")
 
     log_output = f"[{time.strftime('%H:%M:%S')}] 开始执行任务 [{task_id}] (账号: {nickname}, 触发: {trigger_type})\n"
-    status = "success"
+    status = "running"
+    log_id = 0
+    try:
+        log_id = db.add_job_log(job_id, account_key, task_id, "running", log_output)
+    except Exception:
+        pass
 
     # 读取该任务的自定义参数配置
     configs = {c["task_id"]: c for c in db.get_task_configs(account_key)}
@@ -203,7 +208,10 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     cur_silk = (uinfo.get("user_info") or {}).get("silk", 0)
                     if cur_silk < reserve_yb:
                         log_output += f"[{time.strftime('%H:%M:%S')}] 保护停止: 当前元宝余额 {cur_silk} 低于保底阈值 {reserve_yb}，跳过本次抽奖\n"
-                        db.add_job_log(job_id, account_key, task_id, status, log_output)
+                        if log_id > 0:
+                            db.update_job_log(log_id, status="success", output=log_output)
+                        else:
+                            db.add_job_log(job_id, account_key, task_id, "success", log_output)
                         return {"ok": True, "job_id": job_id, "output": log_output}
                     else:
                         log_output += f"[{time.strftime('%H:%M:%S')}] 资产检查: 当前元宝 {cur_silk} >= 保底阈值 {reserve_yb}，安全通过\n"
@@ -346,6 +354,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         if cur_ts < target_end:
                             rem_wait = max(4.0, target_end - cur_ts + random.uniform(-1.5, 1.5))
                             log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 场次接入完毕，正在模拟下落红包抓取与互动中 (拟真耗时约 {rem_wait:.1f} 秒)...\n"
+                            if log_id > 0:
+                                db.update_job_log(log_id, status="running", output=log_output)
                             await asyncio.sleep(rem_wait)
                         else:
                             await asyncio.sleep(random.uniform(1.0, 2.5))
@@ -914,6 +924,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
         else:
             log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [{task_id}] 执行完成 (无异常)\n"
 
+        status = "success"
         log_output += f"[{time.strftime('%H:%M:%S')}] 任务结束 - 全部流程处理完毕。"
     except XiaoCanRPCError as e:
         status = "error"
@@ -922,7 +933,10 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
         status = "error"
         log_output += f"[{time.strftime('%H:%M:%S')}] 异常: {str(e)}\n"
 
-    db.add_job_log(job_id, account_key, task_id, status, log_output)
+    if log_id > 0:
+        db.update_job_log(log_id, status=status, output=log_output)
+    else:
+        db.add_job_log(job_id, account_key, task_id, status, log_output)
     return {"ok": status == "success", "job_id": job_id, "output": log_output}
 
 
