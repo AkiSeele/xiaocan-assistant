@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Card,
   Table,
@@ -25,6 +25,7 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { useOnActivated } from '../utils/useOnActivated';
 import type { Order } from '../types';
 
 const { Title, Text } = Typography;
@@ -48,7 +49,9 @@ const getConditionTagColor = (condition?: string): 'green' | 'cyan' | 'blue' | '
 };
 
 export const OrdersView: React.FC = () => {
-  const { currentAccountKey, accounts, setActiveTab, activeTab } = useAppStore();
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const accounts = useAppStore((s) => s.accounts);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const containerRef = useRef<HTMLDivElement>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const [tableScrollY, setTableScrollY] = useState<number>(460);
@@ -59,63 +62,38 @@ export const OrdersView: React.FC = () => {
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
 
-  // 动态自适应屏幕高度计算：消除外层滚动条，使表格撑满视口剩余空间
-  const updateTableHeight = useCallback(() => {
-    if (!tableContainerRef.current) return;
-    const targetEl = tableContainerRef.current;
-    const rect = targetEl.getBoundingClientRect();
-    const headerEl = targetEl.querySelector('.semi-table-header') as HTMLElement;
-    const paginationEl = targetEl.querySelector('.semi-table-pagination-outer') as HTMLElement;
-    const headerH = headerEl ? headerEl.offsetHeight : 44;
-    const paginationH = paginationEl ? paginationEl.offsetHeight : 48;
-
-    let calculated = 0;
-    if (targetEl.clientHeight > 0) {
-      calculated = targetEl.clientHeight - headerH - paginationH;
-    } else {
-      const bottomReserve = headerH + paginationH + 25;
-      calculated = window.innerHeight - rect.top - bottomReserve;
-    }
-    setTableScrollY(Math.max(260, Math.floor(calculated)));
-  }, []);
-
+  // 纯净视口高度自适应：监听表格卡片容器，杜绝 DOM querySelector 与强制同步重排
   useEffect(() => {
-    updateTableHeight();
-    const rafId = requestAnimationFrame(updateTableHeight);
-    const timer = setTimeout(updateTableHeight, 60);
-
-    const handleResize = () => {
-      requestAnimationFrame(updateTableHeight);
+    const updateHeight = () => {
+      if (!tableContainerRef.current) return;
+      const ch = tableContainerRef.current.clientHeight;
+      if (ch > 100) {
+        // 预留表头(44px)与分页条(48px)及边框空间(约96px)
+        const targetH = Math.max(260, ch - 96);
+        setTableScrollY((prev) => (Math.abs(prev - targetH) > 12 ? targetH : prev));
+      }
     };
-    window.addEventListener('resize', handleResize);
 
+    updateHeight();
     let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
+    if (typeof ResizeObserver !== 'undefined' && tableContainerRef.current) {
       ro = new ResizeObserver(() => {
-        requestAnimationFrame(updateTableHeight);
+        updateHeight();
       });
-      if (containerRef.current) ro.observe(containerRef.current);
-      if (tableContainerRef.current) ro.observe(tableContainerRef.current);
+      ro.observe(tableContainerRef.current);
     }
 
+    window.addEventListener('resize', updateHeight);
     return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timer);
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('resize', updateHeight);
       ro?.disconnect();
     };
-  }, [updateTableHeight]);
-
-  useEffect(() => {
-    if (activeTab === 'orders') {
-      updateTableHeight();
-    }
-  }, [activeTab, updateTableHeight]);
+  }, []);
 
   const lastOrdersSignatureRef = useRef<string>('');
   const inFlightOrdersRef = useRef<boolean>(false);
 
-  const fetchOrders = async (kw?: string, force = false) => {
+  const fetchOrders = async (kw?: string, force = false, silent = false) => {
     if (accounts.length === 0) {
       setOrders([]);
       return;
@@ -131,7 +109,7 @@ export const OrdersView: React.FC = () => {
     inFlightOrdersRef.current = true;
     lastOrdersSignatureRef.current = queryKey;
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const ordersRes = await api.getOrders({
         account_key: effectiveKey || undefined,
@@ -148,7 +126,7 @@ export const OrdersView: React.FC = () => {
       Toast.error('拉取订单列表失败');
     } finally {
       inFlightOrdersRef.current = false;
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -156,17 +134,26 @@ export const OrdersView: React.FC = () => {
     fetchOrders();
   }, [currentAccountKey, activeStatusTab, platformFilter]);
 
+  // 页面切入激活时自动拉取最新订单数据
+  useOnActivated('orders', () => {
+    fetchOrders(undefined, true, orders.length > 0);
+  }, { throttleMs: 3000 });
+
+  // 筛选切换时的轻量微淡入 (遵循 Semi Design 高性能 GPU 合成通道)
   useGSAP(
     () => {
-      if (containerRef.current && containerRef.current.querySelector('.gsap-order-fade')) {
-        gsap.from('.gsap-order-fade', {
-          y: 10,
-          autoAlpha: 0,
-          duration: 0.3,
-          stagger: 0.05,
-          ease: 'power2.out',
-          clearProps: 'all',
-        });
+      const tableEl = containerRef.current?.querySelector('.orders-table-container');
+      if (tableEl) {
+        gsap.fromTo(
+          tableEl,
+          { opacity: 0.8 },
+          {
+            opacity: 1,
+            duration: 0.16,
+            ease: 'power1.out',
+            clearProps: 'opacity',
+          }
+        );
       }
     },
     { scope: containerRef, dependencies: [activeStatusTab, platformFilter] }
@@ -363,7 +350,7 @@ export const OrdersView: React.FC = () => {
       <div className="w-full flex flex-col h-full min-h-0 space-y-3">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shrink-0">
           <div>
-            <Title heading={3} className="!text-lg md:!text-xl font-bold">我的霸王餐订单与返利</Title>
+            <Title heading={3}>我的霸王餐订单与返利</Title>
             <Text type="secondary" size="small">实时跟踪已抢霸王餐状态与返利到账明细</Text>
           </div>
         </div>
@@ -433,9 +420,9 @@ export const OrdersView: React.FC = () => {
       `}</style>
 
       {/* 头部标题与操作 */}
-      <div className="gsap-order-fade flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shrink-0">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 shrink-0">
         <div>
-          <Title heading={3} className="!text-lg md:!text-xl font-bold">我的霸王餐订单与返利</Title>
+          <Title heading={3}>我的霸王餐订单与返利</Title>
           <Text type="secondary" size="small">实时跟踪已抢霸王餐状态与返利到账明细</Text>
         </div>
 
@@ -449,7 +436,7 @@ export const OrdersView: React.FC = () => {
       </div>
 
       {/* 状态分类与平台过滤控制栏 */}
-      <div className="gsap-order-fade flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shrink-0">
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shrink-0">
         <Tabs
           type="button"
           activeKey={activeStatusTab}
@@ -494,7 +481,7 @@ export const OrdersView: React.FC = () => {
 
       {/* 主体表格卡片：撑满视口垂直剩余高度，杜绝超出页面滚动 */}
       <Card
-        className="gsap-order-fade flex-1 min-h-0 flex flex-col rounded-xl border border-semi-color-border shadow-xs overflow-hidden bg-semi-color-bg-0"
+        className="flex-1 min-h-0 flex flex-col rounded-xl border border-semi-color-border shadow-xs overflow-hidden bg-semi-color-bg-0"
         bodyStyle={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: 0 }}
       >
         <div

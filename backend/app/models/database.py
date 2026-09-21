@@ -211,6 +211,30 @@ def init_db():
         c.execute("ALTER TABLE store_appointments ADD COLUMN last_checked_at TEXT")
     if "log_id" not in apt_cols:
         c.execute("ALTER TABLE store_appointments ADD COLUMN log_id INTEGER DEFAULT 0")
+    if "store_icon" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN store_icon TEXT DEFAULT ''")
+    if "use_advance_card" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN use_advance_card INTEGER DEFAULT 0")
+    if "redpack_id" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN redpack_id TEXT DEFAULT ''")
+    if "redpack_name" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN redpack_name TEXT DEFAULT ''")
+
+    # 自动自愈 store_appointments 中缺失 store_icon 的记录 (从 orders 表或同店名同ID回填)
+    try:
+        c.execute("""
+            UPDATE store_appointments
+            SET store_icon = (
+                SELECT o.store_icon FROM orders o
+                WHERE (o.store_id = store_appointments.store_id OR o.store_name = store_appointments.store_name)
+                  AND o.store_icon IS NOT NULL
+                  AND o.store_icon != ''
+                LIMIT 1
+            )
+            WHERE (store_icon IS NULL OR store_icon = '')
+        """)
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -568,19 +592,32 @@ def add_appointment(data: Dict[str, Any]) -> int:
     if not status:
         status = "monitoring" if data.get("task_type") == "monitor" else "scheduled"
 
+    store_icon = (data.get("store_icon") or data.get("icon") or "").strip()
     with get_conn() as conn:
+        if not store_icon:
+            s_id = str(data.get("store_id", "")).strip()
+            s_name = (data.get("store_name") or "").strip()
+            row = conn.execute(
+                "SELECT store_icon FROM orders WHERE (store_id = ? OR store_name = ?) AND store_icon IS NOT NULL AND store_icon != '' LIMIT 1",
+                (s_id, s_name)
+            ).fetchone()
+            if row and row["store_icon"]:
+                store_icon = row["store_icon"]
+
         cur = conn.execute("""
         INSERT INTO store_appointments (
-            account_key, store_id, store_name, promotion_id, status, 
+            account_key, store_id, store_name, store_icon, promotion_id, status, 
             early_ms, rebate_card_id, redpack_mode, outcome, created_at,
             task_type, start_time, until_time, notified_31m, notified_1m,
-            check_interval, platform, order_money, rebate_price, rebate_desc, rebate_type, log_id
+            check_interval, platform, order_money, rebate_price, rebate_desc, rebate_type, log_id,
+            use_advance_card, redpack_id, redpack_name
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["account_key"],
             str(data.get("store_id", "")),
             data.get("store_name", "店铺活动"),
+            store_icon,
             str(data["promotion_id"]),
             status,
             int(data.get("early_ms", 500)),
@@ -599,7 +636,10 @@ def add_appointment(data: Dict[str, Any]) -> int:
             float(data.get("rebate_price", 0.0)),
             data.get("rebate_desc", ""),
             data.get("rebate_type", "fixed"),
-            int(data.get("log_id") or 0)
+            int(data.get("log_id") or 0),
+            int(data.get("use_advance_card") or 0),
+            str(data.get("redpack_id") or ""),
+            str(data.get("redpack_name") or "")
         ))
         conn.commit()
         return cur.lastrowid

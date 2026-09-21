@@ -16,76 +16,14 @@ from typing import Dict, Any, Optional, Tuple
 import httpx
 from ..models import database as db
 
+from . import clawbot_client
+
 logger = logging.getLogger("xiaocan.notifier")
-
-# 微信 ClawBot 腾讯 iLink 官方常量 (对齐 2.4.3 规范)
-ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
-ILINK_APP_ID = "bot"
-ILINK_CHANNEL_VERSION = "2.4.3"
-ILINK_APP_CLIENT_VERSION = str((2 << 16) | (4 << 8) | 3)  # 132100
-BOT_AGENT = "xiaocan-assistant/2.0.0"
-
-# 默认探测的 Microsoft-Rewards-Script 凭据文件绝对路径
-DEFAULT_CLAWBOT_PATHS = [
-    r"D:\小插件\Microsoft-Rewards-Script-4.3.2.1\clawbot-auth.json",
-    os.path.join(os.getcwd(), "clawbot-auth.json"),
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "clawbot-auth.json")
-]
 
 
 def load_clawbot_auth(custom_path: Optional[str] = None, auth_json_str: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], str]:
-    """
-    加载 ClawBot 凭证，优先级：
-    1. 传入的直接 JSON 字符串
-    2. 传入的指定文件路径
-    3. 数据库持久化配置的路径 / 凭证
-    4. 默认 Microsoft-Rewards-Script 本地路径
-    """
-    # 1. 直接 JSON 字符串
-    if auth_json_str and auth_json_str.strip():
-        try:
-            data = json.loads(auth_json_str.strip())
-            if isinstance(data, dict) and data.get("token") and data.get("userId"):
-                return data, "使用内存传入的直接 JSON 凭证"
-        except Exception:
-            pass
-
-    # 2. 检查数据库直接存储的 JSON 凭证
-    db_json = (db.get_setting("clawbot_auth_json", "") or "").strip()
-    if db_json:
-        try:
-            data = json.loads(db_json)
-            if isinstance(data, dict) and data.get("token") and data.get("userId"):
-                return data, "使用数据库保存的直接凭证"
-        except Exception:
-            pass
-
-    # 3. 指定路径或数据库配置路径
-    candidate_paths = []
-    if custom_path and custom_path.strip():
-        candidate_paths.append(custom_path.strip())
-    db_path = (db.get_setting("clawbot_auth_path", "") or "").strip()
-    if db_path:
-        candidate_paths.append(db_path)
-    candidate_paths.extend(DEFAULT_CLAWBOT_PATHS)
-
-    for p in candidate_paths:
-        try:
-            if os.path.exists(p) and os.path.isfile(p):
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and data.get("token") and data.get("userId"):
-                        return data, f"成功从本地文件读取: {p}"
-        except Exception as e:
-            logger.debug(f"尝试读取 ClawBot 凭证文件 {p} 失败: {e}")
-
-    return None, "未找到有效的 ClawBot 凭据文件 (clawbot-auth.json)"
-
-
-def _generate_wechat_uin() -> str:
-    """X-WECHAT-UIN: 随机 uint32 转十进制字符串再 base64 编码"""
-    uint32 = int.from_bytes(os.urandom(4), byteorder="big")
-    return base64.b64encode(str(uint32).encode("utf-8")).decode("utf-8")
+    """获取 ClawBot 凭据（委托至原生 clawbot_client 模块）"""
+    return clawbot_client.load_auth(custom_path, auth_json_str)
 
 
 async def send_clawbot_notification(
@@ -94,76 +32,8 @@ async def send_clawbot_notification(
     custom_path: Optional[str] = None,
     auth_json_str: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    通过微信官方 ClawBot (iLink) 通道向用户推送微信通知
-    """
-    auth, src_msg = load_clawbot_auth(custom_path, auth_json_str)
-    if not auth:
-        return {"ok": False, "channel": "clawbot", "message": f"ClawBot 未就绪: {src_msg}"}
-
-    token = auth.get("token", "").strip()
-    user_id = auth.get("userId", "").strip()
-    context_token = auth.get("contextToken", "").strip() if auth.get("contextToken") else ""
-
-    if not token or not user_id:
-        return {"ok": False, "channel": "clawbot", "message": "ClawBot 凭证缺少 token 或 userId"}
-
-    text = f"【小蚕助手】{title}\n\n{content}"
-    headers = {
-        "Content-Type": "application/json",
-        "AuthorizationType": "ilink_bot_token",
-        "Authorization": f"Bearer {token}",
-        "X-WECHAT-UIN": _generate_wechat_uin(),
-        "iLink-App-Id": ILINK_APP_ID,
-        "iLink-App-ClientVersion": ILINK_APP_CLIENT_VERSION
-    }
-
-    client_id = f"openclaw-weixin-{uuid.uuid4().hex}"
-    msg_body: Dict[str, Any] = {
-        "from_user_id": "",
-        "to_user_id": user_id,
-        "client_id": client_id,
-        "message_type": 2,
-        "message_state": 2,
-        "item_list": [{"type": 1, "text_item": {"text": text}}]
-    }
-    if context_token:
-        msg_body["context_token"] = context_token
-
-    payload = {
-        "msg": msg_body,
-        "base_info": {
-            "channel_version": ILINK_CHANNEL_VERSION,
-            "bot_agent": BOT_AGENT
-        }
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{ILINK_BASE_URL}/ilink/bot/sendmessage", json=payload, headers=headers)
-            if resp.status_code in (401, 403):
-                return {"ok": False, "channel": "clawbot", "message": "ClawBot 凭据鉴权失败或已过期 (HTTP 401/403)"}
-            if resp.status_code != 200:
-                return {"ok": False, "channel": "clawbot", "message": f"ClawBot 接口 HTTP 异常: {resp.status_code}"}
-
-            data = resp.json()
-            ret = data.get("ret", 0)
-            if ret == 0:
-                return {"ok": True, "channel": "clawbot", "message": "微信 ClawBot 推送成功"}
-            elif ret == -14:
-                return {"ok": False, "channel": "clawbot", "message": "ClawBot 凭证已过期，请在原脚本端重新扫码登录"}
-            elif ret == -2:
-                return {
-                    "ok": False,
-                    "channel": "clawbot",
-                    "message": "ClawBot 会话尚未激活或上下文已过期。请在手机微信中给您的 ClawBot 机器人随便发送一条消息以建立会话，随后即可正常推送！"
-                }
-            else:
-                errmsg = data.get("errmsg") or f"未知错误码 {ret}"
-                return {"ok": False, "channel": "clawbot", "message": f"ClawBot 推送返回异常: {errmsg}"}
-    except Exception as e:
-        logger.warning(f"微信 ClawBot 推送请求异常: {e}")
-        return {"ok": False, "channel": "clawbot", "message": f"网络通信错误: {str(e)}"}
+    """通过微信官方 ClawBot (iLink) 通道向用户推送通知（委托至原生 clawbot_client 模块）"""
+    return await clawbot_client.send_message(title, content, custom_path, auth_json_str)
 
 
 async def send_qq_bot_notification(
@@ -416,4 +286,44 @@ async def send_system_notification(title: str, content: str, level: str = "info"
         "channels": channels_sent,
         "errors": errors
     }
+
+
+def is_any_notify_channel_enabled() -> bool:
+    """
+    检查是否至少开启并配置了一个可用的通知通道
+    支持：微信 ClawBot、QQ 机器人、企业微信 Webhook、Bark、Telegram Bot
+    """
+    # 1. 微信 ClawBot
+    if db.get_setting("clawbot_enabled", True):
+        auth, _ = load_clawbot_auth()
+        if auth and auth.get("token") and auth.get("userId"):
+            return True
+
+    # 2. QQ 机器人
+    if db.get_setting("qq_bot_enabled", True):
+        qq_api = (db.get_setting("qq_bot_api", "") or "").strip()
+        if qq_api and (db.get_setting("qq_bot_group_id") or db.get_setting("qq_bot_user_id")):
+            return True
+
+    # 3. 企业微信 Webhook
+    if db.get_setting("wecom_enabled", False):
+        wecom = (db.get_setting("wecom_webhook", "") or "").strip()
+        if wecom and wecom.startswith("http"):
+            return True
+
+    # 4. iOS Bark
+    if db.get_setting("bark_enabled", False):
+        bark = (db.get_setting("bark_url", "") or "").strip()
+        if bark and bark.startswith("http"):
+            return True
+
+    # 5. Telegram Bot
+    if db.get_setting("telegram_enabled", False):
+        tg_token = (db.get_setting("tg_bot_token", "") or "").strip()
+        tg_chat_id = (db.get_setting("tg_chat_id", "") or "").strip()
+        if tg_token and tg_chat_id:
+            return True
+
+    return False
+
 

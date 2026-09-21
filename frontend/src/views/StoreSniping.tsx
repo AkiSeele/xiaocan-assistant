@@ -40,6 +40,7 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { useOnActivated } from '../utils/useOnActivated';
 import type { StoreItem, StorePromotion, StoreAppointment, AccountDetailData } from '../types';
 
 gsap.registerPlugin(useGSAP);
@@ -148,11 +149,15 @@ const DEFAULT_MEAL_TICKET_PIC = 'https://web.xinyifm.cn/oss/xc-backend/176526866
 const DEFAULT_ADVANCE_COUPON_PIC = 'https://web.xinyifm.cn/oss/xc-backend/17757248992739a34eb5de1a242b29fd70684cd44bce8.png';
 
 export const StoreSniping: React.FC = () => {
-  const { accounts, currentAccountKey, activeLocation, setActiveTab } = useAppStore();
+  const accounts = useAppStore((s) => s.accounts);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const activeLocation = useAppStore((s) => s.activeLocation);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const currentAccount = useMemo(() => accounts.find(a => a.key === currentAccountKey) || accounts[0], [accounts, currentAccountKey]);
 
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [appointments, setAppointments] = useState<StoreAppointment[]>([]);
+  const [appointmentsLoading, setAppointmentsLoading] = useState<boolean>(false);
   const [loading, setLoading] = useState(false);
   const [activeTabKey, setActiveTabKey] = useState<string>('stores');
 
@@ -315,7 +320,7 @@ export const StoreSniping: React.FC = () => {
   const [platformFilter, setPlatformFilter] = useState<'all' | 'meituan' | 'eleme' | 'jingdong'>('all');
   const [rebateTypeFilter, setRebateTypeFilter] = useState<'all' | 'fixed' | 'percent'>('all');
   const [conditionFilter, setConditionFilter] = useState<'all' | 'no_review' | 'good_review'>('all');
-  const [sortBy, setSortBy] = useState<'default' | 'distance' | 'rebate' | 'rate' | 'left'>('default');
+  const [sortBy, setSortBy] = useState<'default' | 'distance' | 'rebate' | 'rate' | 'left'>('distance');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [activeSearchKeyword, setActiveSearchKeyword] = useState<string>('');
   
@@ -326,10 +331,12 @@ export const StoreSniping: React.FC = () => {
   const [showBackTop, setShowBackTop] = useState(false);
 
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
+  const tabWrapperRef = useRef<HTMLDivElement | null>(null);
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const brandContainerRef = useRef<HTMLDivElement | null>(null);
   const appointContainerRef = useRef<HTMLDivElement | null>(null);
   const dualContainerRef = useRef<HTMLDivElement | null>(null);
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(new Set(['stores']));
   const [tabScrollHeights, setTabScrollHeights] = useState<Record<string, number>>({
     stores: 480,
     brand_coupon: 480,
@@ -496,111 +503,102 @@ export const StoreSniping: React.FC = () => {
   // 同店双返利/多活动即时过滤 (使用 useDeferredValue 避免输入卡顿)
   const deferredDualKeyword = React.useDeferredValue(dualSearchKeyword);
   const displayedDualStores = useMemo(() => {
-    if (!deferredDualKeyword.trim()) return dualStores;
-    const kw = deferredDualKeyword.trim().toLowerCase();
-    return dualStores.filter(s =>
-      (s.name && s.name.toLowerCase().includes(kw)) ||
-      (s.fixed_plan?.rebate_desc && s.fixed_plan.rebate_desc.toLowerCase().includes(kw)) ||
-      (s.percent_plan?.rebate_desc && s.percent_plan.rebate_desc.toLowerCase().includes(kw)) ||
-      (s.promotions && s.promotions.some(p => p.rebate_desc && p.rebate_desc.toLowerCase().includes(kw)))
-    );
+    let list = dualStores;
+    if (deferredDualKeyword.trim()) {
+      const kw = deferredDualKeyword.trim().toLowerCase();
+      list = list.filter(s =>
+        (s.name && s.name.toLowerCase().includes(kw)) ||
+        (s.fixed_plan?.rebate_desc && s.fixed_plan.rebate_desc.toLowerCase().includes(kw)) ||
+        (s.percent_plan?.rebate_desc && s.percent_plan.rebate_desc.toLowerCase().includes(kw)) ||
+        (s.promotions && s.promotions.some(p => p.rebate_desc && p.rebate_desc.toLowerCase().includes(kw)))
+      );
+    }
+    return list.slice().sort((a, b) => {
+      const da = a.distance && a.distance > 0 ? a.distance : 9999999;
+      const db = b.distance && b.distance > 0 ? b.distance : 9999999;
+      return da - db;
+    });
   }, [dualStores, deferredDualKeyword]);
 
-  // 动态自适应屏幕高度计算：使得表格与底部状态栏紧密贴合 Card 底部，消除遮挡与底部截断
-  const updateTableHeight = useCallback(() => {
-    const tabs: Array<{ key: string; ref: React.RefObject<HTMLDivElement | null> }> = [
-      { key: 'stores', ref: tableContainerRef },
-      { key: 'brand_coupon', ref: brandContainerRef },
-      { key: 'dual_rebate', ref: dualContainerRef },
-      { key: 'appointments', ref: appointContainerRef },
-    ];
-
-    let baselineContainerH = 0;
-    for (const tab of tabs) {
-      if (tab.ref.current && tab.ref.current.clientHeight > 0) {
-        baselineContainerH = tab.ref.current.clientHeight;
-        break;
+  // 店铺图标映射表：优先快速回填预约与监听列表中缺失的商户图标
+  const storeIconMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of stores) {
+      if (s.icon) {
+        if (s.store_id) map.set(s.store_id, s.icon);
+        if (s.name) map.set(s.name, s.icon);
       }
     }
-
-    const newHeights: Record<string, number> = {};
-
-    for (const tab of tabs) {
-      const el = tab.ref.current;
-      if (!el) continue;
-
-      const containerH = el.clientHeight > 0 ? el.clientHeight : baselineContainerH;
-      if (containerH <= 0) continue;
-
-      const subheaderEl = el.querySelector('.store-table-subheader') as HTMLElement;
-      const subheaderH = subheaderEl ? subheaderEl.offsetHeight : 0;
-
-      const headerEl = el.querySelector('.semi-table-header') as HTMLElement;
-      const headerH = headerEl ? headerEl.offsetHeight : 44;
-
-      const footerEl = el.querySelector('.store-table-footer') as HTMLElement;
-      const paginationEl = el.querySelector('.semi-table-pagination-outer') as HTMLElement;
-      const footerH = footerEl
-        ? footerEl.offsetHeight
-        : (paginationEl ? paginationEl.offsetHeight : (tab.key === 'appointments' ? 49 : 41));
-
-      // 精确填满卡片容器空间，配合 footer 的 margin-top: auto 实现 0 缝隙贴底
-      const available = containerH - subheaderH - headerH - footerH;
-      newHeights[tab.key] = Math.max(220, Math.floor(available));
+    for (const s of dualStores) {
+      if (s.icon) {
+        if (s.store_id) map.set(s.store_id, s.icon);
+        if (s.name) map.set(s.name, s.icon);
+      }
     }
+    return map;
+  }, [stores, dualStores]);
 
-    if (Object.keys(newHeights).length > 0) {
-      setTabScrollHeights(prev => {
-        let changed = false;
-        for (const k of Object.keys(newHeights)) {
-          if (prev[k] !== newHeights[k]) {
-            changed = true;
-            break;
-          }
-        }
-        return changed ? { ...prev, ...newHeights } : prev;
-      });
-    }
-  }, []);
+  // 进行中的预约/监听任务数
+  const activeAppointCount = useMemo(() => {
+    return appointments.filter(a => ['monitoring', 'scheduled', 'primed', 'pending'].includes(a.status)).length;
+  }, [appointments]);
 
+  // 记录访问过的分栏，实现未访问分栏惰性挂载（Lazy Mount），已访问分栏常驻缓存
   useEffect(() => {
-    updateTableHeight();
-    const rafId = requestAnimationFrame(updateTableHeight);
-    const timer = setTimeout(updateTableHeight, 60);
+    setVisitedTabs(prev => {
+      if (prev.has(activeTabKey)) return prev;
+      const next = new Set(prev);
+      next.add(activeTabKey);
+      return next;
+    });
+  }, [activeTabKey]);
 
-    const handleResize = () => {
-      requestAnimationFrame(updateTableHeight);
+  // 轻量视口高度自适应：杜绝 DOM querySelector 与强制同步重排
+  useEffect(() => {
+    const updateHeight = () => {
+      if (!tabWrapperRef.current) return;
+      const ch = tabWrapperRef.current.clientHeight;
+      if (ch > 100) {
+        // 预留表头(44px)与触底加载栏/分页条空间(约42px~50px)
+        const baseH = Math.max(260, ch - 86);
+        const dualH = Math.max(240, ch - 126);
+        const appointH = Math.max(240, ch - 134);
+
+        setTabScrollHeights(prev => {
+          if (
+            Math.abs((prev.stores || 0) - baseH) <= 12 &&
+            Math.abs((prev.brand_coupon || 0) - baseH) <= 12 &&
+            Math.abs((prev.dual_rebate || 0) - dualH) <= 12 &&
+            Math.abs((prev.appointments || 0) - appointH) <= 12
+          ) {
+            return prev;
+          }
+          return {
+            stores: baseH,
+            brand_coupon: baseH,
+            dual_rebate: dualH,
+            appointments: appointH,
+          };
+        });
+      }
     };
-    window.addEventListener('resize', handleResize);
+
+    updateHeight();
 
     let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
+    if (typeof ResizeObserver !== 'undefined' && tabWrapperRef.current) {
       ro = new ResizeObserver(() => {
-        requestAnimationFrame(updateTableHeight);
+        updateHeight();
       });
-      if (mainContainerRef.current) ro.observe(mainContainerRef.current);
-      if (tableContainerRef.current) ro.observe(tableContainerRef.current);
-      if (brandContainerRef.current) ro.observe(brandContainerRef.current);
-      if (dualContainerRef.current) ro.observe(dualContainerRef.current);
-      if (appointContainerRef.current) ro.observe(appointContainerRef.current);
+      ro.observe(tabWrapperRef.current);
     }
 
+    window.addEventListener('resize', updateHeight);
     return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timer);
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('resize', updateHeight);
       ro?.disconnect();
     };
-  }, [
-    updateTableHeight,
-    activeTabKey,
-    dualScanDone,
-    dualScanLoading,
-    displayedDualStores.length,
-    regularStores.length,
-    brandCouponStores.length,
-    appointments.length
-  ]);
+  }, []);
 
   // GSAP: 遵循 gsap-skills 规范，Tab 切换纯透明度平滑淡入，完全走 GPU 合成通道无回流开销
   useGSAP(() => {
@@ -636,11 +634,16 @@ export const StoreSniping: React.FC = () => {
         max_stores: targetMax
       });
       if (res.ok) {
-        setDualStores(res.stores || []);
+        const sorted = (res.stores || []).slice().sort((a: StoreItem, b: StoreItem) => {
+          const da = a.distance && a.distance > 0 ? a.distance : 9999999;
+          const db = b.distance && b.distance > 0 ? b.distance : 9999999;
+          return da - db;
+        });
+        setDualStores(sorted);
         setDualTotalPromos(res.total_scanned_promotions || 0);
         setDualTotalStores(res.total_scanned_stores || 0);
         setDualScanDone(true);
-        Toast.success(res.message || `扫描完成：已筛选出 ${res.stores?.length || 0} 家同店多活动/双福利商户`);
+        Toast.success(res.message || `扫描完成：已筛选出 ${sorted.length} 家同店多活动/双福利商户`);
       } else {
         Toast.error(res.message || '商户扫描失败');
       }
@@ -1023,18 +1026,19 @@ export const StoreSniping: React.FC = () => {
   const lastAppointmentsKeyRef = useRef<string>('');
   const inFlightAppointmentsRef = useRef<boolean>(false);
 
-  const fetchAppointments = useCallback(async (force = false) => {
+  const fetchAppointments = useCallback(async (force = true) => {
     const key = currentAccountKey || '';
     if (!force && lastAppointmentsKeyRef.current === key) {
       return;
     }
-    if (inFlightAppointmentsRef.current) return;
+    if (inFlightAppointmentsRef.current && !force) return;
     inFlightAppointmentsRef.current = true;
     lastAppointmentsKeyRef.current = key;
+    setAppointmentsLoading(true);
 
     try {
       const res = await api.getAppointments(key);
-      if (res.ok) {
+      if (res && res.ok) {
         setAppointments(res.appointments || []);
       }
     } catch {
@@ -1042,13 +1046,36 @@ export const StoreSniping: React.FC = () => {
       // ignore
     } finally {
       inFlightAppointmentsRef.current = false;
+      setAppointmentsLoading(false);
     }
   }, [currentAccountKey]);
 
   useEffect(() => {
     fetchStores();
-    fetchAppointments();
+    fetchAppointments(false);
   }, [fetchStores, fetchAppointments]);
+
+  // 页面切入激活时自动拉取预约状态与当前账号卡券资产（饭票、超前券、红包）
+  useOnActivated('store', () => {
+    fetchAppointments(true);
+    fetchAccountAssets(currentAccountKey, true);
+    if (stores.length === 0) {
+      fetchStores();
+    }
+  }, { throttleMs: 3000 });
+
+  // 当处于「预约与监听」Tab 且存在进行中的任务时，启动轻量 4 秒静默自动轮询更新任务状态
+  useEffect(() => {
+    if (activeTabKey !== 'appointments') return;
+    const hasActive = appointments.some(a => ['monitoring', 'scheduled', 'primed', 'pending'].includes(a.status));
+    if (!hasActive) return;
+
+    const timer = setInterval(() => {
+      fetchAppointments(true);
+    }, 4000);
+
+    return () => clearInterval(timer);
+  }, [activeTabKey, appointments, fetchAppointments]);
 
 
 
@@ -1106,6 +1133,20 @@ export const StoreSniping: React.FC = () => {
     return result;
   }, []);
 
+  const calcAdvanceTime = useCallback((startTimeStr?: string) => {
+    if (!startTimeStr || !startTimeStr.includes(':')) return startTimeStr || '';
+    const parts = startTimeStr.split(':');
+    let h = parseInt(parts[0], 10);
+    let m = parseInt(parts[1], 10);
+    m -= 30;
+    if (m < 0) {
+      m += 60;
+      h -= 1;
+      if (h < 0) h += 24;
+    }
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }, []);
+
   const handleOpenAppoint = useCallback((store: StoreItem, promo?: StorePromotion | StoreItem, forceMode?: 'countdown' | 'monitor') => {
     if (!currentAccountKey) {
       Toast.warning('请先选择或绑定账号');
@@ -1123,11 +1164,17 @@ export const StoreSniping: React.FC = () => {
     setAppointModalVisible(true);
   }, [currentAccountKey, getStoreTimeStatus]);
 
-  const handleGrabNow = useCallback(async (store: StoreItem, promo?: StorePromotion | StoreItem) => {
+  const handleGrabNow = useCallback(async (store: StoreItem, promo?: StorePromotion | StoreItem, advance = false) => {
     if (!currentAccountKey) {
       Toast.warning('请先选择或绑定账号');
       return;
     }
+    // 饭票资产前置强核验：抢单必须有饭票
+    if (assetStats.mealTicketCount <= 0) {
+      Toast.error('抢单拦截：当前账号可用饭票为 0，无法发起抢单，请先在官方小程序获取饭票');
+      return;
+    }
+
     const currentPid = store.selected_promotion_id || store.promotion_id;
     const targetPromo = promo || (store.promotions?.find(p => p.promotion_id === currentPid)) || store;
     const promoId = targetPromo.promotion_id;
@@ -1142,13 +1189,15 @@ export const StoreSniping: React.FC = () => {
         platform: store.platform,
         order_money: targetPromo.order_money,
         rebate_price: targetPromo.rebate_price,
-        rebate_desc: targetPromo.rebate_desc
+        rebate_desc: targetPromo.rebate_desc,
+        advance: advance
       });
 
       if (res.ok) {
         Toast.success(res.message || '抢单成功，名额已锁定');
         fetchStores(undefined, true);
         fetchAppointments(true);
+        fetchAccountAssets(currentAccountKey, true);
       } else {
         if (res.can_monitor) {
           Modal.confirm({
@@ -1169,16 +1218,28 @@ export const StoreSniping: React.FC = () => {
     } finally {
       setGrabbingId(null);
     }
-  }, [currentAccountKey, fetchStores, fetchAppointments, handleOpenAppoint]);
+  }, [currentAccountKey, assetStats.mealTicketCount, fetchStores, fetchAppointments, fetchAccountAssets, handleOpenAppoint]);
 
   const handleSubmitAppoint = async (values: any) => {
     if (!selectedStore || !selectedPromo || !currentAccountKey) return;
     try {
       const isMonitor = appointModalMode === 'monitor';
+      const rpMode = values.redpack_mode ?? 0;
+      let chosenRpId = '';
+      let chosenRpName = '';
+      if (rpMode === 1 && values.redpack_id) {
+        chosenRpId = String(values.redpack_id);
+        const found = (assetDetail?.redpacks || []).find((r: any) => String(r.user_red_pack_id || r.id || '') === chosenRpId);
+        if (found) {
+          chosenRpName = found.name || (found as any).title || '';
+        }
+      }
+
       await api.createAppointment({
         account_key: currentAccountKey,
         store_id: selectedPromo.store_id || selectedStore.store_id,
         store_name: selectedStore.name,
+        store_icon: selectedStore.icon || '',
         promotion_id: selectedPromo.promotion_id,
         platform: selectedStore.platform,
         task_type: isMonitor ? 'monitor' : 'countdown',
@@ -1190,36 +1251,53 @@ export const StoreSniping: React.FC = () => {
         rebate_price: selectedPromo.rebate_price,
         rebate_desc: selectedPromo.rebate_desc || `满${selectedPromo.order_money}返${selectedPromo.rebate_price}元`,
         rebate_type: selectedPromo.rebate_type || 'fixed',
-        redpack_mode: values.redpack_mode || 0
+        redpack_mode: rpMode,
+        redpack_id: chosenRpId,
+        redpack_name: chosenRpName,
+        use_advance_card: (!isMonitor && values.use_advance_card) ? 1 : 0
       });
 
-      Toast.success(isMonitor ? `已开启【${selectedStore.name}】名额监听任务` : `店铺【${selectedStore.name}】已加入定时预约抢单队列`);
+      Toast.success(isMonitor ? `已开启【${cleanEmoji(selectedStore.name)}】名额监听任务` : `店铺【${cleanEmoji(selectedStore.name)}】已加入定时预约抢单队列`);
       setAppointModalVisible(false);
-      fetchAppointments();
+      await fetchAppointments(true);
     } catch {
       Toast.error('提交失败，请重试');
     }
   };
 
   const handleStopAppoint = useCallback(async (aid: number) => {
+    // 乐观更新：立即将该任务标记为已停止
+    setAppointments(prev => prev.map(a => a.id === aid ? {
+      ...a,
+      status: 'cancelled',
+      outcome: '用户已主动停止监听'
+    } : a));
+
     try {
       const res = await api.stopAppointment(aid);
       if (res.ok) {
         Toast.success('已停止名额监听任务');
-        fetchAppointments();
+      } else {
+        Toast.error(res.message || '停止监听失败');
       }
     } catch {
       Toast.error('停止监听失败');
+    } finally {
+      fetchAppointments(true);
     }
   }, [fetchAppointments]);
 
   const handleCancelAppoint = useCallback(async (aid: number) => {
+    // 乐观更新：立即从本地列表中移除该记录
+    setAppointments(prev => prev.filter(a => a.id !== aid));
+
     try {
       await api.cancelAppointment(aid);
       Toast.success('已删除任务记录');
-      fetchAppointments();
     } catch {
       Toast.error('操作失败');
+    } finally {
+      fetchAppointments(true);
     }
   }, [fetchAppointments]);
 
@@ -1408,7 +1486,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '操作',
       dataIndex: 'actions',
-      width: 130,
+      width: 175,
       fixed: 'right',
       render: (_: any, row?: StoreItem) => {
         if (!row) return null;
@@ -1419,15 +1497,29 @@ export const StoreSniping: React.FC = () => {
         const isGrabbing = grabbingId === activePromo.promotion_id;
 
         if (timeStat.status === 'before') {
+          const canAdvance = timeStat.diffMinutes > 0 && timeStat.diffMinutes <= 30 && assetStats.advanceCouponCount > 0;
           return (
-            <Button
-              theme="light"
-              type="primary"
-              size="small"
-              onClick={() => handleOpenAppoint(row, activePromo, 'countdown')}
-            >
-              预约抢单
-            </Button>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {canAdvance && (
+                <Button
+                  theme="solid"
+                  type="warning"
+                  size="small"
+                  loading={isGrabbing}
+                  onClick={() => handleGrabNow(row, activePromo, true)}
+                >
+                  超前抢 ({assetStats.advanceCouponCount}张)
+                </Button>
+              )}
+              <Button
+                theme="light"
+                type="primary"
+                size="small"
+                onClick={() => handleOpenAppoint(row, activePromo, 'countdown')}
+              >
+                预约抢单
+              </Button>
+            </div>
           );
         }
 
@@ -1463,7 +1555,7 @@ export const StoreSniping: React.FC = () => {
         );
       },
     },
-  ], [grabbingId, handleGrabNow, handleOpenAppoint, getStoreTimeStatus, handleSelectPromo, dualRebateStoreKeys]);
+  ], [grabbingId, handleGrabNow, handleOpenAppoint, getStoreTimeStatus, handleSelectPromo, dualRebateStoreKeys, assetStats]);
 
   const dualColumns: ColumnProps<StoreItem>[] = useMemo(() => [
     {
@@ -1490,7 +1582,7 @@ export const StoreSniping: React.FC = () => {
                 <Tag color="amber" size="small" shape="square" className="flex-shrink-0">
                   美团外卖
                 </Tag>
-                <div className="truncate max-w-[160px] font-medium text-[14px]" title={cleanEmoji(name)}>
+                <div className="truncate max-w-[200px] font-medium text-[14px]" title={cleanEmoji(name)}>
                   {cleanEmoji(name)}
                 </div>
               </div>
@@ -1511,7 +1603,7 @@ export const StoreSniping: React.FC = () => {
                 门店营业: {row.opening_hours || '00:00-23:59'}
               </div>
               {row.address && (
-                <div className="text-[11px] text-semi-color-text-3 mt-0.5 truncate max-w-[240px]" title={row.address}>
+                <div className="text-[11px] text-semi-color-text-3 mt-0.5 truncate max-w-full" title={row.address}>
                   地址: {row.address}
                 </div>
               )}
@@ -1560,14 +1652,27 @@ export const StoreSniping: React.FC = () => {
                   {isSoldOut ? '已领完' : `余 ${pLeft} 份`}
                 </Tag>
                 {isBefore ? (
-                  <Button
-                    theme="light"
-                    type="primary"
-                    size="small"
-                    onClick={() => handleOpenAppoint(row, activeFixed, 'countdown')}
-                  >
-                    预约
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    {timeStat.diffMinutes > 0 && timeStat.diffMinutes <= 30 && assetStats.advanceCouponCount > 0 && (
+                      <Button
+                        theme="solid"
+                        type="warning"
+                        size="small"
+                        loading={isGrabbing}
+                        onClick={() => handleGrabNow(row, activeFixed, true)}
+                      >
+                        超前抢
+                      </Button>
+                    )}
+                    <Button
+                      theme="light"
+                      type="primary"
+                      size="small"
+                      onClick={() => handleOpenAppoint(row, activeFixed, 'countdown')}
+                    >
+                      预约
+                    </Button>
+                  </div>
                 ) : isActive ? (
                   !isSoldOut ? (
                     <Button
@@ -1705,14 +1810,27 @@ export const StoreSniping: React.FC = () => {
                   {isSoldOut ? '已领完' : `余 ${pLeft} 份`}
                 </Tag>
                 {isBefore ? (
-                  <Button
-                    theme="light"
-                    type="warning"
-                    size="small"
-                    onClick={() => handleOpenAppoint(row, activePercent, 'countdown')}
-                  >
-                    预约
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    {timeStat.diffMinutes > 0 && timeStat.diffMinutes <= 30 && assetStats.advanceCouponCount > 0 && (
+                      <Button
+                        theme="solid"
+                        type="warning"
+                        size="small"
+                        loading={isGrabbing}
+                        onClick={() => handleGrabNow(row, activePercent, true)}
+                      >
+                        超前抢
+                      </Button>
+                    )}
+                    <Button
+                      theme="light"
+                      type="warning"
+                      size="small"
+                      onClick={() => handleOpenAppoint(row, activePercent, 'countdown')}
+                    >
+                      预约
+                    </Button>
+                  </div>
                 ) : isActive ? (
                   !isSoldOut ? (
                     <Button
@@ -1751,9 +1869,7 @@ export const StoreSniping: React.FC = () => {
               <IconClock style={{ color: 'var(--semi-color-text-2)', fontSize: 12, flexShrink: 0 }} />
               <span className="text-semi-color-text-2">活动时段:</span>
               <span className="font-mono font-medium text-semi-color-text-0">
-                {activePercent.start_time === '00:00' && (activePercent.end_time === '23:59' || !activePercent.end_time)
-                  ? '全天 (00:00 ~ 23:59)'
-                  : `${activePercent.start_time || '00:00'} ~ ${activePercent.end_time || '23:59'}`}
+                {activePercent.start_time || '全天'} ~ {activePercent.end_time || '23:59'}
               </span>
               {isBefore ? (
                 <Tag color="cyan" size="small" shape="square">
@@ -1768,12 +1884,14 @@ export const StoreSniping: React.FC = () => {
                   已结束
                 </Tag>
               )}
-              <Tag color={getConditionTagColor(activePercent.condition)} size="small" shape="square">
-                {activePercent.condition}
-              </Tag>
-              {activePercent.delivery_time_tip && (
+              {activePercent.if_can_advance_order && (
+                <Tag color="blue" size="small" shape="square">
+                  支持预约
+                </Tag>
+              )}
+              {Boolean(activePercent.days_limit) && (
                 <span className="text-[11px] text-semi-color-text-3 ml-auto">
-                  配送约{activePercent.delivery_time_tip}
+                  {activePercent.days_limit}天限{activePercent.days_order_limit || 1}单
                 </span>
               )}
             </div>
@@ -1791,18 +1909,14 @@ export const StoreSniping: React.FC = () => {
                   }}
                 >
                   {percentPlans.map((pp, pIdx) => {
-                    const ppLeft = Math.max(0, pp.left_number ?? 0);
-                    const condShort = getConditionShortText(pp.condition);
+                    const pl = Math.max(0, pp.left_number ?? 0);
                     return (
                       <Radio key={pp.promotion_id || pIdx} value={pp.promotion_id}>
                         <span className="font-medium">档位{pIdx + 1}</span>
-                        <span style={{ fontSize: 10, marginLeft: 3, color: 'var(--semi-color-text-2)' }}>
-                          ({condShort})
-                        </span>
-                        {ppLeft <= 0 ? (
+                        {pl <= 0 ? (
                           <span style={{ fontSize: 10, marginLeft: 2, color: 'var(--semi-color-text-3)' }}>[无票]</span>
                         ) : (
-                          <span style={{ fontSize: 10, marginLeft: 2, color: 'var(--semi-color-warning)' }}>[余{ppLeft}]</span>
+                          <span style={{ fontSize: 10, marginLeft: 2, color: 'var(--semi-color-primary)' }}>[余{pl}]</span>
                         )}
                       </Radio>
                     );
@@ -1815,28 +1929,28 @@ export const StoreSniping: React.FC = () => {
       },
     },
     {
-      title: '双返利整合',
-      dataIndex: 'dual_summary',
-      width: 160,
+      title: '双活动统筹',
+      dataIndex: 'dual_status',
+      width: 150,
       render: (_: any, row?: StoreItem) => {
         if (!row) return null;
-        const fixedPlans = (row.fixed_plans && row.fixed_plans.length > 0)
+        const fixedPlans: StorePromotion[] = (row.fixed_plans && row.fixed_plans.length > 0)
           ? row.fixed_plans
           : (row.fixed_plan ? [row.fixed_plan] : (row.promotions?.filter(p => p.rebate_type === 'fixed') || []));
-        const percentPlans = (row.percent_plans && row.percent_plans.length > 0)
+        const percentPlans: StorePromotion[] = (row.percent_plans && row.percent_plans.length > 0)
           ? row.percent_plans
           : (row.percent_plan ? [row.percent_plan] : (row.promotions?.filter(p => p.rebate_type === 'percent') || []));
 
-        const chosenFid = row.selected_fixed_pid || fixedPlans[0]?.promotion_id;
-        const activeFixed = fixedPlans.find(p => p.promotion_id === chosenFid) || fixedPlans[0];
-        const chosenPid = row.selected_percent_pid || percentPlans[0]?.promotion_id;
-        const activePercent = percentPlans.find(p => p.promotion_id === chosenPid) || percentPlans[0];
+        const chosenFixedPid = row.selected_fixed_pid || fixedPlans[0]?.promotion_id;
+        const activeFixed = fixedPlans.find(p => p.promotion_id === chosenFixedPid) || fixedPlans[0];
+        const chosenPercentPid = row.selected_percent_pid || percentPlans[0]?.promotion_id;
+        const activePercent = percentPlans.find(p => p.promotion_id === chosenPercentPid) || percentPlans[0];
 
         const hasFixedQuota = (activeFixed?.left_number ?? 0) > 0;
         const hasPercentQuota = (activePercent?.left_number ?? 0) > 0;
 
         return (
-          <div className="space-y-1.5 py-1">
+          <div className="space-y-1 py-1">
             <div className="flex items-center gap-1.5 flex-wrap">
               <Tag color="amber" size="small" shape="circle">
                 共 {fixedPlans.length + percentPlans.length} 档方案
@@ -1864,7 +1978,7 @@ export const StoreSniping: React.FC = () => {
         );
       },
     },
-  ], [grabbingId, handleGrabNow, handleOpenAppoint, getStoreTimeStatus, handleSelectDualFixedPromo, handleSelectDualPercentPromo]);
+  ], [grabbingId, handleGrabNow, handleOpenAppoint, getStoreTimeStatus, handleSelectDualFixedPromo, handleSelectDualPercentPromo, assetStats]);
 
   const appointColumns: ColumnProps<StoreAppointment>[] = useMemo(() => [
     {
@@ -1890,26 +2004,39 @@ export const StoreSniping: React.FC = () => {
       dataIndex: 'store_name',
       render: (name: string, row?: StoreAppointment) => {
         const platInfo = getPlatformBadge(row?.platform);
+        const iconSrc = row?.store_icon || row?.icon || (row?.store_id ? storeIconMap.get(row.store_id) : undefined) || (name ? storeIconMap.get(name) : undefined);
         return (
-          <div>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <Tag color={platInfo.color} size="small" shape="square">
-                {platInfo.label}
-              </Tag>
-              <div className="truncate max-w-full font-medium" title={name}>
-                {name}
-              </div>
+          <div className="flex items-start gap-3 py-1">
+            <div className="relative flex-shrink-0 mt-0.5">
+              <Avatar
+                size="medium"
+                shape="square"
+                src={iconSrc || undefined}
+                color={platInfo.avatarColor}
+              >
+                {cleanEmoji(name)?.[0] || '店'}
+              </Avatar>
             </div>
-            {row?.rebate_desc && (
-              <div className="flex items-center gap-1.5 mt-1">
-                <span className="text-xs text-red-500 font-medium">
-                  {row.rebate_desc}
-                </span>
-                <Tag color={row.rebate_type === 'percent' ? 'purple' : 'blue'} size="small" shape="square">
-                  {row.rebate_type === 'percent' ? '比例返现' : '实付满返'}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <Tag color={platInfo.color} size="small" shape="square" className="flex-shrink-0">
+                  {platInfo.label}
                 </Tag>
+                <div className="truncate max-w-full font-medium text-[14px]" title={cleanEmoji(name)}>
+                  {cleanEmoji(name)}
+                </div>
               </div>
-            )}
+              {row?.rebate_desc && (
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className="text-xs text-red-500 font-medium">
+                    {cleanEmoji(row.rebate_desc)}
+                  </span>
+                  <Tag color={row.rebate_type === 'percent' ? 'purple' : 'blue'} size="small" shape="square">
+                    {row.rebate_type === 'percent' ? '比例返现' : '实付满返'}
+                  </Tag>
+                </div>
+              )}
+            </div>
           </div>
         );
       },
@@ -1917,7 +2044,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '策略与时间',
       dataIndex: 'start_time',
-      width: 180,
+      width: 190,
       render: (_: any, row?: StoreAppointment) => {
         if (!row) return null;
         if (row.task_type === 'monitor') {
@@ -1928,10 +2055,57 @@ export const StoreSniping: React.FC = () => {
             </div>
           );
         }
+        const hasAdvance = Boolean(row.use_advance_card);
         return (
           <div className="text-xs space-y-0.5">
-            <div>开抢时间: <span className="font-mono font-semibold">{row.start_time || '准点'}</span></div>
+            <div>
+              开抢时间:{' '}
+              {hasAdvance ? (
+                <span>
+                  <span className="font-mono line-through text-semi-color-text-2">{row.start_time || '准点'}</span>{' '}
+                  <span className="font-mono font-bold text-purple-600 dark:text-purple-400">
+                    {calcAdvanceTime(row.start_time)}
+                  </span>
+                </span>
+              ) : (
+                <span className="font-mono font-semibold">{row.start_time || '准点'}</span>
+              )}
+            </div>
             <div className="text-semi-color-text-2">提前量: {row.early_ms || 500}ms</div>
+          </div>
+        );
+      }
+    },
+    {
+      title: '卡券与红包关联',
+      dataIndex: 'redpack_mode',
+      width: 190,
+      render: (_: any, row?: StoreAppointment) => {
+        if (!row) return null;
+        const hasAdvance = Boolean(row.use_advance_card);
+        const rpMode = row.redpack_mode ?? 0;
+        return (
+          <div className="flex flex-col gap-1 text-xs">
+            <div className="flex items-center gap-1 flex-wrap">
+              {hasAdvance ? (
+                <Tag color="purple" size="small" shape="square">超前抢单 (提前30m)</Tag>
+              ) : (
+                <Tag color="grey" size="small" shape="square">常规开抢</Tag>
+              )}
+            </div>
+            <div>
+              {rpMode === 1 ? (
+                <Tooltip content={row.redpack_name || `红包 #${row.redpack_id}`}>
+                  <Tag color="red" size="small" shape="square" className="truncate max-w-[170px]">
+                    指定: {row.redpack_name ? cleanEmoji(row.redpack_name) : `#${row.redpack_id}`}
+                  </Tag>
+                </Tooltip>
+              ) : rpMode === 2 ? (
+                <Tag color="grey" size="small" shape="square">不使用红包</Tag>
+              ) : (
+                <Tag color="cyan" size="small" shape="square">自动最优红包</Tag>
+              )}
+            </div>
           </div>
         );
       }
@@ -2008,7 +2182,7 @@ export const StoreSniping: React.FC = () => {
         );
       },
     },
-  ], [handleStopAppoint, handleCancelAppoint]);
+  ], [handleStopAppoint, handleCancelAppoint, storeIconMap, calcAdvanceTime]);
 
 
 
@@ -2231,6 +2405,9 @@ export const StoreSniping: React.FC = () => {
                 if (tabKey === 'dual_rebate' && !dualScanDone && !dualScanLoading) {
                   handleTriggerDualScan();
                 }
+                if (tabKey === 'appointments') {
+                  fetchAppointments(true);
+                }
               }}
             >
               <TabPane tab={`附近店铺 (${regularStores.length})`} itemKey="stores" />
@@ -2358,10 +2535,10 @@ export const StoreSniping: React.FC = () => {
                     size="default"
                     value={sortBy}
                     onChange={(v) => setSortBy(v as any)}
-                    style={{ width: 160 }}
+                    style={{ width: 140 }}
                   >
-                    <Select.Option value="default">综合推荐 (默认)</Select.Option>
-                    <Select.Option value="distance">距离最近 (由近及远)</Select.Option>
+                    <Select.Option value="distance">距离最近</Select.Option>
+                    <Select.Option value="default">综合排序</Select.Option>
                     <Select.Option value="rebate">返利金额最高</Select.Option>
                     <Select.Option value="rate">返利比例最高</Select.Option>
                     <Select.Option value="left">剩余名额最多</Select.Option>
@@ -2447,277 +2624,313 @@ export const StoreSniping: React.FC = () => {
         </div>
 
         {/* 表格内容区域 (带 GSAP 渐入动画容器，常驻 DOM 消除切 Tab 时的 DOM 销毁与重建开销) */}
-        <div className="tab-content-anim flex-1 min-h-0 flex flex-col relative overflow-hidden will-change-[opacity]">
+        <div ref={tabWrapperRef} className="tab-content-anim flex-1 min-h-0 flex flex-col relative overflow-hidden will-change-[opacity]">
           {/* 附近店铺分栏 */}
-          <div
-            ref={tableContainerRef}
-            className="store-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
-            style={{
-              display: activeTabKey === 'stores' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tabScrollHeights.stores || 480}px`
-            }}
-          >
-            <Table
-              rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'all'}`}
-              columns={storeColumns}
-              dataSource={regularStores}
-              loading={loading}
-              pagination={false}
-              scroll={{ y: tabScrollHeights.stores || 480, x: '100%' }}
-              empty={
-                loading ? (
-                  <div className="py-24" />
-                ) : (
-                  <div className="py-16 text-center text-semi-color-text-3">
-                    {onlyDualRebate ? (
-                      <div>
-                        <div className="mb-2 text-base font-medium text-semi-color-text-1">
-                          当前已加载的 {stores.length} 家附近商户中暂未发现同时支持双返利的店铺
-                        </div>
-                        <div className="text-xs mb-4">
-                          您可以选择上方「获取范围」下拉框自动批量加载更多商户进行扫描筛选
-                        </div>
-                        <Space spacing={8}>
-                          <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(300)}>
-                            自动加载 300 家
-                          </Button>
-                          <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(500)}>
-                            自动加载 500 家
-                          </Button>
-                          <Button theme="borderless" size="small" onClick={() => setOnlyDualRebate(false)}>
-                            关闭双返利筛选
-                          </Button>
-                        </Space>
-                      </div>
-                    ) : activeSearchKeyword ? (
-                      <div>
-                        <div className="mb-2 text-base font-medium text-semi-color-text-1">
-                          未找到与「{activeSearchKeyword}」相关的附近店铺
-                        </div>
-                        <div className="text-xs mb-4">您可以尝试更换搜索词，或查看「大牌券专享」分栏</div>
-                        <Button theme="light" type="primary" size="small" onClick={handleClearSearch}>
-                          清空搜索词
-                        </Button>
-                      </div>
-                    ) : (
-                      <div>暂无符合条件的附近店铺，您可以尝试更换定位坐标或调整筛选条件</div>
-                    )}
-                  </div>
-                )
-              }
-            />
-
-            {/* 触底加载状态栏 */}
-            {regularStores.length > 0 && (
-              <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
-                {loadingMore ? (
-                  <div className="flex items-center gap-2 text-semi-color-primary text-xs font-medium">
-                    <Spin size="small" />
-                    <span>正在获取更多商户数据...</span>
-                  </div>
-                ) : loadMoreError ? (
-                  <div
-                    className="text-xs text-semi-color-danger cursor-pointer hover:underline flex items-center gap-1.5"
-                    onClick={() => loadMoreStores()}
-                  >
-                    <IconAlertCircle size="small" />
-                    <span>网络连接稍慢，点击重新加载</span>
-                  </div>
-                ) : hasMore ? (
-                  <div
-                    className="text-xs text-semi-color-text-2 cursor-pointer hover:text-semi-color-primary transition-colors flex items-center gap-2"
-                    onClick={() => loadMoreStores()}
-                  >
-                    <Tag color="blue" size="small">触底加载</Tag>
-                    <span>已展示 {regularStores.length} 家附近店铺 · 向下滚动或点击加载更多</span>
-                  </div>
-                ) : (
-                  <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
-                    <Tag color="grey" size="small">已到底部</Tag>
-                    <span>已呈现全部 {regularStores.length} 家附近店铺</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 回到顶部按钮 */}
-            {showBackTop && (
-              <Button
-                theme="solid"
-                type="primary"
-                icon={<IconArrowUp />}
-                onClick={scrollToTop}
-                className="absolute right-6 bottom-14 shadow-lg z-20 rounded-full !w-10 !h-10 !p-0 flex items-center justify-center"
-                title="回到顶部"
-              />
-            )}
-          </div>
-
-          {/* 大牌券专享分栏（周边门店通用专享） */}
-          <div
-            ref={brandContainerRef}
-            className="store-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
-            style={{
-              display: activeTabKey === 'brand_coupon' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tabScrollHeights.brand_coupon || 480}px`
-            }}
-          >
-            <Table
-              rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'all'}`}
-              columns={storeColumns}
-              dataSource={brandCouponStores}
-              loading={loading}
-              pagination={false}
-              scroll={{ y: tabScrollHeights.brand_coupon || 480, x: '100%' }}
-              empty={
-                loading ? (
-                  <div className="py-24" />
-                ) : (
-                  <div className="py-16 text-center text-semi-color-text-3">
-                    <div>暂未检测到周边门店通用的商户，您可以在「附近店铺」中查看所有常规返利门店</div>
-                  </div>
-                )
-              }
-            />
-
-            {brandCouponStores.length > 0 && (
-              <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
-                <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
-                  <Tag color="grey" size="small">已到底部</Tag>
-                  <span>已呈现全部 {brandCouponStores.length} 家周边门店通用商户</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* 美团同店双返利分栏（采用 Semi Design 标准企业级表格，严格约束内部滚动，彻底杜绝外层页面滚动条） */}
-          <div
-            ref={dualContainerRef}
-            className="dual-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
-            style={{
-              display: activeTabKey === 'dual_rebate' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tabScrollHeights.dual_rebate || 440}px`
-            }}
-          >
-            {dualScanLoading ? (
-              <div className="flex-1 w-full h-full flex flex-col items-center justify-center p-16 m-auto">
-                <Spin size="large" />
-                <div className="text-base font-medium text-semi-color-text-0 mt-4">
-                  正在加载附近店铺并筛选...
-                </div>
-              </div>
-            ) : !dualScanDone ? (
-              <div className="p-16 text-center">
-                <Empty
-                  title="美团外卖同店双返利智能检索"
-                  description="模拟下拉触底流式获取附近店铺，累计商户达到设定范围即停止加载，并严格按照规则筛选同店同时支持「实付满返」与「按比例返」的美团店铺。"
-                >
-                  <div className="flex items-center justify-center gap-2 mt-4 mb-2">
-                    <Text type="secondary" className="text-sm">商家获取范围:</Text>
-                    <Select
-                      value={dualMaxStores}
-                      onChange={(v) => setDualMaxStores(Number(v))}
-                      style={{ width: 110 }}
-                      size="default"
-                    >
-                      <Select.Option value={100}>100 家</Select.Option>
-                      <Select.Option value={300}>300 家</Select.Option>
-                      <Select.Option value={500}>500 家</Select.Option>
-                      <Select.Option value={600}>600 家</Select.Option>
-                      <Select.Option value={700}>700 家</Select.Option>
-                      <Select.Option value={800}>800 家</Select.Option>
-                    </Select>
-                  </div>
-                  <Button
-                    theme="solid"
-                    type="primary"
-                    size="large"
-                    icon={<IconSearch />}
-                    onClick={() => handleTriggerDualScan()}
-                    className="mt-3"
-                  >
-                    开始扫描美团双返利商户
-                  </Button>
-                </Empty>
-              </div>
-            ) : (
-              <>
-                <div className="store-table-subheader flex-shrink-0 px-4 py-2.5 border-b border-semi-color-border bg-semi-color-fill-0 flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs">
-                    <Tag color="amber" size="small">美团外卖专享</Tag>
-                    <span className="text-semi-color-text-1">
-                      共检索 {dualTotalStores} 家商户（{dualTotalPromos} 个活动），筛选出 {dualStores.length} 家双返利店铺
-                      {dualStores.length !== displayedDualStores.length && `（搜索匹配 ${displayedDualStores.length} 家）`}
-                      {dualMaxStores > 0 && ` · 设定范围 ${dualMaxStores} 家`}
-                    </span>
-                  </div>
-                  <Button
-                    theme="light"
-                    type="tertiary"
-                    size="small"
-                    icon={<IconRefresh />}
-                    loading={dualScanLoading}
-                    onClick={() => handleTriggerDualScan()}
-                  >
-                    重新扫描
-                  </Button>
-                </div>
-
-                <Table
-                  rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'meituan'}`}
-                  columns={dualColumns}
-                  dataSource={displayedDualStores}
-                  loading={dualScanLoading}
-                  pagination={false}
-                  scroll={{ y: tabScrollHeights.dual_rebate || 440, x: '100%' }}
-                  empty={
-                    dualScanLoading ? (
-                      <div className="py-24" />
-                    ) : (
-                      <div className="py-16 text-center text-semi-color-text-3">
+          {visitedTabs.has('stores') && (
+            <div
+              ref={tableContainerRef}
+              className="store-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
+              style={{
+                display: activeTabKey === 'stores' ? 'flex' : 'none',
+                ['--table-scroll-y' as any]: `${tabScrollHeights.stores || 480}px`
+              }}
+            >
+              <Table
+                rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'all'}`}
+                columns={storeColumns}
+                dataSource={regularStores}
+                loading={loading}
+                pagination={false}
+                scroll={{ y: tabScrollHeights.stores || 480, x: '100%' }}
+                empty={
+                  loading ? (
+                    <div className="py-24" />
+                  ) : (
+                    <div className="py-16 text-center text-semi-color-text-3">
+                      {onlyDualRebate ? (
                         <div>
-                          {(dualSearchKeyword || '').trim()
-                            ? `未发现包含「${dualSearchKeyword}」的美团同店双返利店铺`
-                            : `在检索的 ${dualTotalStores} 家美团商户中未发现同时开放双返利规则的店铺`}
+                          <div className="mb-2 text-base font-medium text-semi-color-text-1">
+                            当前已加载的 {stores.length} 家附近商户中暂未发现同时支持双返利的店铺
+                          </div>
+                          <div className="text-xs mb-4">
+                            您可以选择上方「获取范围」下拉框自动批量加载更多商户进行扫描筛选
+                          </div>
+                          <Space spacing={8}>
+                            <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(300)}>
+                              自动加载 300 家
+                            </Button>
+                            <Button theme="light" type="primary" size="small" onClick={() => handleSelectBatchTarget(500)}>
+                              自动加载 500 家
+                            </Button>
+                            <Button theme="borderless" size="small" onClick={() => setOnlyDualRebate(false)}>
+                              关闭双返利筛选
+                            </Button>
+                          </Space>
                         </div>
-                        <div className="text-xs mt-2">您可以尝试清除搜索词或切换商圈定位后再次扫描</div>
-                      </div>
-                    )
-                  }
-                />
+                      ) : activeSearchKeyword ? (
+                        <div>
+                          <div className="mb-2 text-base font-medium text-semi-color-text-1">
+                            未找到与「{activeSearchKeyword}」相关的附近店铺
+                          </div>
+                          <div className="text-xs mb-4">您可以尝试更换搜索词，或查看「大牌券专享」分栏</div>
+                          <Button theme="light" type="primary" size="small" onClick={handleClearSearch}>
+                            清空搜索词
+                          </Button>
+                        </div>
+                      ) : (
+                        <div>暂无符合条件的附近店铺，您可以尝试更换定位坐标或调整筛选条件</div>
+                      )}
+                    </div>
+                  )
+                }
+              />
 
-                {displayedDualStores.length > 0 && (
-                  <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-between">
+              {/* 触底加载状态栏 */}
+              {regularStores.length > 0 && (
+                <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
+                  {loadingMore ? (
+                    <div className="flex items-center gap-2 text-semi-color-primary text-xs font-medium">
+                      <Spin size="small" />
+                      <span>正在获取更多商户数据...</span>
+                    </div>
+                  ) : loadMoreError ? (
+                    <div
+                      className="text-xs text-semi-color-danger cursor-pointer hover:underline flex items-center gap-1.5"
+                      onClick={() => loadMoreStores()}
+                    >
+                      <IconAlertCircle size="small" />
+                      <span>网络连接稍慢，点击重新加载</span>
+                    </div>
+                  ) : hasMore ? (
+                    <div
+                      className="text-xs text-semi-color-text-2 cursor-pointer hover:text-semi-color-primary transition-colors flex items-center gap-2"
+                      onClick={() => loadMoreStores()}
+                    >
+                      <Tag color="blue" size="small">触底加载</Tag>
+                      <span>已展示 {regularStores.length} 家附近店铺 · 向下滚动或点击加载更多</span>
+                    </div>
+                  ) : (
                     <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
                       <Tag color="grey" size="small">已到底部</Tag>
-                      <span>已呈现全部 {displayedDualStores.length} 家美团同店双返利商户</span>
+                      <span>已呈现全部 {regularStores.length} 家附近店铺</span>
                     </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+                  )}
+                </div>
+              )}
 
-          <div
-            ref={appointContainerRef}
-            className="appointment-table-container flex-1 min-h-0 flex flex-col relative"
-            style={{
-              display: activeTabKey === 'appointments' ? 'flex' : 'none',
-              ['--table-scroll-y' as any]: `${tabScrollHeights.appointments || 480}px`
-            }}
-          >
-            <Table
-              rowKey={(row) => String(row?.id)}
-              columns={appointColumns}
-              dataSource={appointments}
-              pagination={{
-                pageSize: 10,
-                showTotal: true,
+              {/* 回到顶部按钮 */}
+              {showBackTop && (
+                <Button
+                  theme="solid"
+                  type="primary"
+                  icon={<IconArrowUp />}
+                  onClick={scrollToTop}
+                  className="absolute right-6 bottom-14 shadow-lg z-20 rounded-full !w-10 !h-10 !p-0 flex items-center justify-center"
+                  title="回到顶部"
+                />
+              )}
+            </div>
+          )}
+
+          {/* 大牌券专享分栏（周边门店通用专享） */}
+          {visitedTabs.has('brand_coupon') && (
+            <div
+              ref={brandContainerRef}
+              className="store-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
+              style={{
+                display: activeTabKey === 'brand_coupon' ? 'flex' : 'none',
+                ['--table-scroll-y' as any]: `${tabScrollHeights.brand_coupon || 480}px`
               }}
-              scroll={{ y: tabScrollHeights.appointments || 480, x: '100%' }}
-              empty={<div className="py-16 text-center text-semi-color-text-3">暂无预约或监听中的任务</div>}
-            />
-          </div>
+            >
+              <Table
+                rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'all'}`}
+                columns={storeColumns}
+                dataSource={brandCouponStores}
+                loading={loading}
+                pagination={false}
+                scroll={{ y: tabScrollHeights.brand_coupon || 480, x: '100%' }}
+                empty={
+                  loading ? (
+                    <div className="py-24" />
+                  ) : (
+                    <div className="py-16 text-center text-semi-color-text-3">
+                      <div>暂未检测到周边门店通用的商户，您可以在「附近店铺」中查看所有常规返利门店</div>
+                    </div>
+                  )
+                }
+              />
+
+              {brandCouponStores.length > 0 && (
+                <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-center">
+                  <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
+                    <Tag color="grey" size="small">已到底部</Tag>
+                    <span>已呈现全部 {brandCouponStores.length} 家周边门店通用商户</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 美团同店双返利分栏（采用 Semi Design 标准企业级表格，严格约束内部滚动，彻底杜绝外层页面滚动条） */}
+          {visitedTabs.has('dual_rebate') && (
+            <div
+              ref={dualContainerRef}
+              className="dual-table-container relative flex-1 min-h-0 flex flex-col overflow-hidden"
+              style={{
+                display: activeTabKey === 'dual_rebate' ? 'flex' : 'none',
+                ['--table-scroll-y' as any]: `${tabScrollHeights.dual_rebate || 440}px`
+              }}
+            >
+              {dualScanLoading ? (
+                <div className="flex-1 w-full h-full flex flex-col items-center justify-center p-16 m-auto">
+                  <Spin size="large" />
+                  <div className="text-base font-medium text-semi-color-text-0 mt-4">
+                    正在加载附近店铺并筛选...
+                  </div>
+                </div>
+              ) : !dualScanDone ? (
+                <div className="p-16 text-center">
+                  <Empty
+                    title="美团外卖同店双返利智能检索"
+                    description="模拟下拉触底流式获取附近店铺，累计商户达到设定范围即停止加载，默认按距离最近由近及远筛选同店同时支持「实付满返」与「按比例返」的美团店铺。"
+                  >
+                    <div className="flex items-center justify-center gap-2 mt-4 mb-2">
+                      <Text type="secondary" className="text-sm">商家获取范围:</Text>
+                      <Select
+                        value={dualMaxStores}
+                        onChange={(v) => setDualMaxStores(Number(v))}
+                        style={{ width: 110 }}
+                        size="default"
+                      >
+                        <Select.Option value={100}>100 家</Select.Option>
+                        <Select.Option value={300}>300 家</Select.Option>
+                        <Select.Option value={500}>500 家</Select.Option>
+                        <Select.Option value={600}>600 家</Select.Option>
+                        <Select.Option value={700}>700 家</Select.Option>
+                        <Select.Option value={800}>800 家</Select.Option>
+                      </Select>
+                    </div>
+                    <Button
+                      theme="solid"
+                      type="primary"
+                      size="large"
+                      icon={<IconSearch />}
+                      onClick={() => handleTriggerDualScan()}
+                      className="mt-3"
+                    >
+                      开始扫描美团双返利商户
+                    </Button>
+                  </Empty>
+                </div>
+              ) : (
+                <>
+                  <div className="store-table-subheader flex-shrink-0 px-4 py-2.5 border-b border-semi-color-border bg-semi-color-fill-0 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs">
+                      <Tag color="amber" size="small">美团外卖专享</Tag>
+                      <Tag color="blue" size="small">距离最近</Tag>
+                      <span className="text-semi-color-text-1">
+                        共检索 {dualTotalStores} 家商户（{dualTotalPromos} 个活动），筛选出 {dualStores.length} 家双返利店铺
+                        {dualStores.length !== displayedDualStores.length && `（搜索匹配 ${displayedDualStores.length} 家）`}
+                        {dualMaxStores > 0 && ` · 设定范围 ${dualMaxStores} 家`}
+                      </span>
+                    </div>
+                    <Button
+                      theme="light"
+                      type="tertiary"
+                      size="small"
+                      icon={<IconRefresh />}
+                      loading={dualScanLoading}
+                      onClick={() => handleTriggerDualScan()}
+                    >
+                      重新扫描
+                    </Button>
+                  </div>
+
+                  <Table
+                    rowKey={(row) => `${row?.store_id || row?.name}_${row?.platform || 'meituan'}`}
+                    columns={dualColumns}
+                    dataSource={displayedDualStores}
+                    loading={dualScanLoading}
+                    pagination={false}
+                    scroll={{ y: tabScrollHeights.dual_rebate || 440, x: '100%' }}
+                    empty={
+                      dualScanLoading ? (
+                        <div className="py-24" />
+                      ) : (
+                        <div className="py-16 text-center text-semi-color-text-3">
+                          <div>
+                            {(dualSearchKeyword || '').trim()
+                              ? `未发现包含「${dualSearchKeyword}」的美团同店双返利店铺`
+                              : `在检索的 ${dualTotalStores} 家美团商户中未发现同时开放双返利规则的店铺`}
+                          </div>
+                          <div className="text-xs mt-2">您可以尝试清除搜索词或切换商圈定位后再次扫描</div>
+                        </div>
+                      )
+                    }
+                  />
+
+                  {displayedDualStores.length > 0 && (
+                    <div className="store-table-footer flex-shrink-0 mt-auto border-t border-semi-color-border bg-semi-color-fill-0 py-2.5 px-4 flex items-center justify-between">
+                      <div className="text-xs text-semi-color-text-3 flex items-center gap-2">
+                        <Tag color="grey" size="small">已到底部</Tag>
+                        <span>已呈现全部 {displayedDualStores.length} 家美团同店双返利商户</span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {visitedTabs.has('appointments') && (
+            <div
+              ref={appointContainerRef}
+              className="appointment-table-container flex-1 min-h-0 flex flex-col relative overflow-hidden"
+              style={{
+                display: activeTabKey === 'appointments' ? 'flex' : 'none',
+                ['--table-scroll-y' as any]: `${tabScrollHeights.appointments || 480}px`
+              }}
+            >
+              <div className="store-table-subheader flex-shrink-0 px-4 py-2.5 border-b border-semi-color-border bg-semi-color-fill-0 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs">
+                  <Tag color="blue" size="small">抢单队列</Tag>
+                  <span className="text-semi-color-text-1">
+                    共 {appointments.length} 条任务
+                    {activeAppointCount > 0 && `（${activeAppointCount} 条执行中）`}
+                  </span>
+                </div>
+                <Button
+                  theme="light"
+                  type="tertiary"
+                  size="small"
+                  icon={<IconRefresh spin={appointmentsLoading} />}
+                  loading={appointmentsLoading}
+                  onClick={() => fetchAppointments(true)}
+                >
+                  刷新列表
+                </Button>
+              </div>
+
+              <Table
+                rowKey={(row) => String(row?.id)}
+                columns={appointColumns}
+                dataSource={appointments}
+                loading={appointmentsLoading}
+                pagination={{
+                  pageSize: 10,
+                  showTotal: true,
+                }}
+                scroll={{ y: tabScrollHeights.appointments || 480, x: '100%' }}
+                empty={
+                  appointmentsLoading ? (
+                    <div className="py-24" />
+                  ) : (
+                    <div className="py-16 text-center text-semi-color-text-3">暂无预约或监听中的任务</div>
+                  )
+                }
+              />
+            </div>
+          )}
         </div>
       </Card>
 
@@ -2738,158 +2951,227 @@ export const StoreSniping: React.FC = () => {
         visible={appointModalVisible}
         onCancel={() => setAppointModalVisible(false)}
         footer={null}
-        width={500}
+        width={640}
         centered
         bodyStyle={{
-          maxHeight: 'calc(80vh - 80px)',
+          maxHeight: '82vh',
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '16px 20px',
+          padding: '16px 22px',
         }}
       >
-        <div className="mb-3">
-          <RadioGroup
-            type="button"
-            value={appointModalMode}
-            onChange={(e) => setAppointModalMode(e.target.value)}
-            className="w-full flex"
-          >
-            <Radio value="countdown" style={{ flex: 1, textAlign: 'center' }}>
-              <div className="flex items-center justify-center gap-1.5 py-0.5">
-                <IconClock />
-                <span>定时预约 (到点抢单)</span>
-              </div>
-            </Radio>
-            <Radio value="monitor" style={{ flex: 1, textAlign: 'center' }}>
-              <div className="flex items-center justify-center gap-1.5 py-0.5">
-                <IconSearch />
-                <span>名额监听 (无名额轮询)</span>
-              </div>
-            </Radio>
-          </RadioGroup>
-        </div>
-
         {appointModalMode === 'countdown' ? (
           <Banner
             type="info"
-            description="开抢前 1 分钟自动进入抢单准备，到点发送抢单请求；若首轮已抢光，可配置自动转入名额监听。"
-            className="mb-3.5 rounded-lg"
+            description="开抢前 1 分钟自动进入抢单准备，到点发送抢单请求；若首轮已抢光，可自动转入名额监听。"
+            className="mb-2.5 py-1.5 px-3 rounded-lg text-xs"
           />
         ) : (
           <Banner
             type="warning"
             description="当前名额已抢空，系统将按设定频率自动轮询检测补仓名额，发现有名额时自动尝试锁定。"
-            className="mb-3.5 rounded-lg"
+            className="mb-2.5 py-1.5 px-3 rounded-lg text-xs"
           />
         )}
 
-        <div className="p-3 bg-semi-color-fill-0 rounded-lg mb-4 border border-semi-color-border flex flex-col gap-1.5 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-semi-color-text-2">商户店铺：</span>
-            <span className="font-semibold text-semi-color-text-0">{selectedStore?.name} ({getPlatformBadge(selectedStore?.platform).label})</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-semi-color-text-2">活动档位：</span>
-            <div className="flex items-center gap-1.5">
-              <Tag color={selectedPromo?.rebate_type === 'percent' ? 'purple' : 'blue'} size="small" shape="square">
-                {selectedPromo?.rebate_type === 'percent' ? '比例返现' : '实付满返'}
-              </Tag>
-              <span className="font-bold text-semi-color-danger">
-                {selectedPromo?.rebate_desc || `满${selectedPromo?.order_money}返${selectedPromo?.rebate_price}元`}
+        {/* 商户店铺与活动档位信息：2列紧凑栅格布局 */}
+        <div className="p-2.5 px-3 bg-semi-color-fill-0 rounded-lg mb-3 border border-semi-color-border text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
+            <div className="flex items-center justify-between min-w-0">
+              <span className="text-semi-color-text-2 shrink-0">商户店铺：</span>
+              <span className="font-semibold text-semi-color-text-0 truncate max-w-[190px]" title={selectedStore?.name}>
+                {selectedStore?.name} ({getPlatformBadge(selectedStore?.platform).label})
+              </span>
+            </div>
+            <div className="flex items-center justify-between min-w-0">
+              <span className="text-semi-color-text-2 shrink-0">活动档位：</span>
+              <div className="flex items-center gap-1.5 truncate">
+                <Tag color={selectedPromo?.rebate_type === 'percent' ? 'purple' : 'blue'} size="small" shape="square">
+                  {selectedPromo?.rebate_type === 'percent' ? '比例返现' : '实付满返'}
+                </Tag>
+                <span className="font-bold text-semi-color-danger truncate">
+                  {selectedPromo?.rebate_desc || `满${selectedPromo?.order_money}返${selectedPromo?.rebate_price}元`}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between min-w-0">
+              <span className="text-semi-color-text-2 shrink-0">活动时段：</span>
+              <span className="font-mono text-semi-color-text-1 truncate">
+                {selectedPromo?.start_time || '全天'} ~ {selectedPromo?.end_time || '23:59'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between min-w-0">
+              <span className="text-semi-color-text-2 shrink-0">门槛要求：</span>
+              <span className="text-semi-color-text-2 font-medium truncate">
+                {selectedPromo?.need_brand_coupon ? '自动匹配优惠券' : '无特殊门槛'}
               </span>
             </div>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-semi-color-text-2">活动时段：</span>
-            <span className="font-mono text-semi-color-text-1">
-              {selectedPromo?.start_time || '全天'} ~ {selectedPromo?.end_time || '23:59'}
-            </span>
-          </div>
-          {selectedPromo?.need_brand_coupon && (
-            <div className="flex items-center justify-between pt-1 border-t border-semi-color-border-subtle">
-              <span className="text-semi-color-text-2">门槛要求：</span>
-              <span className="text-semi-color-text-2 font-medium">
-                自动匹配优惠券
-              </span>
-            </div>
-          )}
         </div>
 
         <Form
           key={`${appointModalMode}_${selectedPromo?.promotion_id || '0'}`}
           onSubmit={handleSubmitAppoint}
         >
-          {appointModalMode === 'countdown' ? (
+          {({ values }: { values: any }) => (
             <>
-              <Form.InputNumber
-                field="early_ms"
-                label="提前抢单时间 (ms)"
-                initValue={500}
-                min={0}
-                max={5000}
-                step={50}
-                helpText="提前发送请求以抵消网络延迟，默认 500ms"
-              />
+              {appointModalMode === 'countdown' ? (
+                <>
+                  <div className="mb-3 p-2.5 px-3 rounded-lg border border-semi-color-border bg-semi-color-fill-0">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-semi-color-text-0 text-sm flex items-center gap-1.5">
+                          <span>超前抢单券加速</span>
+                          <Tag color={assetStats.advanceCouponCount > 0 ? 'purple' : 'grey'} size="small">
+                            剩余 {assetStats.advanceCouponCount} 张
+                          </Tag>
+                        </div>
+                        <div className="text-xs text-semi-color-text-2 mt-0.5">
+                          {assetStats.advanceCouponCount > 0
+                            ? `开启后将在 ${calcAdvanceTime(selectedPromo?.start_time)} 提前 30 分钟自动开抢`
+                            : '当前账号暂无可用超前抢单券'}
+                        </div>
+                      </div>
+                      <Form.Switch
+                        field="use_advance_card"
+                        noLabel
+                        disabled={assetStats.advanceCouponCount <= 0}
+                        initValue={assetStats.advanceCouponCount > 0}
+                      />
+                    </div>
+                    {values?.use_advance_card && (
+                      <div className="mt-2 pt-1.5 border-t border-semi-color-border-subtle flex items-center justify-between text-xs">
+                        <span className="text-semi-color-text-2">实际开火时刻：</span>
+                        <span className="font-bold font-mono text-purple-600 dark:text-purple-400">
+                          {calcAdvanceTime(selectedPromo?.start_time)} (原时段 {selectedPromo?.start_time})
+                        </span>
+                      </div>
+                    )}
+                  </div>
 
-              <Form.Input
-                field="until_time"
-                label="自动监听截止时间 (HH:MM)"
-                initValue={selectedPromo?.end_time || '15:00'}
-                placeholder="例如 14:00 或 15:30"
-                helpText="若到点名额已满，将持续监听名额至此时间"
-              />
+                  {/* 2列栅格排列表单字段 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+                    <Form.InputNumber
+                      field="early_ms"
+                      label="提前抢单时间 (ms)"
+                      initValue={500}
+                      min={0}
+                      max={5000}
+                      step={50}
+                      helpText="抵消网络延迟，默认 500ms"
+                    />
 
-              <Form.InputNumber
-                field="check_interval"
-                label="监听轮询间隔 (秒)"
-                initValue={5}
-                min={3}
-                max={60}
-                helpText="检测补仓名额的轮询频率，建议 3~5 秒"
-              />
-            </>
-          ) : (
-            <>
-              <Form.Input
-                field="until_time"
-                label="监听截止时间 (HH:MM)"
-                initValue={selectedPromo?.end_time || '15:00'}
-                placeholder="例如 14:00 或 15:30"
-                helpText="到达此时间后将自动停止监听"
-              />
+                    <Form.Input
+                      field="until_time"
+                      label="自动监听截止时间 (HH:MM)"
+                      initValue={selectedPromo?.end_time || '15:00'}
+                      placeholder="例如 14:00 或 15:30"
+                      helpText="首轮名额若满，持续监听至此时间"
+                    />
 
-              <Form.InputNumber
-                field="check_interval"
-                label="轮询刷新频率 (秒)"
-                initValue={5}
-                min={3}
-                max={60}
-                helpText="检测商户补仓名额的刷新频率，建议 3~5 秒"
-              />
+                    <Form.InputNumber
+                      field="check_interval"
+                      label="监听轮询间隔 (秒)"
+                      initValue={5}
+                      min={3}
+                      max={60}
+                      helpText="补仓轮询频率，建议 3~5 秒"
+                    />
+
+                    <Form.Select
+                      field="redpack_mode"
+                      label="红包使用策略"
+                      initValue={0}
+                      helpText="若指定红包在端外已用将平滑自愈替换"
+                    >
+                      <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
+                      <Select.Option value={1}>指定具体可用红包</Select.Option>
+                      <Select.Option value={2}>不使用红包</Select.Option>
+                    </Form.Select>
+                  </div>
+                </>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+                  <Form.Input
+                    field="until_time"
+                    label="监听截止时间 (HH:MM)"
+                    initValue={selectedPromo?.end_time || '15:00'}
+                    placeholder="例如 14:00 或 15:30"
+                    helpText="到达此时间后将自动停止监听"
+                  />
+
+                  <Form.InputNumber
+                    field="check_interval"
+                    label="轮询刷新频率 (秒)"
+                    initValue={5}
+                    min={3}
+                    max={60}
+                    helpText="商户补仓刷新频率，建议 3~5 秒"
+                  />
+
+                  <div className="sm:col-span-2">
+                    <Form.Select
+                      field="redpack_mode"
+                      label="红包使用策略"
+                      initValue={0}
+                      helpText="捡漏抢单时使用的红包策略"
+                    >
+                      <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
+                      <Select.Option value={1}>指定具体可用红包</Select.Option>
+                      <Select.Option value={2}>不使用红包</Select.Option>
+                    </Form.Select>
+                  </div>
+                </div>
+              )}
+
+              {values?.redpack_mode === 1 && (
+                <div className="mt-1">
+                  <Form.Select
+                    field="redpack_id"
+                    label="选择指定红包"
+                    placeholder="请选择要绑定的红包"
+                    rules={[{ required: true, message: '请选择要使用的红包' }]}
+                    helpText="支持防失效自愈保护：开抢前若此红包已核销或过期，系统自动替换为最优红包"
+                    className="w-full"
+                  >
+                    {(assetDetail?.redpacks || []).map((rp: any) => {
+                      const rId = String(rp.user_red_pack_id || rp.id || '');
+                      const rName = rp.name || rp.title || '外卖满返红包';
+                      const rawVal = rp.value_num !== undefined ? rp.value_num : (rp.reward_num !== undefined ? rp.reward_num : (rp.money !== undefined ? rp.money * 100 : 0));
+                      const rReward = `¥${((Number(rawVal) || 0) / 100).toFixed(2)}`;
+                      const thresholdStr = rp.threshold_num ? `满${(rp.threshold_num / 100).toFixed(0)}元可用` : '无门槛';
+                      const rExpire = rp.end_time ? formatTimestamp(rp.end_time) : (rp.expire_time ? formatTimestamp(rp.expire_time) : '');
+                      return (
+                        <Select.Option key={rId} value={rId}>
+                          <div className="flex items-center justify-between w-full pr-2 text-xs py-0.5">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-medium text-semi-color-text-0 truncate max-w-[220px]">{cleanEmoji(rName)}</span>
+                              <span className="text-[11px] text-semi-color-text-2 shrink-0">({thresholdStr})</span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-bold text-semi-color-danger">{rReward}</span>
+                              {rExpire && <span className="text-semi-color-text-2 text-[11px]">至 {rExpire}</span>}
+                            </div>
+                          </div>
+                        </Select.Option>
+                      );
+                    })}
+                  </Form.Select>
+                </div>
+              )}
+
+              <Button
+                theme="solid"
+                type={appointModalMode === 'countdown' ? 'primary' : 'warning'}
+                htmlType="submit"
+                block
+                size="large"
+                className="mt-3"
+              >
+                {appointModalMode === 'countdown' ? '确认添加预约抢单' : '启动名额监听'}
+              </Button>
             </>
           )}
-
-          <Form.Select
-            field="redpack_mode"
-            label="红包使用策略"
-            initValue={0}
-            helpText="抢单时根据账户红包余额自动选择"
-          >
-            <Select.Option value={0}>优先使用大额红包</Select.Option>
-            <Select.Option value={1}>优先使用临期红包</Select.Option>
-            <Select.Option value={2}>不使用红包</Select.Option>
-          </Form.Select>
-
-          <Button
-            theme="solid"
-            type={appointModalMode === 'countdown' ? 'primary' : 'warning'}
-            htmlType="submit"
-            block
-            size="large"
-            className="mt-4"
-          >
-            {appointModalMode === 'countdown' ? '确认添加预约抢单' : '启动名额监听'}
-          </Button>
         </Form>
       </Modal>
 

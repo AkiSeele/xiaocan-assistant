@@ -13,15 +13,13 @@ import {
 import { useAppStore } from '../store/useAppStore';
 
 export const SideNav: React.FC = () => {
-  const {
-    activeTab,
-    setActiveTab,
-    isSidebarCollapsed,
-    setSidebarCollapsed,
-    accounts,
-    currentAccountKey,
-    setCurrentAccountKey,
-  } = useAppStore();
+  const activeTab = useAppStore((s) => s.activeTab);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const isSidebarCollapsed = useAppStore((s) => s.isSidebarCollapsed);
+  const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed);
+  const accounts = useAppStore((s) => s.accounts);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
 
   const currentAccount = accounts.find((a) => a.key === currentAccountKey) || accounts[0];
 
@@ -42,7 +40,12 @@ export const SideNav: React.FC = () => {
         isCollapsed={isSidebarCollapsed}
         onCollapseChange={(collapsed) => setSidebarCollapsed(collapsed)}
         selectedKeys={[activeTab]}
-        onSelect={(data) => setActiveTab(String(data.itemKey))}
+        onSelect={(data) => {
+          const nextKey = String(data.itemKey);
+          if (nextKey && nextKey !== activeTab) {
+            setActiveTab(nextKey);
+          }
+        }}
         style={{ height: '100%', borderRight: 'none' }}
         header={{
           logo: isSidebarCollapsed ? (

@@ -38,22 +38,20 @@ const cleanEmoji = (text?: string): string => {
 const getVipBadgeText = (acc?: { vip_level?: number; is_plus?: number | boolean }) => {
   if (!acc) return null;
   const isPlus = Boolean(acc.is_plus);
-  return isPlus ? `SVIP${acc.vip_level || 5}` : `VIP${acc.vip_level || 1}`;
+  return isPlus ? `SVIP${acc.vip_level || 1}` : `VIP${acc.vip_level || 1}`;
 };
 
 export const TopHeader: React.FC = () => {
-  const {
-    isSidebarCollapsed,
-    toggleSidebarCollapse,
-    isDarkMode,
-    setDarkMode,
-    activeLocation,
-    accounts,
-    currentAccountKey,
-    setCurrentAccountKey,
-    loadAccounts,
-    setActiveTab,
-  } = useAppStore();
+  const isSidebarCollapsed = useAppStore((s) => s.isSidebarCollapsed);
+  const toggleSidebarCollapse = useAppStore((s) => s.toggleSidebarCollapse);
+  const isDarkMode = useAppStore((s) => s.isDarkMode);
+  const setDarkMode = useAppStore((s) => s.setDarkMode);
+  const activeLocation = useAppStore((s) => s.activeLocation);
+  const accounts = useAppStore((s) => s.accounts);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
+  const loadAccounts = useAppStore((s) => s.loadAccounts);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
 
   const [locModalVisible, setLocModalVisible] = useState(false);
   const [calibrating, setCalibrating] = useState(false);

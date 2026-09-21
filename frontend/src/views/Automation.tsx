@@ -15,7 +15,6 @@ import {
   InputNumber,
   Input,
   Banner,
-  Divider,
   Tabs,
   TabPane,
   Checkbox,
@@ -34,6 +33,7 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { useGSAP, animateStaggerEnter } from '../utils/animations';
+import { useOnActivated } from '../utils/useOnActivated';
 import type { TaskItem, Account } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -107,7 +107,7 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
       bordered={true}
       headerLine={true}
       footerLine={true}
-      className="gsap-task-card"
+      className="gsap-task-card h-full flex flex-col justify-between"
       style={{
         borderRadius: 'var(--semi-border-radius-large)',
         backgroundColor: 'var(--semi-color-bg-1)',
@@ -123,7 +123,6 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        justifyContent: 'space-between',
       }}
       footerStyle={{
         padding: '10px 16px',
@@ -193,62 +192,68 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
         </div>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
-        {/* 任务内容说明 */}
-        <Paragraph
-          ellipsis={{ rows: 2 }}
-          style={{
-            color: 'var(--semi-color-text-2)',
-            fontSize: 13,
-            lineHeight: '20px',
-            height: 40,
-            margin: 0,
-            marginBottom: 10,
-          }}
-        >
-          {task.tip}
-        </Paragraph>
+      <div className="flex flex-col h-full flex-1">
+        {/* 上半部分：任务内容说明与时段/参数标记自然聚合紧凑展示 */}
+        <div>
+          {/* 任务内容说明 */}
+          <Paragraph
+            ellipsis={{ rows: 2 }}
+            style={{
+              color: 'var(--semi-color-text-2)',
+              fontSize: 13,
+              lineHeight: '20px',
+              minHeight: 40,
+              margin: 0,
+              marginBottom: 8,
+            }}
+          >
+            {task.tip}
+          </Paragraph>
 
-        {/* 触发时段与参数标记 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-          {task.fixed_time ? (
-            <Tag color="violet" size="small">
-              <IconClock style={{ marginRight: 4 }} />
-              {task.time_label || '固定场次'}
-            </Tag>
-          ) : (
-            <Tooltip content="点击修改执行时间">
-              <Tag
-                color="blue"
-                size="small"
-                style={{ cursor: 'pointer' }}
-                onClick={(e) => onOpenTime(task, e)}
-              >
-                <IconClock style={{ marginRight: 4 }} />
-                每日 {task.cron_time}
-                <IconEdit size="extra-small" style={{ marginLeft: 3 }} />
-              </Tag>
-            </Tooltip>
-          )}
+          {/* 触发时段与参数标记 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+            {task.fixed_time ? (
+              <Tooltip content={task.time_label || '固定场次'}>
+                <Tag color="violet" size="small">
+                  <IconClock style={{ marginRight: 4 }} />
+                  {(task.time_label || '固定场次').replace(/[（(][^）)]*[）)]/g, '').trim()}
+                </Tag>
+              </Tooltip>
+            ) : (
+              <Tooltip content="点击修改执行时间">
+                <Tag
+                  color="blue"
+                  size="small"
+                  style={{ cursor: 'pointer' }}
+                  onClick={(e) => onOpenTime(task, e)}
+                >
+                  <IconClock style={{ marginRight: 4 }} />
+                  每日 {task.cron_time}
+                  <IconEdit size="extra-small" style={{ marginLeft: 3 }} />
+                </Tag>
+              </Tooltip>
+            )}
 
-          {hasParams && (
-            <Tooltip content="支持自定义参数配置">
-              <Tag
-                color="cyan"
-                size="small"
-                style={{ cursor: 'pointer' }}
-                onClick={() => onOpenConfig(task)}
-              >
-                <IconSetting style={{ marginRight: 4 }} />
-                自定义参数
-              </Tag>
-            </Tooltip>
-          )}
+            {hasParams && (
+              <Tooltip content="支持自定义参数配置">
+                <Tag
+                  color="cyan"
+                  size="small"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onOpenConfig(task)}
+                >
+                  <IconSetting style={{ marginRight: 4 }} />
+                  自定义参数
+                </Tag>
+              </Tooltip>
+            )}
+          </div>
         </div>
 
-        {/* 多账号启用状态展示与快捷切换 */}
+        {/* 多账号启用状态展示与快捷切换 (自动沉底) */}
         <div
           style={{
+            marginTop: 'auto',
             backgroundColor: 'var(--semi-color-fill-0)',
             borderRadius: 'var(--semi-border-radius-medium)',
             padding: '8px 10px',
@@ -322,10 +327,12 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
 });
 
 export const Automation: React.FC = () => {
-  const { currentAccountKey, accounts, setActiveTab } = useAppStore();
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const accounts = useAppStore((s) => s.accounts);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const tasksRef = useRef<HTMLDivElement>(null);
   const [accountTasksMap, setAccountTasksMap] = useState<Record<string, TaskItem[]>>({});
-  const [activeCategory, setActiveCategory] = useState<string>('all');
+  const [activeCategory, setActiveCategory] = useState<string>('member');
   const [loading, setLoading] = useState(false);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState<boolean>(false);
@@ -366,7 +373,7 @@ export const Automation: React.FC = () => {
   const inFlightAutomationRef = useRef<boolean>(false);
 
   // 拉取所有账号的任务列表
-  const fetchAllTasks = useCallback(async (force = false) => {
+  const fetchAllTasks = useCallback(async (force = false, silent = false) => {
     if (!accountKeys) return;
     const accs = accountsRef.current;
     if (accs.length === 0) return;
@@ -377,7 +384,7 @@ export const Automation: React.FC = () => {
     inFlightAutomationRef.current = true;
     lastAutomationSignatureRef.current = accountKeys;
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const map: Record<string, TaskItem[]> = {};
       await Promise.all(
@@ -398,13 +405,18 @@ export const Automation: React.FC = () => {
       Toast.error('拉取任务列表失败');
     } finally {
       inFlightAutomationRef.current = false;
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [accountKeys]);
 
   useEffect(() => {
     fetchAllTasks();
   }, [fetchAllTasks]);
+
+  // 页面切入激活时自动拉取各账号最新自动化任务状态
+  useOnActivated('automation', () => {
+    fetchAllTasks(true, Object.keys(accountTasksMap).length > 0);
+  }, { throttleMs: 3000 });
 
   useGSAP(
     () => {
@@ -436,8 +448,9 @@ export const Automation: React.FC = () => {
 
       const acc = accounts.find((a) => a.key === accountKey);
       Toast.success(`${acc?.nickname || '账号'} 任务已${enabled ? '开启' : '暂停'}`);
-    } catch (e) {
-      Toast.error('更新任务状态失败');
+    } catch (e: any) {
+      const errMsg = e?.response?.data?.detail || e?.message || '更新任务状态失败';
+      Toast.error(errMsg);
     }
   };
 
@@ -463,8 +476,9 @@ export const Automation: React.FC = () => {
       });
 
       Toast.success(`全部 ${accounts.length} 个账号已批量${enabled ? '开启' : '暂停'}`);
-    } catch (e) {
-      Toast.error('批量切换失败');
+    } catch (e: any) {
+      const errMsg = e?.response?.data?.detail || e?.message || '批量切换失败';
+      Toast.error(errMsg);
     }
   };
 
@@ -566,7 +580,8 @@ export const Automation: React.FC = () => {
       );
       setDrawerVisible(false);
     } catch (e: any) {
-      Toast.error(`保存失败: ${e.message}`);
+      const errMsg = e?.response?.data?.detail || e?.message || '保存失败';
+      Toast.error(errMsg);
     } finally {
       setSavingParams(false);
     }
@@ -633,13 +648,10 @@ export const Automation: React.FC = () => {
     }
   };
 
-  // 板块批量启停
+  // 分类任务批量启停 (仅针对当前选中的Tab分类)
   const handleBatchToggleCategory = async (category: string, enable: boolean) => {
     const currentTasks = accountTasksMap[currentAccountKey] || [];
-    const targetTasks =
-      category === 'all'
-        ? currentTasks
-        : currentTasks.filter((t) => (t.category || 'daily') === category);
+    const targetTasks = currentTasks.filter((t) => (t.category || 'daily') === category);
 
     if (targetTasks.length === 0) return;
 
@@ -665,15 +677,16 @@ export const Automation: React.FC = () => {
         return next;
       });
 
-      Toast.success(`已为当前账号批量${enable ? '开启' : '暂停'} ${targetTasks.length} 项任务`);
+      const categoryNameMap: Record<string, string> = {
+        member: '秒杀抢券',
+        daily: '日常任务',
+        custom: '资产与提醒',
+      };
+      const catLabel = categoryNameMap[category] || '当前分类';
+      Toast.success(`已为当前账号${enable ? '开启' : '关闭'}「${catLabel}」全部 ${targetTasks.length} 项任务`);
     } catch (e) {
       Toast.error('批量操作失败');
     }
-  };
-
-  // 全局全部启停
-  const handleBatchToggleAll = (enable: boolean) => {
-    handleBatchToggleCategory('all', enable);
   };
 
   // 主任务基准列表
@@ -719,7 +732,6 @@ export const Automation: React.FC = () => {
   );
 
   const displayedTasks = useMemo(() => {
-    if (activeCategory === 'all') return masterTasks;
     return masterTasks.filter((t) => (t.category || 'daily') === activeCategory);
   }, [masterTasks, activeCategory]);
 
@@ -771,7 +783,7 @@ export const Automation: React.FC = () => {
             <Tag color="blue" size="large" shape="circle">
               当前主控: {currentAccount?.nickname || '未命名'}
               {currentAccount?.is_plus
-                ? ` (SVIP${currentAccount.vip_level || 5})`
+                ? ` (SVIP${currentAccount.vip_level || 1})`
                 : ` (VIP${currentAccount?.vip_level || 1})`}
             </Tag>
           </Space>
@@ -907,7 +919,7 @@ export const Automation: React.FC = () => {
               type="tertiary"
               onClick={() => handleBatchToggleCategory(activeCategory, true)}
             >
-              本组开启
+              全部开启
             </Button>
             <Button
               size="small"
@@ -915,29 +927,11 @@ export const Automation: React.FC = () => {
               type="tertiary"
               onClick={() => handleBatchToggleCategory(activeCategory, false)}
             >
-              本组暂停
-            </Button>
-            <Divider layout="vertical" margin="8px" />
-            <Button
-              size="small"
-              theme="light"
-              type="tertiary"
-              onClick={() => handleBatchToggleAll(true)}
-            >
-              全部开启
-            </Button>
-            <Button
-              size="small"
-              theme="light"
-              type="tertiary"
-              onClick={() => handleBatchToggleAll(false)}
-            >
-              全部暂停
+              全部关闭
             </Button>
           </Space>
         }
       >
-        <TabPane tab={`全部任务 (${masterTasks.length})`} itemKey="all" />
         <TabPane tab={`秒杀抢券 (${memberTasks.length})`} itemKey="member" />
         <TabPane tab={`日常任务 (${dailyTasks.length})`} itemKey="daily" />
         <TabPane tab={`资产与提醒 (${customTasks.length})`} itemKey="custom" />

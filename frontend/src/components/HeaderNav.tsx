@@ -15,15 +15,13 @@ import {
 import { useAppStore } from '../store/useAppStore';
 
 export const HeaderNav: React.FC = () => {
-  const {
-    activeTab,
-    setActiveTab,
-    accounts,
-    currentAccountKey,
-    setCurrentAccountKey,
-    isDarkMode,
-    setDarkMode,
-  } = useAppStore();
+  const activeTab = useAppStore((s) => s.activeTab);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const accounts = useAppStore((s) => s.accounts);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
+  const isDarkMode = useAppStore((s) => s.isDarkMode);
+  const setDarkMode = useAppStore((s) => s.setDarkMode);
 
   const navItems = [
     { itemKey: 'dashboard', text: '概览仪表盘', icon: <IconHome /> },
@@ -85,7 +83,7 @@ export const HeaderNav: React.FC = () => {
                       </Avatar>
                       <span>{a.nickname}</span>
                       <Tag size="small" color={a.is_plus ? "amber" : "blue"}>
-                        {a.is_plus ? `SVIP${a.vip_level || 5}` : `VIP${a.vip_level || 1}`}
+                        {a.is_plus ? `SVIP${a.vip_level || 1}` : `VIP${a.vip_level || 1}`}
                       </Tag>
                     </Space>
                   </Select.Option>

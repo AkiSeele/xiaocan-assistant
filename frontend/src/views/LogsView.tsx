@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Card,
   Typography,
@@ -30,6 +30,7 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { TaskIcon } from '../components/TaskIcons';
+import { useOnActivated } from '../utils/useOnActivated';
 import type { JobLog } from '../types';
 
 const { Title, Text } = Typography;
@@ -44,9 +45,7 @@ const TASK_LABELS: Record<string, string> = {
   store_cancel: '霸王餐名额取消',
   // 日常自动化任务
   daily: '元宝乐园每日任务',
-  yb_lottery: '元宝抽大奖',
   group_lottery: '社群幸运转盘',
-  free_lottery: '免费开红包',
   redpack_rain: '整点红包雨',
   flash_sale: '元宝秒杀抢券',
   vip_expand: '会员每日签到',
@@ -54,10 +53,9 @@ const TASK_LABELS: Record<string, string> = {
   svip_rebate: 'SVIP高额返利券',
   media_vip: '影音会员周卡',
   free_order: '订单全额免单券',
-  today_stats: '本日数据统计',
-  alipay_withdraw: '支付宝自动提现',
   expire_remind: '凭据/JWT到期预警',
   coupon_remind: '卡券/红包到期提醒',
+  dual_rebate_monitor: '美团同店双返利监控',
 };
 
 const STORE_TASK_KEYS = new Set([
@@ -70,9 +68,9 @@ const STORE_TASK_KEYS = new Set([
 ]);
 
 export const LogsView: React.FC = () => {
-  const { currentAccountKey, accounts, activeTab } = useAppStore();
+  const accounts = useAppStore((s) => s.accounts);
   const [logs, setLogs] = useState<JobLog[]>([]);
-  const [filterAccount, setFilterAccount] = useState<string>(currentAccountKey || accounts[0]?.key || '');
+  const [filterAccount, setFilterAccount] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [loading, setLoading] = useState<boolean>(false);
@@ -87,64 +85,33 @@ export const LogsView: React.FC = () => {
   const [detailModalVisible, setDetailModalVisible] = useState<boolean>(false);
   const [activeLog, setActiveLog] = useState<JobLog | null>(null);
 
-  // 动态自适应屏幕高度计算：消除外层滚动条，使表格撑满视口剩余空间
-  const updateTableHeight = useCallback(() => {
-    if (!tableContainerRef.current) return;
-    const targetEl = tableContainerRef.current;
-    const rect = targetEl.getBoundingClientRect();
-    const headerEl = targetEl.querySelector('.semi-table-header') as HTMLElement;
-    const paginationEl = targetEl.querySelector('.semi-table-pagination-outer') as HTMLElement;
-    const headerH = headerEl ? headerEl.offsetHeight : 44;
-    const paginationH = paginationEl ? paginationEl.offsetHeight : 48;
-
-    let calculated = 0;
-    if (targetEl.clientHeight > 0) {
-      calculated = targetEl.clientHeight - headerH - paginationH;
-    } else {
-      const bottomReserve = headerH + paginationH + 25;
-      calculated = window.innerHeight - rect.top - bottomReserve;
-    }
-    setTableScrollY(Math.max(260, Math.floor(calculated)));
-  }, []);
-
+  // 纯净视口高度自适应：杜绝 DOM querySelector 与强制同步重排
   useEffect(() => {
-    updateTableHeight();
-    const rafId = requestAnimationFrame(updateTableHeight);
-    const timer = setTimeout(updateTableHeight, 60);
-
-    const handleResize = () => {
-      requestAnimationFrame(updateTableHeight);
+    const updateHeight = () => {
+      if (!tableContainerRef.current) return;
+      const ch = tableContainerRef.current.clientHeight;
+      if (ch > 100) {
+        // 预留表头(44px)与分页条(48px)空间(约96px)
+        const targetH = Math.max(260, ch - 96);
+        setTableScrollY((prev) => (Math.abs(prev - targetH) > 12 ? targetH : prev));
+      }
     };
-    window.addEventListener('resize', handleResize);
 
+    updateHeight();
     let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
+    if (typeof ResizeObserver !== 'undefined' && tableContainerRef.current) {
       ro = new ResizeObserver(() => {
-        requestAnimationFrame(updateTableHeight);
+        updateHeight();
       });
-      if (containerRef.current) ro.observe(containerRef.current);
-      if (tableContainerRef.current) ro.observe(tableContainerRef.current);
+      ro.observe(tableContainerRef.current);
     }
 
+    window.addEventListener('resize', updateHeight);
     return () => {
-      cancelAnimationFrame(rafId);
-      clearTimeout(timer);
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('resize', updateHeight);
       ro?.disconnect();
     };
-  }, [updateTableHeight]);
-
-  useEffect(() => {
-    if (activeTab === 'logs') {
-      updateTableHeight();
-    }
-  }, [activeTab, updateTableHeight]);
-
-  useEffect(() => {
-    if (currentAccountKey && filterAccount !== currentAccountKey) {
-      setFilterAccount(currentAccountKey);
-    }
-  }, [currentAccountKey, filterAccount]);
+  }, []);
 
   const lastLogsSignatureRef = useRef<string>('');
   const inFlightLogsRef = useRef<boolean>(false);
@@ -195,13 +162,19 @@ export const LogsView: React.FC = () => {
     fetchLogs();
   }, [filterAccount]);
 
-  // 当存在「执行中」任务时，自动每 3 秒静默轮询更新日志流
+  // 页面切入激活时自动拉取最新运行日志
+  useOnActivated('logs', () => {
+    fetchLogs(logs.length > 0, true);
+  }, { throttleMs: 2500 });
+
+  // 当存在「执行中」任务时，自动每 3 秒静默轮询更新日志流（后台非活跃时自动挂起）
   const hasRunning = logs.some(l => l.status === 'running');
 
   useEffect(() => {
     if (!hasRunning) return;
 
     const interval = setInterval(() => {
+      if (useAppStore.getState().activeTab !== 'logs') return;
       fetchLogs(true, true);
     }, 3000);
 
@@ -384,20 +357,22 @@ export const LogsView: React.FC = () => {
     {
       title: '操作',
       dataIndex: 'actions',
-      width: 90,
+      width: 100,
       fixed: 'right' as const,
       align: 'center' as const,
       render: (_: any, record: JobLog) => (
-        <Button
-          theme="light"
-          type="tertiary"
-          size="small"
-          icon={<IconFile />}
-          onClick={() => handleOpenDetail(record)}
-          className="text-xs"
-        >
-          详情
-        </Button>
+        <div className="w-full flex justify-center items-center">
+          <Button
+            theme="light"
+            type="tertiary"
+            size="small"
+            icon={<IconFile />}
+            onClick={() => handleOpenDetail(record)}
+            className="text-xs"
+          >
+            详情
+          </Button>
+        </div>
       ),
     },
   ];
@@ -415,6 +390,16 @@ export const LogsView: React.FC = () => {
           will-change: transform;
           transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
+        }
+        .logs-table-container .semi-table-row-cell-fixed-right,
+        .logs-table-container .semi-table-header-cell-fixed-right {
+          text-align: center !important;
+        }
+        .logs-table-container .semi-table-row-cell-fixed-right > .semi-table-row-cell-render-content {
+          display: flex !important;
+          justify-content: center !important;
+          align-items: center !important;
+          width: 100% !important;
         }
         .logs-table-container .semi-table-placeholder {
           min-height: var(--table-scroll-y) !important;
@@ -477,12 +462,42 @@ export const LogsView: React.FC = () => {
             value={filterAccount}
             onChange={(v) => setFilterAccount(String(v))}
             placeholder="筛选账号"
-            style={{ width: 150 }}
+            style={{ width: 175 }}
+            renderSelectedItem={(optionNode: any) => {
+              const val = optionNode?.value;
+              if (!val) {
+                return (
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <Avatar size="extra-extra-small" color="blue" shape="square">全</Avatar>
+                    <span className="font-medium">全部账号</span>
+                  </div>
+                );
+              }
+              const acc = accounts.find(a => a.key === val);
+              return (
+                <div className="flex items-center gap-1.5 text-xs truncate">
+                  <Avatar size="extra-extra-small" src={acc?.avatar || undefined} color="orange">
+                    {acc?.nickname?.[0] || '蚕'}
+                  </Avatar>
+                  <span className="truncate">{acc?.nickname || val}</span>
+                </div>
+              );
+            }}
           >
-            <Select.Option value="">全部账号</Select.Option>
+            <Select.Option value="">
+              <div className="flex items-center gap-2 py-0.5">
+                <Avatar size="extra-extra-small" color="blue" shape="square">全</Avatar>
+                <span className="text-xs font-medium">全部账号 (汇总)</span>
+              </div>
+            </Select.Option>
             {accounts.map(a => (
               <Select.Option key={a.key} value={a.key}>
-                {a.nickname}
+                <div className="flex items-center gap-2 py-0.5">
+                  <Avatar size="extra-extra-small" src={a.avatar || undefined} color="orange">
+                    {a.nickname?.[0] || '蚕'}
+                  </Avatar>
+                  <span className="truncate flex-1 text-xs">{a.nickname}</span>
+                </div>
               </Select.Option>
             ))}
           </Select>

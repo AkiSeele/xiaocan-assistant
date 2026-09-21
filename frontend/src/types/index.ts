@@ -162,6 +162,8 @@ export interface StoreAppointment {
   account_key: string;
   store_id: string;
   store_name: string;
+  store_icon?: string;
+  icon?: string;
   promotion_id: string;
   status: 'pending' | 'scheduled' | 'primed' | 'monitoring' | 'success' | 'failed' | 'cancelled' | 'expired' | string;
   early_ms: number;
@@ -178,6 +180,9 @@ export interface StoreAppointment {
   rebate_type?: string;
   rebate_card_id?: string;
   redpack_mode?: number;
+  redpack_id?: string;
+  redpack_name?: string;
+  use_advance_card?: number | boolean;
   outcome?: string;
   created_at: string;
 }
@@ -252,6 +257,30 @@ export interface ClawBotStatus {
   account_id: string;
   has_context_token: boolean;
   saved_at: string;
+}
+
+export interface ClawBotQrResponse {
+  ok: boolean;
+  qrcode?: string;
+  qr_image?: string;
+  qr_url?: string;
+  message: string;
+}
+
+export interface ClawBotPollResponse {
+  ok: boolean;
+  status: 'wait' | 'scaned' | 'need_verifycode' | 'confirmed' | 'expired' | 'verify_code_blocked' | 'binded_redirect' | 'scaned_but_redirect' | 'network_error' | string;
+  message: string;
+  user_id?: string;
+  account_id?: string;
+  redirect_host?: string;
+}
+
+export interface ClawBotActivationResponse {
+  ok: boolean;
+  activated: boolean;
+  has_context_token?: boolean;
+  message: string;
 }
 
 export interface SystemSettings {

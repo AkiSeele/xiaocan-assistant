@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -116,7 +116,7 @@ export const api = {
       stores: StoreItem[];
       message?: string;
     }>('/store/dual-rebate-scan', { params, timeout: 120000 }).then(r => r.data),
-  grabStoreNow: (data: { account_key: string; store_id?: string; store_name?: string; promotion_id: string; platform?: string; order_money?: number; rebate_price?: number; rebate_desc?: string; advance?: boolean }) =>
+  grabStoreNow: (data: { account_key: string; store_id?: string; store_name?: string; promotion_id: string; platform?: string; order_money?: number; rebate_price?: number; rebate_desc?: string; advance?: boolean; redpack_id?: string; redpack_name?: string; redpack_mode?: number }) =>
     client.post<{ ok: boolean; order_id?: number; can_monitor?: boolean; message: string }>('/store/grab-now', data).then(r => r.data),
   createAppointment: (data: Partial<StoreAppointment>) => client.post<{ ok: boolean; appointment_id: number; message: string }>('/store/appoint', data).then(r => r.data),
   getAppointments: (accountKey?: string) => client.get<{ ok: boolean; appointments: StoreAppointment[]; total: number }>('/store/appointments', { params: { account_key: accountKey } }).then(r => r.data),
@@ -166,7 +166,15 @@ export const api = {
   testTianditu: (data: { tianditu_key: string }) =>
     client.post<{ ok: boolean; message: string; data?: any }>('/settings/test-tianditu', data).then(r => r.data),
   getClawBotStatus: (customPath?: string) => 
-    client.get<{ ok: boolean; ready: boolean; message: string; user_id?: string; account_id?: string; has_context_token?: boolean; saved_at?: string }>('/settings/clawbot-status', { params: { custom_path: customPath } }).then(r => r.data),
+    client.get<ClawBotStatus & { ok: boolean; message: string }>('/settings/clawbot/status', { params: { custom_path: customPath } }).then(r => r.data),
+  generateClawBotQr: (localToken?: string) =>
+    client.post<ClawBotQrResponse>('/settings/clawbot/qr', { local_token: localToken }).then(r => r.data),
+  pollClawBotStatus: (qrcode: string, verifyCode?: string) =>
+    client.get<ClawBotPollResponse>('/settings/clawbot/poll', { params: { qrcode, verify_code: verifyCode } }).then(r => r.data),
+  checkClawBotActivation: () =>
+    client.post<ClawBotActivationResponse>('/settings/clawbot/check-activation').then(r => r.data),
+  unbindClawBot: () =>
+    client.post<{ ok: boolean; message: string }>('/settings/clawbot/unbind').then(r => r.data),
 
   // 阿里云 NTP 高精度授时服务
   getBeijingTime: () =>

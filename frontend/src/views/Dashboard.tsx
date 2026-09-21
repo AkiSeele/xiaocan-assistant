@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Card,
   Row,
@@ -15,33 +15,88 @@ import {
   Modal,
   Notification,
   Toast,
-  Spin
+  Spin,
+  Select
 } from '@douyinfe/semi-ui';
 import {
   IconPlay,
   IconShoppingBag,
   IconCheckCircleStroked,
-  IconArrowRight,
+  IconChevronRight,
   IconCalendar,
-  IconGift,
   IconPriceTag,
   IconCopy,
   IconHelpCircle,
-  IconActivity
+  IconActivity,
+  IconClock,
+  IconAlertCircle,
+  IconSpin,
+  IconRefresh,
+  IconGift,
+  IconList
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { TaskIcon } from '../components/TaskIcons';
 import { useGSAP, animateStaggerEnter, gsap } from '../utils/animations';
+import { useOnActivated } from '../utils/useOnActivated';
 import type { JobLog, StoreAppointment, OrderStats, DashboardChartData } from '../types';
 
 const { Text } = Typography;
 
+// 智能提取日志中的有效业务执行结果摘要 (过滤无意义的启动时间戳行与前缀)
+const getLogSummary = (txt: string): string => {
+  if (!txt) return '无返回摘要';
+  const lines = txt.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return '无返回摘要';
+  // 优先寻找非「开始执行任务」的结果行
+  const resultLine = lines.find((l) => !l.includes('开始执行任务') && !l.startsWith('==='));
+  const target = resultLine || lines[lines.length - 1] || lines[0];
+  return target.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, '').trim() || '执行完成';
+};
+
+const TASK_LABELS: Record<string, string> = {
+  // 霸王餐抢单与预约
+  store_grab: '霸王餐即时抢单',
+  store_appoint: '倒计时预约抢单',
+  store_monitor: '实时名额监听捡漏',
+  store_keyword: '商户定时搜索捡漏',
+  store_search: '商户定向搜索捡漏',
+  store_cancel: '霸王餐名额取消',
+  // 日常自动化任务
+  daily: '元宝乐园每日任务',
+  group_lottery: '社群幸运转盘',
+  redpack_rain: '整点红包雨',
+  flash_sale: '元宝秒杀抢券',
+  vip_expand: '会员每日签到',
+  brand_flash: '大牌畅享秒杀',
+  svip_rebate: 'SVIP高额返利券',
+  media_vip: '影音会员周卡',
+  free_order: '订单全额免单券',
+  expire_remind: '凭据/JWT到期预警',
+  coupon_remind: '卡券/红包到期提醒',
+  dual_rebate_monitor: '美团同店双返利监控',
+};
+
+const STORE_TASK_KEYS = new Set([
+  'store_grab',
+  'store_appoint',
+  'store_monitor',
+  'store_keyword',
+  'store_search',
+  'store_cancel',
+]);
+
 export const Dashboard: React.FC = () => {
-  const { accounts, currentAccountKey, setActiveTab } = useAppStore();
+  const accounts = useAppStore((s) => s.accounts);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const dashboardRef = useRef<HTMLDivElement>(null);
 
   // 核心业务数据状态
   const [recentLogs, setRecentLogs] = useState<JobLog[]>([]);
+  const [logFilterAccount, setLogFilterAccount] = useState<string>('all');
+  const [logsLoading, setLogsLoading] = useState<boolean>(false);
   const [appointments, setAppointments] = useState<StoreAppointment[]>([]);
   const [orderStats, setOrderStats] = useState<OrderStats>({
     total_orders: 0,
@@ -68,7 +123,7 @@ export const Dashboard: React.FC = () => {
   // 按钮异步操作 Loading 状态 (防重复点击)
   const [dailySignLoading, setDailySignLoading] = useState<boolean>(false);
   const [vipExpandLoading, setVipExpandLoading] = useState<boolean>(false);
-  const [lotteryLoading, setLotteryLoading] = useState<boolean>(false);
+  const [groupLotteryLoading, setGroupLotteryLoading] = useState<boolean>(false);
   const [batchAllLoading, setBatchAllLoading] = useState<boolean>(false);
 
   // 日志详情模态框
@@ -77,8 +132,25 @@ export const Dashboard: React.FC = () => {
   const lastDashboardSignatureRef = useRef<string>('');
   const inFlightDashboardRef = useRef<boolean>(false);
 
+  // 首页执行流水获取
+  const fetchRecentLogs = useCallback(async (targetKey?: string, silent = false) => {
+    const acc = targetKey !== undefined ? targetKey : logFilterAccount;
+    const queryAcc = acc === 'all' ? undefined : acc;
+    if (!silent) setLogsLoading(true);
+    try {
+      const res = await api.getJobs(queryAcc, 8);
+      if (res.ok) {
+        setRecentLogs(res.jobs || []);
+      }
+    } catch {
+      // 异常捕获
+    } finally {
+      if (!silent) setLogsLoading(false);
+    }
+  }, [logFilterAccount]);
+
   // 核心数据拉取
-  const loadDashboardData = async (force = false) => {
+  const loadDashboardData = async (force = false, silent = false) => {
     const effectiveKey = currentAccountKey || (accounts[0]?.key ?? '');
     const signature = `dashboard_${effectiveKey}`;
     if (!force && lastDashboardSignatureRef.current === signature) {
@@ -88,10 +160,11 @@ export const Dashboard: React.FC = () => {
     inFlightDashboardRef.current = true;
     lastDashboardSignatureRef.current = signature;
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
+      const logQueryKey = logFilterAccount === 'all' ? undefined : logFilterAccount;
       const [jobsRes, apptsRes, statsRes, chartRes, tasksRes] = await Promise.all([
-        api.getJobs(effectiveKey || undefined, 6),
+        api.getJobs(logQueryKey, 8),
         api.getAppointments(effectiveKey || undefined),
         api.getOrderStats(effectiveKey || undefined),
         api.getDashboardChartData(effectiveKey || undefined),
@@ -112,13 +185,35 @@ export const Dashboard: React.FC = () => {
       // 捕获异常
     } finally {
       inFlightDashboardRef.current = false;
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
     loadDashboardData();
   }, [currentAccountKey, accounts.length]);
+
+  // 页面切入激活时自动平滑拉取最新资产、任务与执行流水数据
+  useOnActivated('dashboard', () => {
+    loadDashboardData(true, true);
+    fetchRecentLogs(logFilterAccount, true);
+  }, { throttleMs: 3000 });
+
+  // 当日志账号筛选切换时拉取最新日志
+  useEffect(() => {
+    fetchRecentLogs(logFilterAccount);
+  }, [logFilterAccount, fetchRecentLogs]);
+
+  // 当存在正在执行中的流水时，每 3 秒静默轮询更新状态（后台非活跃时自动挂起）
+  const hasRunningLogs = recentLogs.some((l) => l.status === 'running');
+  useEffect(() => {
+    if (!hasRunningLogs) return;
+    const timer = setInterval(() => {
+      if (useAppStore.getState().activeTab !== 'dashboard') return;
+      fetchRecentLogs(logFilterAccount, true);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [hasRunningLogs, logFilterAccount, fetchRecentLogs]);
 
   // GSAP 进场交错动画 (只在组件挂载时平滑执行一次，避免数据刷新与账号切换时的闪烁)
   useGSAP(
@@ -206,19 +301,19 @@ export const Dashboard: React.FC = () => {
     }
   };
 
-  // 3. 快捷元宝抽奖
-  const handleLotterySpin = async () => {
+  // 3. 快捷社群转盘打卡
+  const handleGroupLottery = async () => {
     if (!currentAccountKey) {
       Toast.warning('请先绑定并选择主控小蚕账号');
       return;
     }
-    setLotteryLoading(true);
+    setGroupLotteryLoading(true);
     try {
-      const res = await api.runTaskNow(currentAccountKey, 'yb_lottery');
+      const res = await api.runTaskNow(currentAccountKey, 'group_lottery');
       if (res.ok) {
         Notification.success({
-          title: '元宝转盘抽奖完成',
-          content: res.output?.split('\n')[1] || '已完成一次元宝转盘抽大奖！',
+          title: '社群转盘抽奖成功',
+          content: res.output?.split('\n')[1] || '已成功参与今日社群转盘抽奖！',
           duration: 4,
         });
         loadDashboardData(true);
@@ -226,9 +321,9 @@ export const Dashboard: React.FC = () => {
         Toast.error(res.output || '转盘抽奖异常');
       }
     } catch (e: any) {
-      Toast.error(`抽奖失败: ${e.message || e}`);
+      Toast.error(`转盘抽奖失败: ${e.message || e}`);
     } finally {
-      setLotteryLoading(false);
+      setGroupLotteryLoading(false);
     }
   };
 
@@ -277,71 +372,141 @@ export const Dashboard: React.FC = () => {
 
   const logColumns = [
     {
-      title: '调度时间',
+      title: <span className="whitespace-nowrap">调度时间</span>,
       dataIndex: 'created_at',
-      width: 160,
+      width: 85,
+      align: 'center' as const,
       render: (t: string) => (
-        <Text size="small" type="tertiary" className="font-mono">
+        <span className="font-mono text-xs text-semi-color-text-2 whitespace-nowrap">
           {t?.split(' ')[1] || t}
-        </Text>
+        </span>
       ),
     },
     {
-      title: '任务名称',
-      dataIndex: 'task_id',
-      width: 140,
-      render: (tid: string) => {
-        const colorMap: Record<string, 'blue' | 'purple' | 'amber' | 'green' | 'cyan'> = {
-          daily: 'blue',
-          vip_expand: 'amber',
-          yb_lottery: 'purple',
-          brand_flash: 'green',
-          svip_rebate: 'cyan',
-        };
-        return <Tag color={colorMap[tid] || 'grey'}>{tid}</Tag>;
+      title: <span className="whitespace-nowrap">执行账号</span>,
+      dataIndex: 'account_key',
+      width: 110,
+      render: (key: string) => {
+        const acc = accounts.find((a) => a.key === key);
+        const name = acc?.nickname || key || '全局';
+        return (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Avatar size="extra-extra-small" color="orange" src={acc?.avatar || undefined} className="shrink-0">
+              {acc?.nickname?.[0] || '蚕'}
+            </Avatar>
+            <Tooltip content={`执行账号: ${name} (${key})`}>
+              <span className="text-xs text-semi-color-text-0 truncate max-w-[70px] font-medium">
+                {name}
+              </span>
+            </Tooltip>
+          </div>
+        );
       },
     },
     {
-      title: '状态',
+      title: <span className="whitespace-nowrap">任务名称</span>,
+      dataIndex: 'task_id',
+      width: 145,
+      render: (tid: string) => {
+        const label = TASK_LABELS[tid] || tid;
+        const isStore = STORE_TASK_KEYS.has(tid);
+        return (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div className="w-4 h-4 rounded bg-semi-color-fill-0 p-0.5 flex items-center justify-center shrink-0">
+              <TaskIcon taskId={tid} className="w-3.5 h-3.5" />
+            </div>
+            <Tooltip content={label}>
+              <span className="text-xs font-medium text-semi-color-text-0 truncate max-w-[95px]">
+                {label}
+              </span>
+            </Tooltip>
+            {isStore ? (
+              <Tag size="small" color="cyan" className="text-[10px] scale-90 origin-left shrink-0">
+                抢单
+              </Tag>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    {
+      title: <span className="whitespace-nowrap">状态</span>,
       dataIndex: 'status',
-      width: 100,
-      render: (st: string) => (
-        <Tag color={st === 'success' ? 'green' : 'red'}>
-          {st === 'success' ? '执行成功' : '存在异常'}
-        </Tag>
-      ),
+      width: 75,
+      align: 'center' as const,
+      render: (st: string) => {
+        if (st === 'running') {
+          return (
+            <Tag color="cyan" prefixIcon={<IconSpin spin />} size="small">
+              进行中
+            </Tag>
+          );
+        }
+        if (st === 'success') {
+          return (
+            <Tag color="green" prefixIcon={<IconCheckCircleStroked />} size="small">
+              成功
+            </Tag>
+          );
+        }
+        return (
+          <Tag color="red" prefixIcon={<IconAlertCircle />} size="small">
+            异常
+          </Tag>
+        );
+      },
     },
     {
-      title: '输出摘要',
+      title: <span className="whitespace-nowrap">输出摘要</span>,
       dataIndex: 'output',
-      render: (txt: string, record: JobLog) => (
-        <div
-          className="cursor-pointer group flex items-center gap-1.5"
-          onClick={() => setActiveLogModal(record)}
-        >
-          <Text
-            ellipsis={{ showTooltip: true }}
-            className="group-hover:text-semi-color-primary transition-colors text-xs"
-            style={{ maxWidth: 300 }}
+      render: (txt: string, record: JobLog) => {
+        const summary = getLogSummary(txt);
+        return (
+          <div
+            className="cursor-pointer group flex items-center justify-between gap-1 w-full min-w-0 py-0.5"
+            onClick={() => setActiveLogModal(record)}
+            title="点击查看完整日志"
           >
-            {txt?.split('\n')[0] || '—'}
-          </Text>
-          <IconArrowRight size="extra-small" className="opacity-0 group-hover:opacity-100 transition-opacity text-semi-color-primary" />
-        </div>
-      ),
+            <Text
+              ellipsis={{ showTooltip: true }}
+              className="group-hover:text-semi-color-primary transition-colors text-xs text-semi-color-text-1 truncate flex-1 min-w-0"
+            >
+              {summary}
+            </Text>
+            <Tooltip content="复制日志">
+              <Button
+                theme="borderless"
+                type="tertiary"
+                size="small"
+                icon={<IconCopy size="extra-small" />}
+                className="opacity-0 group-hover:opacity-100 transition-opacity !p-1 !h-auto shrink-0 text-semi-color-text-3 hover:text-semi-color-primary"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopy(record.output, '任务日志');
+                }}
+              />
+            </Tooltip>
+          </div>
+        );
+      },
     },
     {
-      title: '操作',
-      width: 70,
+      title: <span className="whitespace-nowrap">详情</span>,
+      width: 48,
+      align: 'center' as const,
       render: (_: any, record: JobLog) => (
-        <Tooltip content="复制输出详情">
-          <Button
-            theme="borderless"
-            size="small"
-            icon={<IconCopy />}
-            onClick={() => handleCopy(record.output, '任务日志')}
-          />
-        </Tooltip>
+        <div className="w-full flex justify-center items-center">
+          <Tooltip content="查看日志详情">
+            <Button
+              theme="borderless"
+              type="tertiary"
+              size="small"
+              icon={<IconChevronRight size="extra-small" />}
+              onClick={() => setActiveLogModal(record)}
+              className="!p-1 !h-auto text-semi-color-text-3 hover:text-semi-color-primary"
+            />
+          </Tooltip>
+        </div>
       ),
     },
   ];
@@ -375,7 +540,7 @@ export const Dashboard: React.FC = () => {
                 className="font-semibold shadow-2xs"
               >
                 {currentAccount?.is_plus
-                  ? `SVIP${currentAccount?.vip_level || 5}`
+                  ? `SVIP${currentAccount?.vip_level || 1}`
                   : `VIP${currentAccount?.vip_level || 1}`}
               </Tag>
             </div>
@@ -557,8 +722,8 @@ export const Dashboard: React.FC = () => {
       </Row>
 
       {/* 快捷工作流操作网格 (对齐牛马助手工作台 + 小蚕省心版极速打卡) */}
-      <Row gutter={[14, 14]}>
-        <Col xs={24} xl={10}>
+      <Row gutter={[14, 14]} className="w-full !mx-0 items-stretch">
+        <Col xs={24} lg={9} xl={8} className="!px-0 sm:!px-1.5 flex flex-col">
           <Card
             title={
               <div className="flex justify-between items-center w-full">
@@ -568,15 +733,15 @@ export const Dashboard: React.FC = () => {
                 <Tag color="cyan" size="small">极速执行</Tag>
               </div>
             }
-            className="gsap-card-item rounded-xl border border-semi-color-border h-full shadow-xs"
+            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs h-full flex flex-col justify-between overflow-hidden"
             headerStyle={{ padding: '14px 18px', borderBottom: '1px solid var(--semi-color-border)' }}
-            bodyStyle={{ padding: 18 }}
+            bodyStyle={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', flex: 1, justifyContent: 'space-between', gap: '14px' }}
           >
-            <div className="space-y-3.5">
+            <div className="flex flex-col gap-3">
               {/* 一键全流程执行 (突出主按钮) */}
               <Popconfirm
                 title="立即执行当前账号全部日常任务？"
-                content="将立即串行打卡：每日签到 + SVIP成长值膨胀金 + 元宝抽奖，打满今日上限。"
+                content="将立即串行打卡：每日签到 + SVIP成长值膨胀金 + 社群转盘，打满今日上限。"
                 onConfirm={handleBatchRunAll}
                 okText="立即打卡"
                 cancelText="稍后再说"
@@ -588,120 +753,185 @@ export const Dashboard: React.FC = () => {
                   size="large"
                   loading={batchAllLoading}
                   icon={<IconPlay />}
-                  className="h-12 rounded-xl justify-between px-4 font-bold shadow-xs bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:via-indigo-500 hover:to-violet-500 text-white border-0 transition-all duration-300 hover:shadow-md hover:shadow-indigo-500/25 active:scale-[0.99]"
+                  className="h-11 rounded-xl justify-between px-3.5 font-bold shadow-xs bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:via-indigo-500 hover:to-violet-500 text-white border-0 transition-all duration-300 hover:shadow-md hover:shadow-indigo-500/25 active:scale-[0.99]"
                 >
-                  <span className="tracking-wide">一键完成今日所有日常打卡</span>
-                  <span className="text-xs font-normal opacity-90 px-2.5 py-0.5 rounded-full bg-white/20 backdrop-blur-xs">
-                    签到+膨胀+抽奖 ›
+                  <span className="tracking-wide text-xs sm:text-sm truncate">一键完成今日所有日常打卡</span>
+                  <span className="text-[11px] font-normal opacity-90 px-2 py-0.5 rounded-full bg-white/20 backdrop-blur-xs shrink-0 whitespace-nowrap">
+                    签到+膨胀+转盘 ›
                   </span>
                 </Button>
               </Popconfirm>
 
-              {/* 单项快捷操作 Bento 按钮 */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              {/* 单项快捷操作 Bento 按钮：签到、膨胀、转盘 3 栏网格 */}
+              <div className="grid grid-cols-3 gap-2">
                 <Tooltip content="每日乐园签到打卡，自动领取元宝与打卡奖励">
                   <div
                     onClick={!dailySignLoading ? handleDailySign : undefined}
-                    className={`flex flex-col items-center justify-center p-3 rounded-xl border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-bg-0 hover:border-emerald-500/50 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group select-none ${
+                    className={`flex flex-col items-center justify-center p-2.5 rounded-xl border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-bg-0 hover:border-emerald-500/50 hover:shadow-xs transition-all duration-200 cursor-pointer group select-none ${
                       dailySignLoading ? 'opacity-60 pointer-events-none' : ''
                     }`}
                   >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-1.5 group-hover:scale-110 group-hover:bg-emerald-500/20 transition-all">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-1 group-hover:scale-110 group-hover:bg-emerald-500/20 transition-all shrink-0">
                       {dailySignLoading ? <Spin size="small" /> : <IconCalendar size="default" />}
                     </div>
-                    <span className="text-xs font-semibold text-semi-color-text-0 group-hover:text-emerald-600 transition-colors">每日签到</span>
-                    <span className="text-[10px] text-semi-color-text-2 mt-0.5">领元宝积分</span>
+                    <span className="text-xs font-semibold text-semi-color-text-0 group-hover:text-emerald-600 transition-colors truncate w-full text-center">每日签到</span>
+                    <span className="text-[10px] text-semi-color-text-2 mt-0.5 truncate w-full text-center">领元宝积分</span>
                   </div>
                 </Tooltip>
 
                 <Tooltip content="领取SVIP会员每日成长值与红包膨胀助力金">
                   <div
                     onClick={!vipExpandLoading ? handleVipExpand : undefined}
-                    className={`flex flex-col items-center justify-center p-3 rounded-xl border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-bg-0 hover:border-indigo-500/50 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group select-none ${
+                    className={`flex flex-col items-center justify-center p-2.5 rounded-xl border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-bg-0 hover:border-indigo-500/50 hover:shadow-xs transition-all duration-200 cursor-pointer group select-none ${
                       vipExpandLoading ? 'opacity-60 pointer-events-none' : ''
                     }`}
                   >
-                    <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-1.5 group-hover:scale-110 group-hover:bg-indigo-500/20 transition-all">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-1 group-hover:scale-110 group-hover:bg-indigo-500/20 transition-all shrink-0">
                       {vipExpandLoading ? <Spin size="small" /> : <IconCheckCircleStroked size="default" />}
                     </div>
-                    <span className="text-xs font-semibold text-semi-color-text-0 group-hover:text-indigo-600 transition-colors">成长值膨胀</span>
-                    <span className="text-[10px] text-semi-color-text-2 mt-0.5">领膨胀金</span>
+                    <span className="text-xs font-semibold text-semi-color-text-0 group-hover:text-indigo-600 transition-colors truncate w-full text-center">成长值膨胀</span>
+                    <span className="text-[10px] text-semi-color-text-2 mt-0.5 truncate w-full text-center">领膨胀金</span>
                   </div>
                 </Tooltip>
 
-                <Tooltip content="参与元宝幸运转盘抽奖，打满每日抽奖额度">
+                <Tooltip content="社群专属幸运大转盘，抽取大额返现卡券与特权红包">
                   <div
-                    onClick={!lotteryLoading ? handleLotterySpin : undefined}
-                    className={`flex flex-col items-center justify-center p-3 rounded-xl border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-bg-0 hover:border-amber-500/50 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group select-none ${
-                      lotteryLoading ? 'opacity-60 pointer-events-none' : ''
+                    onClick={!groupLotteryLoading ? handleGroupLottery : undefined}
+                    className={`flex flex-col items-center justify-center p-2.5 rounded-xl border border-semi-color-border bg-semi-color-fill-0 hover:bg-semi-color-bg-0 hover:border-amber-500/50 hover:shadow-xs transition-all duration-200 cursor-pointer group select-none ${
+                      groupLotteryLoading ? 'opacity-60 pointer-events-none' : ''
                     }`}
                   >
-                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-1.5 group-hover:scale-110 group-hover:bg-amber-500/20 transition-all">
-                      {lotteryLoading ? <Spin size="small" /> : <IconGift size="default" />}
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-1 group-hover:scale-110 group-hover:bg-amber-500/20 transition-all shrink-0">
+                      {groupLotteryLoading ? <Spin size="small" /> : <IconGift size="default" />}
                     </div>
-                    <span className="text-xs font-semibold text-semi-color-text-0 group-hover:text-amber-600 transition-colors">幸运转盘</span>
-                    <span className="text-[10px] text-semi-color-text-2 mt-0.5">元宝抽大奖</span>
+                    <span className="text-xs font-semibold text-semi-color-text-0 group-hover:text-amber-600 transition-colors truncate w-full text-center">社群转盘</span>
+                    <span className="text-[10px] text-semi-color-text-2 mt-0.5 truncate w-full text-center">抽外卖神券</span>
                   </div>
                 </Tooltip>
               </div>
+            </div>
 
-              {/* 快捷跳转导航 */}
-              <div className="pt-2 border-t border-semi-color-border flex gap-2">
-                <Button
-                  block
-                  theme="borderless"
-                  type="tertiary"
-                  size="small"
-                  onClick={() => setActiveTab('automation')}
-                  className="text-xs text-semi-color-text-2 hover:text-semi-color-primary justify-center"
-                >
-                  配置秒杀与提前量参数 ›
-                </Button>
-                <Button
-                  block
-                  theme="borderless"
-                  type="tertiary"
-                  size="small"
-                  onClick={() => setActiveTab('orders')}
-                  className="text-xs text-semi-color-text-2 hover:text-semi-color-primary justify-center"
-                >
-                  管理霸王餐外卖订单 ›
-                </Button>
+            {/* 快捷跳转导航 */}
+            <div className="pt-2.5 border-t border-semi-color-border/80 grid grid-cols-1 sm:grid-cols-2 gap-2 mt-auto">
+              <div
+                onClick={() => setActiveTab('automation')}
+                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-semi-color-fill-0 hover:bg-semi-color-fill-1 border border-semi-color-border-subtle hover:border-semi-color-primary-light-active cursor-pointer transition-all group select-none"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <IconClock size="small" className="text-semi-color-text-2 group-hover:text-semi-color-primary shrink-0" />
+                  <span className="text-xs font-medium text-semi-color-text-1 group-hover:text-semi-color-primary truncate">
+                    秒杀提前量参数
+                  </span>
+                </div>
+                <IconChevronRight size="extra-small" className="text-semi-color-text-3 group-hover:text-semi-color-primary shrink-0" />
+              </div>
+              <div
+                onClick={() => setActiveTab('orders')}
+                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-semi-color-fill-0 hover:bg-semi-color-fill-1 border border-semi-color-border-subtle hover:border-semi-color-primary-light-active cursor-pointer transition-all group select-none"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <IconList size="small" className="text-semi-color-text-2 group-hover:text-semi-color-primary shrink-0" />
+                  <span className="text-xs font-medium text-semi-color-text-1 group-hover:text-semi-color-primary truncate">
+                    管理霸王餐订单
+                  </span>
+                </div>
+                <IconChevronRight size="extra-small" className="text-semi-color-text-3 group-hover:text-semi-color-primary shrink-0" />
               </div>
             </div>
           </Card>
         </Col>
 
         {/* 最近执行流水与监控 */}
-        <Col xs={24} xl={14}>
+        <Col xs={24} lg={15} xl={16} className="!px-0 sm:!px-1.5 flex flex-col">
           <Card
             title={
-              <div className="flex justify-between items-center w-full">
-                <span className="font-bold text-base text-semi-color-text-0">
-                  最近自动化执行流水
-                </span>
-                <Button
-                  theme="borderless"
-                  type="tertiary"
-                  size="small"
-                  icon={<IconArrowRight />}
-                  onClick={() => setActiveTab('logs')}
-                >
-                  完整日志
-                </Button>
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 w-full">
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-bold text-base text-semi-color-text-0">
+                    最近自动化执行流水
+                  </span>
+                  <Tag color="blue" size="small" shape="circle">
+                    {recentLogs.length} 条
+                  </Tag>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
+                  <Select
+                    value={logFilterAccount}
+                    onChange={(v) => setLogFilterAccount(String(v))}
+                    size="small"
+                    style={{ width: 130 }}
+                    renderSelectedItem={(optionNode: any) => {
+                      const val = optionNode?.value;
+                      if (!val || val === 'all') {
+                        return (
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <Avatar size="extra-extra-small" color="blue" shape="square">全</Avatar>
+                            <span>全部账号</span>
+                          </div>
+                        );
+                      }
+                      const acc = accounts.find((a) => a.key === val);
+                      return (
+                        <div className="flex items-center gap-1.5 text-xs truncate">
+                          <Avatar size="extra-extra-small" src={acc?.avatar || undefined} color="orange">
+                            {acc?.nickname?.[0] || '蚕'}
+                          </Avatar>
+                          <span className="truncate">{acc?.nickname || val}</span>
+                        </div>
+                      );
+                    }}
+                  >
+                    <Select.Option value="all">
+                      <div className="flex items-center gap-1.5 py-0.5">
+                        <Avatar size="extra-extra-small" color="blue" shape="square">全</Avatar>
+                        <span className="text-xs font-medium">全部账号</span>
+                      </div>
+                    </Select.Option>
+                    {accounts.map((a) => (
+                      <Select.Option key={a.key} value={a.key}>
+                        <div className="flex items-center gap-1.5 py-0.5">
+                          <Avatar size="extra-extra-small" src={a.avatar || undefined} color="orange">
+                            {a.nickname?.[0] || '蚕'}
+                          </Avatar>
+                          <span className="text-xs truncate flex-1">{a.nickname}</span>
+                        </div>
+                      </Select.Option>
+                    ))}
+                  </Select>
+                  <Tooltip content="刷新流水">
+                    <Button
+                      theme="borderless"
+                      type="tertiary"
+                      size="small"
+                      icon={<IconRefresh />}
+                      loading={logsLoading}
+                      onClick={() => fetchRecentLogs(logFilterAccount)}
+                    />
+                  </Tooltip>
+                  <Button
+                    theme="borderless"
+                    type="tertiary"
+                    size="small"
+                    icon={<IconChevronRight />}
+                    iconPosition="right"
+                    onClick={() => setActiveTab('logs')}
+                  >
+                    完整日志
+                  </Button>
+                </div>
               </div>
             }
-            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs"
-            headerStyle={{ padding: '14px 18px', borderBottom: '1px solid var(--semi-color-border)' }}
-            bodyStyle={{ padding: 0 }}
+            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs h-full flex flex-col overflow-hidden"
+            headerStyle={{ padding: '12px 16px', borderBottom: '1px solid var(--semi-color-border)' }}
+            bodyStyle={{ padding: 0, flex: 1, overflow: 'hidden' }}
           >
             <Table
               columns={logColumns}
               dataSource={recentLogs}
               pagination={false}
               size="small"
-              loading={loading}
-              scroll={{ x: 550 }}
+              className="w-full"
+              loading={loading || logsLoading}
               empty={
                 <div className="py-8">
                   <Empty
@@ -718,30 +948,78 @@ export const Dashboard: React.FC = () => {
       {/* 日志输出查看详情弹窗 */}
       <Modal
         visible={Boolean(activeLogModal)}
-        title={`任务输出详情 [${activeLogModal?.task_id || ''}]`}
-        onCancel={() => setActiveLogModal(null)}
-        footer={
-          <Button
-            theme="solid"
-            type="primary"
-            onClick={() => setActiveLogModal(null)}
-          >
-            知道了
-          </Button>
-        }
-        width={580}
-      >
-        <div className="space-y-3">
-          <div className="flex justify-between text-xs text-semi-color-text-2">
-            <span>调度时间: {activeLogModal?.created_at}</span>
-            <span>
-              状态:{' '}
-              <Tag color={activeLogModal?.status === 'success' ? 'green' : 'red'}>
-                {activeLogModal?.status}
-              </Tag>
+        title={
+          <div className="flex items-center gap-2">
+            {activeLogModal?.task_id && <TaskIcon taskId={activeLogModal.task_id} className="w-5 h-5 shrink-0" />}
+            <span className="truncate">
+              任务执行详情 [{TASK_LABELS[activeLogModal?.task_id || ''] || activeLogModal?.task_id}]
             </span>
           </div>
-          <div className="bg-semi-color-fill-0 p-3.5 rounded-lg border border-semi-color-border font-mono text-xs max-h-72 overflow-y-auto whitespace-pre-wrap leading-relaxed text-semi-color-text-1">
+        }
+        onCancel={() => setActiveLogModal(null)}
+        footer={
+          <div className="flex justify-between items-center w-full">
+            <Button
+              theme="light"
+              type="tertiary"
+              size="small"
+              icon={<IconCopy />}
+              onClick={() => handleCopy(activeLogModal?.output || '', '任务日志')}
+            >
+              复制全部日志
+            </Button>
+            <Button
+              theme="solid"
+              type="primary"
+              onClick={() => setActiveLogModal(null)}
+            >
+              关闭
+            </Button>
+          </div>
+        }
+        width={620}
+      >
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-3 bg-semi-color-fill-0 rounded-lg border border-semi-color-border text-xs">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-semi-color-text-2 shrink-0">执行账号:</span>
+              <Avatar
+                size="extra-extra-small"
+                src={accounts.find((a) => a.key === activeLogModal?.account_key)?.avatar || undefined}
+                color="orange"
+                className="shrink-0"
+              >
+                {accounts.find((a) => a.key === activeLogModal?.account_key)?.nickname?.[0] || '蚕'}
+              </Avatar>
+              <span className="font-medium text-semi-color-text-0 truncate">
+                {accounts.find((a) => a.key === activeLogModal?.account_key)?.nickname || activeLogModal?.account_key || '默认'}
+              </span>
+            </div>
+            <div>
+              <span className="text-semi-color-text-2">调度时间: </span>
+              <span className="font-mono text-semi-color-text-1">{activeLogModal?.created_at}</span>
+            </div>
+            <div>
+              <span className="text-semi-color-text-2">执行状态: </span>
+              <Tag
+                color={
+                  activeLogModal?.status === 'success'
+                    ? 'green'
+                    : activeLogModal?.status === 'running'
+                    ? 'cyan'
+                    : 'red'
+                }
+                size="small"
+              >
+                {activeLogModal?.status === 'success'
+                  ? '执行成功'
+                  : activeLogModal?.status === 'running'
+                  ? '正在执行'
+                  : '执行异常'}
+              </Tag>
+            </div>
+          </div>
+          <div className="bg-semi-color-fill-0 p-3.5 rounded-lg border border-semi-color-border font-mono text-xs max-h-80 overflow-y-auto whitespace-pre-wrap leading-relaxed text-semi-color-text-1 select-text">
             {activeLogModal?.output || '暂无输出信息'}
           </div>
         </div>

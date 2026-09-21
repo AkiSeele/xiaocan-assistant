@@ -1,5 +1,5 @@
-import '@douyinfe/semi-ui/react19-adapter';
 import './semi-layer.css';
+import '@douyinfe/semi-ui/react19-adapter';
 import '@douyinfe/semi-icons/lib/es/styles/icons.css';
 import { createRoot } from 'react-dom/client'
 import './index.css'

@@ -121,7 +121,45 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
     t_step1 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     log_steps.append(f"[{t_step1}] 步骤 1/4: 账号鉴权及定位核验 - 账号【{nickname}】，定位经纬度 ({lat:.5f}, {lon:.5f})，城市代码 {city_code}")
 
-    # 红包使用策略解析 (优先使用提前 25 秒预加载并锁定的红包，消除开抢时的网络延时)
+    # 饭票资产前置强核验：抢单必须有饭票
+    has_meal_ticket = False
+    try:
+        cards_res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, status=0, offset=0, number=100)
+        raw_cards = cards_res.get("list") or []
+        for c in raw_cards:
+            cd = c.get("card") or {}
+            cname = cd.get("name") or ""
+            ctype = cd.get("card_type")
+            if "饭票" in cname or (ctype is None and cd.get("id") == 1):
+                has_meal_ticket = True
+                break
+    except Exception as ce:
+        logger.warning(f"核验饭票卡券异常: {ce}")
+        has_meal_ticket = True
+
+    if not has_meal_ticket:
+        t_fail = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        log_steps.append(f"[{t_fail}] 饭票核验拦截: 当前账号【{nickname}】可用饭票数量为 0，无法发起抢单")
+        log_steps.append(f"[{t_fail}] 流程终止 - 安全拦截已生效，防止官方风控封禁")
+        logger.warning(f"抢单拦截: 账号【{nickname}】无可用饭票")
+        grab_text = "\n".join(log_steps)
+        linked_log_id = int(apt.get("log_id") or 0)
+        if linked_log_id > 0:
+            _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
+        else:
+            try:
+                db.add_job_log(job_id, account_key, task_id, "error", grab_text)
+            except Exception:
+                pass
+        if aid > 0:
+            db.update_appointment(aid, {
+                "status": "failed",
+                "outcome": "抢单前检测到可用饭票不足"
+            })
+            invalidate_worker_cache()
+        return {"ok": False, "code": 61, "message": "当前账号暂无可用饭票，无法发起抢单"}
+
+    # 红包使用策略解析与防失效自愈降级 (优先使用提前 25 秒预加载并锁定的红包，消除开抢时的网络延时)
     redpack_id = apt.get("cached_redpack_id")
     redpack_mode = apt.get("redpack_mode", 0)
     rp_desc = "未使用"
@@ -136,18 +174,58 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                 rep_pack = max_rp["platform_red_packs"][0]
             if rep_pack and rep_pack.get("user_red_pack_id"):
                 redpack_id = int(rep_pack["user_red_pack_id"])
-                rp_desc = f"智能匹配最优红包 #{redpack_id} (金额: ¥{rep_pack.get('reward_num', 0)})"
+                rp_val = float(rep_pack.get("reward_num", 0) or 0) / 100
+                rp_desc = f"智能匹配最优红包 #{redpack_id} (金额: ¥{rp_val:.2f})"
             else:
                 rp_desc = "未找到可用平台红包，以无红包模式发起"
         except Exception as rpe:
             rp_desc = f"自动查询红包跳过: {rpe}"
     elif redpack_mode == 1:
+        specified_rp_id = None
         if apt.get("redpack_id"):
             try:
-                redpack_id = int(apt["redpack_id"])
-                rp_desc = f"指定红包 #{redpack_id}"
+                specified_rp_id = int(apt["redpack_id"])
             except Exception:
                 pass
+
+        if specified_rp_id:
+            # 核验指定红包是否仍有效且未在移动端核销
+            is_valid_specified = False
+            unused_list = []
+            try:
+                rp_res = await client.get_app_redpack_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, page=1, page_size=50)
+                unused_list = rp_res.get("unused_items") or []
+                for item in unused_list:
+                    if int(item.get("user_red_pack_id") or 0) == specified_rp_id:
+                        is_valid_specified = True
+                        redpack_id = specified_rp_id
+                        rp_name = item.get("name") or apt.get("redpack_name") or ""
+                        item_val = float(item.get("reward_num", 0) or 0) / 100
+                        rp_desc = f"指定红包 #{redpack_id} ({rp_name}, 金额: ¥{item_val:.2f})"
+                        break
+            except Exception as e:
+                logger.warning(f"核验指定红包有效性异常: {e}")
+                redpack_id = specified_rp_id
+                rp_desc = f"指定红包 #{redpack_id}"
+                is_valid_specified = True
+
+            if not is_valid_specified:
+                # 触发防核销自愈降级替换：预选红包已在移动端被使用或过期
+                logger.warning(f"预约任务 #{aid} 指定红包 #{specified_rp_id} 已在端外使用或失效，启动平滑自愈替换...")
+                best_replacement = None
+                if unused_list:
+                    sorted_unused = sorted(unused_list, key=lambda x: float(x.get("reward_num") or 0), reverse=True)
+                    best_replacement = sorted_unused[0]
+
+                if best_replacement and best_replacement.get("user_red_pack_id"):
+                    redpack_id = int(best_replacement["user_red_pack_id"])
+                    best_val = float(best_replacement.get("reward_num", 0) or 0) / 100
+                    rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，已自愈平滑替换为当前最优红包 #{redpack_id} (金额: ¥{best_val:.2f})"
+                else:
+                    redpack_id = None
+                    rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，当前无其它可用红包，自愈降级为无红包模式"
+        else:
+            rp_desc = "未指定有效红包ID，以无红包模式发起"
     else:
         rp_desc = "用户设置不使用红包"
 
@@ -208,6 +286,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                 "account_key": apt["account_key"],
                 "store_id": apt["store_id"],
                 "store_name": apt["store_name"],
+                "store_icon": apt.get("store_icon") or "",
                 "platform": apt.get("platform", "meituan"),
                 "order_money": apt.get("order_money", 0.0),
                 "rebate_money": apt.get("rebate_price", 0.0),
@@ -377,24 +456,30 @@ async def process_active_appointments() -> bool:
             if not start_ts:
                 continue
 
-            diff = start_ts - now_ts
+            use_advance = bool(apt.get("use_advance_card"))
+            # 开启超前抢单券时，开抢时刻提前 30 分钟 (1800 秒)
+            effective_start_ts = (start_ts - 30 * 60) if use_advance else start_ts
+            diff = effective_start_ts - now_ts
             early_sec = max(0.0, float(apt.get("early_ms") or 500) / 1000.0)
 
             # 标记是否有临近开抢任务 (若在 35 秒内，开启 20ms 自适应超高精度监测)
             if 0 < diff <= 35:
                 has_primed = True
 
+            eff_time_str = datetime.fromtimestamp(effective_start_ts).strftime("%H:%M")
+            adv_prefix = "【超前抢单·提前30分钟】" if use_advance else ""
+
             # 1. 倒计时 31 分钟预热通知提醒
             if diff <= (31 * 60) and not apt.get("notified_31m"):
                 db.update_appointment(aid, {"notified_31m": 1})
-                logger.info(f"任务 #{aid} 触发倒计时 31 分钟预热通知")
+                logger.info(f"任务 #{aid} 触发倒计时 31 分钟预热通知 (超前券: {use_advance})")
                 t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                 if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 倒计时 31 分钟到达，已发送开火预热通知与通道就绪检查", sync_db=True, status="running")
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 倒计时 31 分钟到达，已发送开火预热通知与通道就绪检查 {adv_prefix}(开火目标: {eff_time_str})", sync_db=True, status="running")
                 try:
                     await send_system_notification(
                         title="霸王餐开抢预热提醒",
-                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟开抢（时间: {apt.get('start_time')}），抢单通道已就绪！"
+                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪！"
                     )
                 except Exception as ne:
                     logger.warning(f"发送系统预热通知失败: {ne}")
@@ -403,10 +488,10 @@ async def process_active_appointments() -> bool:
             if diff <= 25 and not apt.get("prewarmed"):
                 apt["prewarmed"] = 1
                 db.update_appointment(aid, {"status": "primed"})
-                logger.info(f"预约任务 #{aid} 提前 25 秒唤醒预热，长连接热激活并提前解析红包...")
+                logger.info(f"预约任务 #{aid} 提前 25 秒唤醒预热，长连接热激活并提前解析锁定红包...")
                 t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                 if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 提前 25 秒唤醒：长连接握手热激活，预锁定最高立减红包，微秒自旋压枪...", sync_db=True, status="running")
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 提前 25 秒唤醒：长连接握手热激活，预检锁定红包资产，微秒自旋压枪...", sync_db=True, status="running")
                 try:
                     # 提前探测一次连接与锁定最优红包
                     await client.get_user_info(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
@@ -418,20 +503,34 @@ async def process_active_appointments() -> bool:
                         if rep_pack and rep_pack.get("user_red_pack_id"):
                             apt["cached_redpack_id"] = int(rep_pack["user_red_pack_id"])
                             logger.info(f"预约任务 #{aid} 已提前锁定最优红包 #{apt['cached_redpack_id']}")
+                    elif apt.get("redpack_mode") == 1 and apt.get("redpack_id") and not apt.get("cached_redpack_id"):
+                        spec_id = int(apt["redpack_id"])
+                        rplist_res = await client.get_app_redpack_list(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303), page=1, page_size=50)
+                        unused = rplist_res.get("unused_items") or []
+                        matched = any(int(item.get("user_red_pack_id") or 0) == spec_id for item in unused)
+                        if matched:
+                            apt["cached_redpack_id"] = spec_id
+                            logger.info(f"预约任务 #{aid} 已提前核验并锁定指定红包 #{spec_id}")
+                        else:
+                            if unused:
+                                sorted_unused = sorted(unused, key=lambda x: float(x.get("reward_num") or 0), reverse=True)
+                                apt["cached_redpack_id"] = int(sorted_unused[0]["user_red_pack_id"])
+                                logger.info(f"预约任务 #{aid} 预设红包 #{spec_id} 已在端外失效，提前自愈替换为最优红包 #{apt['cached_redpack_id']}")
                 except Exception as rpe:
                     logger.debug(f"预约任务提前解析红包异常: {rpe}")
 
             # 3. 准点 / 提前量到达 (diff <= early_sec)：突发毫秒抢单！
             if diff <= early_sec:
-                logger.info(f"任务 #{aid} 抢单时间点到达 (提前量 {early_sec}s)，发起突发毫秒抢单！")
+                adv_log = "【超前抢单提前30分钟】" if use_advance else ""
+                logger.info(f"任务 #{aid} 抢单时刻到达 (提前量 {early_sec}s, {adv_log})，发起突发毫秒抢单！")
                 t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                 if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 预定开抢时刻到达 (提前量 {early_sec*1000:.0f}ms)，全速发射抢单报文！", sync_db=True, status="running")
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 预定开抢时刻到达 (提前量 {early_sec*1000:.0f}ms, {adv_log})，全速发射抢单报文！", sync_db=True, status="running")
                 grab_ok = False
                 last_msg = "抢单未生效"
                 for try_idx in range(1, 4):
                     ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    res = await execute_grab_for_appointment(apt, account, advance=False, action_source="store_appoint")
+                    res = await execute_grab_for_appointment(apt, account, advance=use_advance, action_source="store_appoint")
                     if res.get("ok"):
                         logger.info(f"[{ts_fmt}] 任务 #{aid} 第{try_idx}次抢单成功！")
                         grab_ok = True

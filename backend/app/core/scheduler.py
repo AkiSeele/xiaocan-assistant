@@ -11,6 +11,7 @@ import uuid
 from typing import Dict, Any, Optional, Tuple
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.combining import OrTrigger
 
 from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError
@@ -21,7 +22,7 @@ scheduler = AsyncIOScheduler()
 client = XiaoCanClient()
 
 
-# 任务默认触发时间定义 (全量 15 项任务对齐牛马助手规范)
+# 任务默认触发时间定义
 TASK_DEFAULT_TIME = {
     "yb_task": "08:05",         # 领 500 元宝 (浏览电商30s)
     "yb_sign": "08:10",         # 天天赚元宝签到
@@ -30,18 +31,14 @@ TASK_DEFAULT_TIME = {
     "media_vip": "10:00",       # 抢每月影音VIP (10:00/17:00/20:00)
     "free_order": "14:00",      # 抢每月免单券
     "collect_points": "23:59",  # 收取未收元宝 (避免气泡过期)
-    "alipay_withdraw": "23:58", # 提现全部蚕豆 (支付宝)
-    "withdraw": "23:58",        # 提现全部蚕豆 (双渠道)
     "redpack_rain": "10:00",    # 公共整点红包雨 (六场: 10/11/12/14/16/19)
-    "yb_lottery": "00:00",      # 元宝抽奖 (保底/打满)
     "flash_sale": "10:00",      # 元宝秒杀
     "daily": "08:10",           # 元宝乐园综合打卡 (兼容旧版)
-    "today_stats": "22:30",     # 本日资产数据盘点
-    "free_lottery": "12:10",    # 免费开红包
     "group_lottery": "07:40",   # 社群转盘抽奖
     "vip_expand": "08:30",      # 会员成长膨胀礼包
     "expire_remind": "08:00",   # 登录凭据到期巡检
     "coupon_remind": "08:30",   # 卡券到期提醒
+    "dual_rebate_monitor": "*/10 9-22 * * *", # 美团同店双返利智能监控 (每10分钟准点对齐00/30分)
 }
 
 
@@ -199,26 +196,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             except XiaoCanRPCError as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 会员专属膨胀金: {e.msg}\n"
 
-        elif task_id in ("yb_lottery", "group_lottery"):
-            # 1. 检查元宝保底阈值 (yb_lottery)
-            if task_id == "yb_lottery":
-                reserve_yb = int(params.get("reserve_yb", 500))
-                try:
-                    uinfo = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                    cur_silk = (uinfo.get("user_info") or {}).get("silk", 0)
-                    if cur_silk < reserve_yb:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 保护停止: 当前元宝余额 {cur_silk} 低于保底阈值 {reserve_yb}，跳过本次抽奖\n"
-                        if log_id > 0:
-                            db.update_job_log(log_id, status="success", output=log_output)
-                        else:
-                            db.add_job_log(job_id, account_key, task_id, "success", log_output)
-                        return {"ok": True, "job_id": job_id, "output": log_output}
-                    else:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 资产检查: 当前元宝 {cur_silk} >= 保底阈值 {reserve_yb}，安全通过\n"
-                except Exception:
-                    pass
-
-            # 2. 查询转盘配置与剩余抽奖机会
+        elif task_id == "group_lottery":
+            # 1. 查询转盘配置与剩余抽奖机会
             lucky_times = 0
             day_num = 0
             try:
@@ -226,11 +205,11 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 linfo = info_res.get("lottery_info") or {}
                 lucky_times = linfo.get("lucky_times", 0)
                 day_num = linfo.get("day_num", 0)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 转盘状态: 今日已抽奖 {day_num} 次，当前剩余可用次数: {lucky_times}\n"
+                log_output += f"[{time.strftime('%H:%M:%S')}] 社群转盘状态: 今日已抽奖 {day_num} 次，当前剩余可用次数: {lucky_times}\n"
             except XiaoCanRPCError as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 获取转盘状态: {e.msg} (提示码: {e.code})\n"
 
-            # 3. 尝试领取各类免费机会 (2:分享, 8:饿了么, 9:美团, 10:到店, 11:福利)
+            # 2. 尝试领取各类免费机会 (2:分享, 8:饿了么, 9:美团, 10:到店, 11:福利)
             for t_type, t_label in [(2, "每日分享"), (8, "饿了么加赠"), (9, "美团加赠"), (10, "到店浏览"), (11, "福利中心")]:
                 try:
                     await client.add_lottery_times(lottery_type=t_type, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
@@ -239,7 +218,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 except XiaoCanRPCError:
                     pass
 
-            # 4. 查询阶梯累计抽奖进度
+            # 3. 查询阶梯累计抽奖进度
             try:
                 prog_res = await client.get_lottery_progress(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 prog = prog_res.get("lottery_progress") or {}
@@ -247,8 +226,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             except Exception:
                 pass
 
-            # 5. 若有可用抽奖次数则自动连续执行抽奖 (支持配置抽奖防风控间隔秒数)
-            draw_gap = float(params.get("draw_sec", 3.5 if task_id == "group_lottery" else 1.5))
+            # 4. 若有可用抽奖次数则自动连续执行抽奖 (支持配置抽奖防风控间隔秒数)
+            draw_gap = float(params.get("draw_sec", 3.5))
             if lucky_times > 0:
                 for spin_i in range(min(lucky_times, 5)):
                     if spin_i > 0 and draw_gap > 0:
@@ -261,21 +240,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         break
             else:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 今日抽奖机会已满额打卡，无需重复消耗\n"
-
-        elif task_id == "free_lottery":
-            # 免费开红包 (12:10 / 20:10 场次)
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在接入小蚕官方免费开红包场次...\n"
-            try:
-                info_res = await client.get_lottery_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                linfo = info_res.get("lottery_info") or {}
-                avail = linfo.get("lucky_times", 0)
-                if avail > 0:
-                    spin_res = await client.do_lottery_spin(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 免费红包已成功开启！(状态: {spin_res.get('status', {}).get('msg', 'ok')})\n"
-                else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 当前场次免费红包已开启或已打卡完成\n"
-            except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 免费开红包响应: {e.msg} (错误码: {e.code})\n"
 
         elif task_id == "redpack_rain":
             # 整点红包雨 (每日 10:00, 11:00, 12:00, 14:00, 16:00, 19:00)
@@ -784,69 +748,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             except Exception as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 影音周卡处理异常: {e}\n"
 
-        elif task_id == "today_stats":
-            # 本日数据统计
-            uinfo = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-            raw_u = uinfo.get("user_info") or {}
-            vip_info = raw_u.get("vip_level_info") or {}
-            lvl = vip_info.get("new_level", 0)
-            score = vip_info.get("score", 0)
-            is_plus = "PLUS" if vip_info.get("is_plus") else "普通"
-            silk_cents = raw_u.get("silk", 0)
 
-            # 抓取订单列表统计
-            orders_res = await client.get_order_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, number=10)
-            orders = orders_res.get("order_list") or []
-            log_output += f"[{time.strftime('%H:%M:%S')}] 账号状态: VIP{lvl} ({is_plus}) | 会员成长积分: {score} | 钱包余额: 元{silk_cents/100:.2f}\n"
-            log_output += f"[{time.strftime('%H:%M:%S')}] 订单监测: 最近 {len(orders)} 笔霸王餐订单均在监控状态\n"
-
-        elif task_id in ("withdraw", "alipay_withdraw"):
-            # 蚕豆钱包自动提现 (支持支付宝与微信双渠道)
-            channel = str(params.get("channel", "alipay")).lower()
-            withdraw_type = 0 if "wechat" in channel or "wx" in channel or channel == "0" else 1
-            channel_name = "微信零钱" if withdraw_type == 0 else "支付宝"
-
-            max_yuan = float(params.get("max_yuan", 200))
-            min_yuan = float(params.get("min_yuan", 1))
-            reserve_yuan = float(params.get("reserve_yuan", 0))
-
-            uinfo = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-            raw_u = uinfo.get("user_info") or {}
-            balance_cents = raw_u.get("silk", 0)
-            balance_yuan = balance_cents / 100.0
-            alipay_acc = raw_u.get("alipay_account")
-
-            log_output += f"[{time.strftime('%H:%M:%S')}] 钱包资产检查: 当前余额 元{balance_yuan:.2f} (提现目标渠道: {channel_name})\n"
-
-            if withdraw_type == 1 and not alipay_acc:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 提现跳过: 当前账号尚未绑定提现支付宝账号，请在小程序【我的-钱包】中完成绑定\n"
-            elif balance_yuan < min_yuan:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 提现跳过: 余额 元{balance_yuan:.2f} 未达到最低提现门槛 元{min_yuan:.2f}\n"
-            else:
-                avail_yuan = max(0.0, balance_yuan - reserve_yuan)
-                if avail_yuan < min_yuan:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 提现跳过: 扣除保留不提余额 元{reserve_yuan:.2f} 后可用金额不足 元{min_yuan:.2f}\n"
-                else:
-                    withdraw_yuan = min(avail_yuan, max_yuan)
-                    withdraw_cents = int(round(withdraw_yuan * 100))
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 正在发起提现申请: 金额 元{withdraw_yuan:.2f} -> {channel_name}...\n"
-                    try:
-                        w_res = await client.client_withdraw(
-                            money_cents=withdraw_cents,
-                            withdraw_type=withdraw_type,
-                            token=token,
-                            silk_id=silk_id,
-                            user_id=user_id,
-                            city_code=city_code
-                        )
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 提现申请已受理！(状态: {w_res.get('status', {}).get('msg', 'ok')})\n"
-                        from .notifier import send_system_notification
-                        await send_system_notification(
-                            title="钱包自动提现申请成功",
-                            content=f"账号【{nickname}】已成功申请提现 元{withdraw_yuan:.2f} 至{channel_name}"
-                        )
-                    except XiaoCanRPCError as e:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 官方提现接口响应: {e.msg} (提示码: {e.code})\n"
 
         elif task_id == "expire_remind":
             # 凭据/JWT到期预警
@@ -921,10 +823,17 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             except Exception as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 卡券核验信息: {e}\n"
 
+        elif task_id == "dual_rebate_monitor":
+            from .dual_rebate_monitor import run_dual_rebate_monitor
+            out, monitor_ok = await run_dual_rebate_monitor(account_key=account_key, params=params, trigger_type=trigger_type)
+            log_output += out
+            if not monitor_ok:
+                status = "error"
+
         else:
             log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [{task_id}] 执行完成 (无异常)\n"
 
-        status = "success"
+        status = "success" if status != "error" else "error"
         log_output += f"[{time.strftime('%H:%M:%S')}] 任务结束 - 全部流程处理完毕。"
     except XiaoCanRPCError as e:
         status = "error"
@@ -963,6 +872,48 @@ def reload_schedules():
                 continue
 
             task_id = cfg["task_id"]
+            if task_id == "dual_rebate_monitor":
+                # 美团同店双返利智能监控调度引擎：严格保证 00 分与 30 分准点开火！
+                task_params = cfg.get("params") or {}
+                try:
+                    interval = int(task_params.get("interval_minutes", 10))
+                except Exception:
+                    interval = 10
+                active_only = bool(task_params.get("active_hours_only", True))
+
+                if interval == 30:
+                    minute_expr = "0,30"
+                elif interval == 15:
+                    minute_expr = "0,15,30,45"
+                elif interval == 5:
+                    minute_expr = "*/5"
+                else:  # 默认 10 分钟：对齐 00/30 分并在 10/20 分补充捡漏
+                    minute_expr = "0,10,20,30,40,50"
+
+                if active_only:
+                    # 营业时段 09:00 ~ 23:00 (含 09:00:00 启动与 23:00:00 收官，夜间 23:01~08:59 休眠静默)
+                    trigger = OrTrigger([
+                        CronTrigger(hour="9-22", minute=minute_expr),
+                        CronTrigger(hour=23, minute=0)
+                    ])
+                    hours_desc = "09:00~23:00"
+                else:
+                    trigger = CronTrigger(hour="*", minute=minute_expr)
+                    hours_desc = "全天24小时"
+
+                scheduler.add_job(
+                    execute_task_job,
+                    trigger=trigger,
+                    args=[key, task_id, "cron"],
+                    id=f"{key}_{task_id}",
+                    name=f"{acc.get('nickname')}_{task_id}",
+                    max_instances=1,
+                    coalesce=True,
+                    replace_existing=True
+                )
+                logger.info(f"已装载美团同店双返利监控: {acc.get('nickname')} - 周期={interval}分钟 (对齐00/30分, 时段={hours_desc})")
+                continue
+
             if task_id in FIXED_TASK_TRIGGERS:
                 trigger = FIXED_TASK_TRIGGERS[task_id]
                 scheduler.add_job(
@@ -971,6 +922,8 @@ def reload_schedules():
                     args=[key, task_id, "cron"],
                     id=f"{key}_{task_id}",
                     name=f"{acc.get('nickname')}_{task_id}",
+                    max_instances=1,
+                    coalesce=True,
                     replace_existing=True
                 )
                 logger.info(f"已装载官方固定时点任务: {acc.get('nickname')} - {task_id}")

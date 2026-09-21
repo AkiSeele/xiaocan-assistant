@@ -1,11 +1,15 @@
-import React, { useEffect, useState, Suspense, lazy } from 'react';
+import React, { useEffect, useState, useRef, Suspense, lazy } from 'react';
 import { Layout, Tooltip } from '@douyinfe/semi-ui';
 import { IconChevronLeft, IconChevronRight } from '@douyinfe/semi-icons';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
 import { SideNav } from './components/SideNav';
 import { TopHeader } from './components/TopHeader';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageLoading } from './components/PageLoading';
 import { useAppStore } from './store/useAppStore';
+
+gsap.registerPlugin(useGSAP);
 
 // 包装带动态 Chunk 加载重试与自愈能力的 lazy，解决构建发版后旧版客户端 Chunk 哈希失效问题
 const lazyWithRetry = (factory: () => Promise<any>) =>
@@ -40,21 +44,33 @@ const SettingsView = lazyWithRetry(() => import('./views/SettingsView').then(m =
 const { Sider, Content } = Layout;
 
 export const App: React.FC = () => {
-  const {
-    activeTab,
-    loadAccounts,
-    loadUserInfo,
-    isSidebarCollapsed,
-    setSidebarCollapsed,
-    toggleSidebarCollapse,
-  } = useAppStore();
+  const activeTab = useAppStore((state) => state.activeTab);
+  const isSidebarCollapsed = useAppStore((state) => state.isSidebarCollapsed);
+  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const toggleSidebarCollapse = useAppStore((state) => state.toggleSidebarCollapse);
+  const loadAccounts = useAppStore((state) => state.loadAccounts);
+  const loadUserInfo = useAppStore((state) => state.loadUserInfo);
 
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set([activeTab]));
+  const pageContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     sessionStorage.removeItem('chunk_retry_reloaded');
     loadAccounts();
     loadUserInfo();
+  }, [loadAccounts, loadUserInfo]);
+
+  // 空闲时静默预加载其他 Chunk，消除后续首次切入模块的网络与解析延迟
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      import('./views/StoreSniping');
+      import('./views/Accounts');
+      import('./views/Automation');
+      import('./views/OrdersView');
+      import('./views/LogsView');
+      import('./views/SettingsView');
+    }, 1200);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -65,6 +81,35 @@ export const App: React.FC = () => {
       return next;
     });
   }, [activeTab]);
+
+  // 遵循 Semi Design 官方中后台设计规范：纯净、轻柔的高性能 GPU 合成淡入转场 (Dissolve Fade-In)
+  useGSAP(
+    () => {
+      if (!pageContainerRef.current) return;
+      const allTabs = pageContainerRef.current.querySelectorAll('[data-tab]');
+      gsap.killTweensOf(allTabs);
+
+      const targetEl = pageContainerRef.current.querySelector(`[data-tab="${activeTab}"]`);
+      if (targetEl) {
+        gsap.fromTo(
+          targetEl,
+          {
+            opacity: 0,
+            y: 4,
+          },
+          {
+            opacity: 1,
+            y: 0,
+            duration: 0.18,
+            ease: 'power1.out',
+            overwrite: 'auto',
+            clearProps: 'transform,opacity',
+          }
+        );
+      }
+    },
+    { scope: pageContainerRef, dependencies: [activeTab, visitedTabs] }
+  );
 
   // 监听屏幕尺寸自适应自动化：窄屏 (< 1200px) 自动收起，大屏 (>= 1200px) 自动恢复展开
   useEffect(() => {
@@ -117,15 +162,19 @@ export const App: React.FC = () => {
         <div className="shrink-0 z-10">
           <TopHeader />
         </div>
-        <Content className={`flex-1 min-h-0 bg-semi-color-bg-0 p-4 md:p-6 ${activeTab === 'store' || activeTab === 'logs' || activeTab === 'orders' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto'}`}>
+        <Content className="flex-1 min-h-0 bg-semi-color-bg-0 p-4 md:p-6 overflow-hidden flex flex-col">
           <ErrorBoundary>
             <Suspense fallback={<PageLoading />}>
-              <div className={`w-full ${activeTab === 'store' || activeTab === 'logs' || activeTab === 'orders' ? 'h-full min-h-0 flex flex-col' : 'min-h-full'}`}>
+              <div
+                ref={pageContainerRef}
+                className="w-full h-full min-h-0 flex-1 relative overflow-hidden"
+              >
                 {visitedTabs.has('dashboard') && (
                   <div
                     key="tab-dashboard"
+                    data-tab="dashboard"
                     style={{ display: activeTab === 'dashboard' ? 'block' : 'none' }}
-                    className="w-full min-h-full animate-page-enter"
+                    className="w-full h-full overflow-y-auto pr-1"
                   >
                     <Dashboard />
                   </div>
@@ -133,8 +182,9 @@ export const App: React.FC = () => {
                 {visitedTabs.has('accounts') && (
                   <div
                     key="tab-accounts"
+                    data-tab="accounts"
                     style={{ display: activeTab === 'accounts' ? 'block' : 'none' }}
-                    className="w-full min-h-full animate-page-enter"
+                    className="w-full h-full overflow-y-auto pr-1"
                   >
                     <Accounts />
                   </div>
@@ -142,8 +192,9 @@ export const App: React.FC = () => {
                 {visitedTabs.has('automation') && (
                   <div
                     key="tab-automation"
+                    data-tab="automation"
                     style={{ display: activeTab === 'automation' ? 'block' : 'none' }}
-                    className="w-full min-h-full animate-page-enter"
+                    className="w-full h-full overflow-y-auto pr-1"
                   >
                     <Automation />
                   </div>
@@ -151,8 +202,9 @@ export const App: React.FC = () => {
                 {visitedTabs.has('store') && (
                   <div
                     key="tab-store"
+                    data-tab="store"
                     style={{ display: activeTab === 'store' ? 'flex' : 'none' }}
-                    className="w-full h-full min-h-0 flex-col animate-page-enter"
+                    className="w-full h-full min-h-0 flex-col overflow-hidden"
                   >
                     <StoreSniping />
                   </div>
@@ -160,8 +212,9 @@ export const App: React.FC = () => {
                 {visitedTabs.has('orders') && (
                   <div
                     key="tab-orders"
+                    data-tab="orders"
                     style={{ display: activeTab === 'orders' ? 'flex' : 'none' }}
-                    className="w-full h-full min-h-0 flex-col animate-page-enter"
+                    className="w-full h-full min-h-0 flex-col overflow-hidden"
                   >
                     <OrdersView />
                   </div>
@@ -169,8 +222,9 @@ export const App: React.FC = () => {
                 {visitedTabs.has('logs') && (
                   <div
                     key="tab-logs"
+                    data-tab="logs"
                     style={{ display: activeTab === 'logs' ? 'flex' : 'none' }}
-                    className="w-full h-full min-h-0 flex-col animate-page-enter"
+                    className="w-full h-full min-h-0 flex-col overflow-hidden"
                   >
                     <LogsView />
                   </div>
@@ -178,8 +232,9 @@ export const App: React.FC = () => {
                 {visitedTabs.has('settings') && (
                   <div
                     key="tab-settings"
+                    data-tab="settings"
                     style={{ display: activeTab === 'settings' ? 'block' : 'none' }}
-                    className="w-full min-h-full animate-page-enter"
+                    className="w-full h-full overflow-y-auto pr-1"
                   >
                     <SettingsView />
                   </div>

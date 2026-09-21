@@ -270,17 +270,6 @@ html, body, #root {
 }
 
 /* Semi Design 动效与微交互系统 */
-@keyframes semiPageFadeIn {
-  0% {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @keyframes pulseSubtle {
   0%, 100% {
     opacity: 1;
@@ -373,5 +362,27 @@ html, body, #root {
   padding: 0 !important;
   width: 100% !important;
 }
+
+/* 微信 ClawBot 弹窗步骤条完整文本展示，解除过早截断限制 */
+.clawbot-steps .semi-steps-item-title-text,
+.clawbot-steps .semi-steps-item-title {
+  max-width: none !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  white-space: nowrap !important;
+}
+
+.clawbot-steps .semi-steps-item-description {
+  max-width: none !important;
+  width: auto !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  white-space: nowrap !important;
+}
+
+.clawbot-steps.semi-steps-basic.semi-steps-horizontal .semi-steps-item {
+  min-width: 0;
+}
+
 
 

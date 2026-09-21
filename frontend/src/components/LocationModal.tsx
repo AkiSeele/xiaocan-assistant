@@ -29,7 +29,8 @@ const formatCityTag = (rawCity?: string) => {
 };
 
 export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }) => {
-  const { activeLocation, setActiveLocation } = useAppStore();
+  const activeLocation = useAppStore((s) => s.activeLocation);
+  const setActiveLocation = useAppStore((s) => s.setActiveLocation);
 
   const [editLng, setEditLng] = useState<string>(activeLocation.longitude);
   const [editLat, setEditLat] = useState<string>(activeLocation.latitude);

@@ -43,7 +43,7 @@ import {
   IconHelpCircle,
   IconFile,
   IconInfoCircle,
-  IconArrowRight,
+  IconChevronRight,
   IconSmartphoneStroked,
   IconCode,
   IconEyeOpened,
@@ -56,15 +56,26 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { useOnActivated } from '../utils/useOnActivated';
 import type { Account, AccountDetailData } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
 
 export const Accounts: React.FC = () => {
-  const { accounts, loadAccounts, currentAccountKey, setCurrentAccountKey } = useAppStore();
+  const accounts = useAppStore((s) => s.accounts);
+  const loadAccounts = useAppStore((s) => s.loadAccounts);
+  const loadUserInfo = useAppStore((s) => s.loadUserInfo);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
   const accountsRef = useRef<HTMLDivElement>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [activeTab, setActiveTab] = useState('sniffer');
+
+  // 页面切入激活时自动拉取最新账号列表与用户信息
+  useOnActivated('accounts', () => {
+    loadAccounts();
+    loadUserInfo();
+  }, { throttleMs: 3000 });
 
   useGSAP(
     () => {
@@ -169,6 +180,10 @@ export const Accounts: React.FC = () => {
       const res = await api.getAccountDetail(key);
       if (res.ok) {
         setDetailData(res);
+        if (res.account) {
+          setDetailAccount(res.account);
+        }
+        loadAccounts();
       } else {
         Toast.error('获取账号资产详情失败');
       }
@@ -503,7 +518,7 @@ export const Accounts: React.FC = () => {
                         </Tag>
                       )}
                       <Tag color={acc.is_plus ? "amber" : "blue"} size="small">
-                        {acc.is_plus ? `SVIP${acc.vip_level || 5}` : `VIP${acc.vip_level || 1}`}
+                        {acc.is_plus ? `SVIP${acc.vip_level || 1}` : `VIP${acc.vip_level || 1}`}
                       </Tag>
                       <Tag color="green" size="small">在线</Tag>
                     </Space>
@@ -770,7 +785,7 @@ export const Accounts: React.FC = () => {
                       <Tag color="cyan" size="small">倒计时 {listenCountdown}s</Tag>
                     </div>
                     <div className="text-[12px] text-semi-color-text-2 mt-0.5 flex items-center gap-1.5">
-                      <IconArrowRight size="small" />
+                      <IconChevronRight size="small" />
                       <span>请在电脑微信中打开<b>「小蚕霸王餐」</b>小程序，系统将在打开时自动完成捕获并托管。</span>
                     </div>
                   </div>
@@ -1014,9 +1029,16 @@ export const Accounts: React.FC = () => {
                     <Text strong className="text-lg text-semi-color-text-0">
                       {detailData?.user_info?.nickname || detailAccount.nickname}
                     </Text>
-                    <Tag color={detailAccount.is_plus ? "amber" : "blue"}>
-                      {detailAccount.is_plus ? `SVIP${detailAccount.vip_level || 5}` : `VIP${detailAccount.vip_level || 1}`}
-                    </Tag>
+                    {(() => {
+                      const vipInfo = detailData?.user_info?.vip_level_info;
+                      const isPlus = Boolean(vipInfo ? vipInfo.is_plus : (detailData?.account?.is_plus ?? detailAccount.is_plus));
+                      const currentVipLevel = vipInfo?.new_level ?? detailData?.account?.vip_level ?? detailAccount.vip_level ?? 1;
+                      return (
+                        <Tag color={isPlus ? "amber" : "blue"}>
+                          {isPlus ? `SVIP${currentVipLevel}` : `VIP${currentVipLevel}`}
+                        </Tag>
+                      );
+                    })()}
                     {detailAccount.key === currentAccountKey && (
                       <Tag color="blue" type="solid" size="small">主控账号</Tag>
                     )}
@@ -1031,36 +1053,38 @@ export const Accounts: React.FC = () => {
               </div>
 
               {/* VIP 成长值进度条 */}
-              {detailData?.user_info?.vip_level_info && (
-                <div className="mt-3.5 pt-3 border-t border-semi-color-border">
-                  <div className="flex justify-between items-center text-xs mb-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <Text strong>SVIP 会员成长值</Text>
-                      <Tag size="small" color="orange">等级 {detailData.user_info.vip_level_info.new_level || 5}</Tag>
+              {detailData?.user_info?.vip_level_info && (() => {
+                const vipInfo = detailData.user_info.vip_level_info;
+                const isPlus = Boolean(vipInfo.is_plus);
+                const currentVipLevel = vipInfo.new_level || 1;
+                const maxScore = vipInfo.next_level_score || 150000;
+                const curScore = vipInfo.score || 0;
+                const pct = Math.min(100, Math.round((curScore / (maxScore || 1)) * 100));
+
+                return (
+                  <div className="mt-3.5 pt-3 border-t border-semi-color-border">
+                    <div className="flex justify-between items-center text-xs mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <Text strong>{isPlus ? 'SVIP 会员成长值' : 'VIP 会员成长值'}</Text>
+                        <Tag size="small" color={isPlus ? "orange" : "blue"}>等级 {currentVipLevel}</Tag>
+                      </div>
+                      <Text type="secondary">
+                        {curScore.toLocaleString()} / {maxScore.toLocaleString()} 分
+                      </Text>
                     </div>
-                    <Text type="secondary">
-                      {detailData.user_info.vip_level_info.score?.toLocaleString()} / {detailData.user_info.vip_level_info.next_level_score?.toLocaleString()} 分
-                    </Text>
+                    <Progress
+                      percent={pct}
+                      showInfo={false}
+                      stroke={isPlus ? "var(--semi-color-warning)" : "var(--semi-color-primary)"}
+                    />
+                    {vipInfo.expired_at ? (
+                      <div className="text-[11px] text-semi-color-text-2 mt-1">
+                        会员有效期至: {formatTimestamp(vipInfo.expired_at)}
+                      </div>
+                    ) : null}
                   </div>
-                  <Progress
-                    percent={Math.min(
-                      100,
-                      Math.round(
-                        ((detailData.user_info.vip_level_info.score || 0) /
-                          (detailData.user_info.vip_level_info.next_level_score || 150000)) *
-                          100
-                      )
-                    )}
-                    showInfo={false}
-                    stroke="var(--semi-color-warning)"
-                  />
-                  {detailData.user_info.vip_level_info.expired_at ? (
-                    <div className="text-[11px] text-semi-color-text-2 mt-1">
-                      会员有效期至: {formatTimestamp(detailData.user_info.vip_level_info.expired_at)}
-                    </div>
-                  ) : null}
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* 核心资产指标看板 (4格) */}
