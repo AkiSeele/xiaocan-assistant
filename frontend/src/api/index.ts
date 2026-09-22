@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -75,6 +75,9 @@ export const api = {
   getAccountDetail: (key: string) => client.get<AccountDetailData>(`/accounts/${key}/detail`).then(r => r.data),
   getAccountCards: (key: string, status = 0) => client.get<{ ok: boolean; cards: UserCardItem[]; status: number }>(`/accounts/${key}/cards`, { params: { status } }).then(r => r.data),
   deleteAccount: (key: string) => client.delete<{ ok: boolean; message: string }>(`/accounts/${key}`).then(r => r.data),
+  getAccountNotifyConfig: (key: string) => client.get<AccountNotifyResponse>(`/accounts/${key}/notify-config`).then(r => r.data),
+  saveAccountNotifyConfig: (key: string, notify_mode: string, notify_config: AccountNotifyConfig) => client.post<{ ok: boolean; message: string }>(`/accounts/${key}/notify-config`, { notify_mode, notify_config }).then(r => r.data),
+  testAccountNotify: (key: string, notify_mode: string, notify_config: AccountNotifyConfig) => client.post<{ ok: boolean; message: string; channel?: string }>(`/accounts/${key}/test-notify`, { notify_mode, notify_config }).then(r => r.data),
   
   // 账号解析与嗅探接入
   parseToken: (rawText: string) => client.post<{ ok: boolean; token?: string; silk_id?: string; is_valid: boolean; message: string; exp_date?: string; city_code?: number; nickname?: string }>('/accounts/parse-token', { raw_text: rawText }).then(r => r.data),
@@ -142,6 +145,10 @@ export const api = {
     client.get<{ ok: boolean; stats: OrderStats }>(`/orders/stats`, { params: { account_key: accountKey } }).then(r => r.data),
   getDashboardChartData: (accountKey?: string) =>
     client.get<{ ok: boolean; data: DashboardChartData }>('/dashboard/chart-data', { params: { account_key: accountKey } }).then(r => r.data),
+  getMessages: (params?: { account_key?: string; channel_id?: number; page?: number; page_size?: number }) =>
+    client.get<XiaoCanMessagesResponse>('/messages', { params }).then(r => r.data),
+  markAllMessagesRead: (account_key: string) =>
+    client.post<{ ok: boolean; message: string }>('/messages/read-all', { account_key }).then(r => r.data),
   createOrder: (data: Partial<Order>) => 
     client.post<{ ok: boolean; order: Order; message: string }>('/orders', data).then(r => r.data),
   updateOrder: (id: number, data: Partial<Order>) => 

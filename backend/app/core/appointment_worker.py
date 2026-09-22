@@ -300,7 +300,8 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
         # 发送系统通知
         await send_system_notification(
             title="小蚕霸王餐抢单成功！",
-            content=f"账号【{account.get('nickname')}】已成功抢到【{apt['store_name']}】({apt.get('rebate_desc', '')})，订单号 #{order_id}，请及时在平台下单！"
+            content=f"账号【{account.get('nickname')}】已成功抢到【{apt['store_name']}】({apt.get('rebate_desc', '')})，订单号 #{order_id}，请及时在平台下单！",
+            account_key=apt.get("account_key")
         )
 
         if aid > 0:
@@ -479,7 +480,8 @@ async def process_active_appointments() -> bool:
                 try:
                     await send_system_notification(
                         title="霸王餐开抢预热提醒",
-                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪！"
+                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪！",
+                        account_key=apt.get("account_key")
                     )
                 except Exception as ne:
                     logger.warning(f"发送系统预热通知失败: {ne}")

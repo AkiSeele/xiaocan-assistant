@@ -7,11 +7,13 @@ from datetime import datetime, timedelta, timezone
 import uuid
 import re
 import math
+import json
 import logging
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query, Body
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 logger = logging.getLogger("xiaocan.api")
 
@@ -157,6 +159,52 @@ async def update_account_profile_endpoint(key: str, data: Dict[str, Any] = Body(
         raise HTTPException(status_code=404, detail="账号不存在")
     updated = db.update_account_profile(key, data)
     return {"ok": True, "account": updated, "message": "账号资料已更新"}
+
+
+@router.get("/accounts/{key}/notify-config")
+async def get_account_notify_config_endpoint(key: str):
+    """获取指定账号的通知模式与独立通道配置"""
+    acc = db.get_account_by_key(key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    cfg_data = db.get_account_notify_config(key)
+    return {"ok": True, "data": cfg_data}
+
+
+@router.post("/accounts/{key}/notify-config")
+async def save_account_notify_config_endpoint(key: str, data: Dict[str, Any] = Body(...)):
+    """保存指定账号的通知模式与独立通道配置"""
+    acc = db.get_account_by_key(key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    mode = str(data.get("notify_mode") or "global").strip()
+    config = data.get("notify_config") or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = {}
+    ok = db.set_account_notify_config(key, mode, config)
+    if ok:
+        return {"ok": True, "message": "账号专属通知设置已保存"}
+    raise HTTPException(status_code=500, detail="保存通知配置失败")
+
+
+@router.post("/accounts/{key}/test-notify")
+async def test_account_notify_endpoint(key: str, data: Dict[str, Any] = Body(...)):
+    """即时测试指定账号的专属通知通道"""
+    acc = db.get_account_by_key(key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    mode = str(data.get("notify_mode") or "global").strip()
+    config = data.get("notify_config") or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = {}
+    res = await notifier.test_account_channel(key, mode, config)
+    return res
 
 
 @router.post("/accounts/{key}/sync")
@@ -693,6 +741,16 @@ async def get_tasks(account_key: str = Query(...)):
         if isinstance(cfg.get("params"), dict):
             merged_params.update(cfg["params"])
 
+        # 查询 APScheduler 中此任务的下一次真实触发时刻
+        job_id = f"{account_key}_{tid}"
+        next_run_time = None
+        try:
+            job = scheduler.scheduler.get_job(job_id)
+            if job and getattr(job, "next_run_time", None):
+                next_run_time = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+
         result.append({
             "task_id": tid,
             "label": meta["label"],
@@ -703,6 +761,7 @@ async def get_tasks(account_key: str = Query(...)):
             "cron_time": cfg.get("cron_time") or meta["default_time"],
             "fixed_time": meta.get("fixed_time", False),
             "time_label": meta.get("time_label", ""),
+            "next_run_time": next_run_time,
             "params": merged_params,
             "param_defs": param_defs
         })
@@ -2943,9 +3002,10 @@ async def list_orders(
             elif raw_st == 3:
                 status_str = "rejected"
             elif raw_st == 0:
-                status_str = "auditing" if platform_order_id else "pending"
+                # 官方状态 0 统一为 pending (待上传大类，包含未绑单号与已绑单号待反馈)
+                status_str = "pending"
             else:
-                status_str = "completed" if raw_st in (5, 6) else ("auditing" if platform_order_id else "pending")
+                status_str = "completed" if raw_st in (5, 6) else "pending"
 
             cond_val = promo.get("rebate_condition")
             cond_raw = promo.get("rebate_condition_str") or ("无需评价" if cond_val == 99 else ("随心好评" if cond_val == 2 else "用餐反馈"))
@@ -2981,6 +3041,20 @@ async def list_orders(
                 "created_at": c_at,
                 "order_time": int(ot or 0)
             })
+
+        # 若本次查询为「待上传」(query_st == 0) 或全部，核验本地与官方待处理列表
+        if query_st == 0 and account_key:
+            official_pending_sns = {str(o.get("order_id_str") or o.get("promotion_order_id") or "") for o in raw_orders if o}
+            local_pending = db.get_orders(account_key=account_key, status="pending", limit=100)
+            now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+            now_ts = int(time.time())
+            for lp in local_pending:
+                lp_sn = str(lp.get("order_sn") or "")
+                if lp_sn and lp_sn not in official_pending_sns:
+                    lp_exp = lp.get("expire_time") or ""
+                    lp_tt = int(lp.get("timeout_time") or 0)
+                    if (lp_tt > 0 and lp_tt < now_ts) or (lp_exp and lp_exp < now_str):
+                        db.update_order(lp["id"], {"status": "cancelled"})
     except Exception as e:
         logger.info(f"官方 RPC 同步订单异常 (将直接返回本地数据库记录): {e}")
 
@@ -3142,6 +3216,10 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
     if not target_order:
         raise HTTPException(status_code=404, detail="订单不存在")
 
+    existing_id = (target_order.get("platform_order_id") or "").strip()
+    if existing_id and existing_id != platform_order_id:
+        raise HTTPException(status_code=400, detail="外卖平台订单号已绑定，平台禁止二次修改")
+
     promo_order_id = target_order.get("promotion_order_id") or 0
     if not promo_order_id:
         order_sn = target_order.get("order_sn", "")
@@ -3173,16 +3251,19 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
         except Exception as e:
             logger.warning(f"小蚕官方接口提交单号返回: {e}")
 
+    has_receipt = bool(data.get("receipt_img"))
+    new_status = "auditing" if has_receipt else "pending"
     updated = db.update_order(order_id, {
         "platform_order_id": platform_order_id,
-        "status": "auditing",
+        "status": new_status,
         "receipt_img": data.get("receipt_img", "")
     })
+    msg = "外卖单号与评价凭证已提交审核！预计 2-24 小时内核销到账" if has_receipt else "外卖单号已成功绑定！待外卖送达后即可在小蚕APP提交评价反馈"
     return {
         "ok": True,
         "order": updated,
         "upstream_response": upstream_res,
-        "message": "外卖单号已登记并提交审核！预计 2-24 小时内返利到账"
+        "message": msg
     }
 
 
@@ -3644,4 +3725,100 @@ async def get_ip_location():
             "source": "default",
             "is_ip": True
         }
+
+
+# ---------------- 消息中心 API ---------------- #
+
+@router.get("/messages")
+async def get_messages(
+    account_key: Optional[str] = None,
+    channel_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 20
+):
+    """获取小蚕官方消息中心频道与通知列表"""
+    acc = None
+    if account_key:
+        acc = db.get_account_by_key(account_key)
+    if not acc:
+        accounts = db.get_all_accounts()
+        if accounts:
+            acc = accounts[0]
+            
+    if not acc:
+        return {
+            "ok": True,
+            "channels": [],
+            "messages": [],
+            "unread_total": 0,
+            "message": "未接入小蚕账号"
+        }
+
+    token = acc.get("token")
+    silk_id = str(acc.get("silk_id") or "")
+    user_id = str(acc.get("user_id") or "")
+    city_code = acc.get("city_code") or 440303
+
+    try:
+        channels_res, msgs_res = await asyncio.gather(
+            client.get_message_channels(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code),
+            client.get_messages(token=token, silk_id=silk_id, user_id=user_id, channel_id=channel_id, page=page, page_size=page_size, city_code=city_code),
+            return_exceptions=True
+        )
+
+        channels = []
+        if isinstance(channels_res, dict) and channels_res.get("list_channel"):
+            channels = channels_res["list_channel"]
+
+        messages = []
+        if isinstance(msgs_res, dict) and msgs_res.get("list"):
+            messages = msgs_res["list"]
+
+        unread_total = sum(c.get("unread", 0) for c in channels)
+
+        return {
+            "ok": True,
+            "channels": channels,
+            "messages": messages,
+            "unread_total": unread_total
+        }
+    except Exception as e:
+        logger.error(f"获取小蚕消息中心失败: {e}")
+        return {
+            "ok": False,
+            "channels": [],
+            "messages": [],
+            "unread_total": 0,
+            "error": str(e)
+        }
+
+
+class ReadAllMessagesRequest(BaseModel):
+    account_key: str
+
+
+@router.post("/messages/read-all")
+async def read_all_messages(req: ReadAllMessagesRequest):
+    """一键将当前账号所有消息标记为已读"""
+    acc = db.get_account_by_key(req.account_key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    token = acc.get("token")
+    silk_id = str(acc.get("silk_id") or "")
+    user_id = str(acc.get("user_id") or "")
+    city_code = acc.get("city_code") or 440303
+
+    try:
+        await client.set_all_messages_read(
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            city_code=city_code
+        )
+        return {"ok": True, "message": "已全部标记为已读"}
+    except Exception as e:
+        logger.error(f"全部标记已读失败: {e}")
+        return {"ok": False, "error": str(e)}
+
 

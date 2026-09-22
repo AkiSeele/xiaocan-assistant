@@ -515,6 +515,86 @@ class XiaoCanClient:
             silk_id=silk_id
         )
 
+    # ---------------- 消息中心 (SilkwormMessageCenter) ---------------- #
+
+    async def get_message_channels(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """获取消息中心频道分类及未读数 (SilkwormMessageCenter.MessageCenterService.ListChannelsSimple)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "page": 1,
+            "page_size": 20,
+            "app_id": 20
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormMessageCenter",
+            method_name="MessageCenterService.ListChannelsSimple",
+            body=body,
+            city_code=city_code,
+            token=token,
+            user_id=user_id,
+            silk_id=silk_id
+        )
+
+    async def get_messages(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        channel_id: Optional[int] = None,
+        page: int = 1,
+        page_size: int = 20,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """获取消息列表 (SilkwormMessageCenter.MessageCenterService.ListMessages)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "page": int(page),
+            "page_size": int(page_size),
+            "app_id": 20
+        }
+        if channel_id is not None and channel_id > 0:
+            body["channel_id"] = int(channel_id)
+        else:
+            body["query_all"] = True
+
+        return await self.invoke_rpc(
+            server_name="SilkwormMessageCenter",
+            method_name="MessageCenterService.ListMessages",
+            body=body,
+            city_code=city_code,
+            token=token,
+            user_id=user_id,
+            silk_id=silk_id
+        )
+
+    async def set_all_messages_read(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """将当前账号所有消息标记为已读 (SilkwormMessageCenter.MessageCenterService.SetMessageAllRead)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "app_id": 20
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormMessageCenter",
+            method_name="MessageCenterService.SetMessageAllRead",
+            body=body,
+            city_code=city_code,
+            token=token,
+            user_id=user_id,
+            silk_id=silk_id
+        )
+
     # ---------------- 官方微服务日常任务与营销活动 ---------------- #
 
     async def do_user_sign(

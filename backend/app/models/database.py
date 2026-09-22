@@ -77,6 +77,10 @@ def init_db():
         c.execute("ALTER TABLE accounts ADD COLUMN yb_point INTEGER DEFAULT 0")
     if "unreceived_points" not in acc_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN unreceived_points INTEGER DEFAULT 0")
+    if "notify_mode" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN notify_mode TEXT DEFAULT 'global'")
+    if "notify_config" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN notify_config TEXT DEFAULT '{}'")
 
     # 2. 自动化任务开关与调度表
     c.execute("""
@@ -256,6 +260,9 @@ def get_account_by_key(key: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM accounts WHERE key = ?", (key,)).fetchone()
         return dict(row) if row else None
+
+
+get_account = get_account_by_key
 
 
 def find_account(
@@ -453,7 +460,8 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         "phone", "real_name", "vip_score", "vip_expired_at",
         "silk", "withdrawing", "withdraw_total", "completed_number",
         "yb_point", "unreceived_points",
-        "city_code", "city_name", "expires_at", "longitude", "latitude"
+        "city_code", "city_name", "expires_at", "longitude", "latitude",
+        "notify_mode", "notify_config"
     ]
     updates = []
     params = {"key": key, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -469,6 +477,34 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         conn.execute(sql, params)
         conn.commit()
     return get_account_by_key(key)
+
+
+def get_account_notify_config(key: str) -> Dict[str, Any]:
+    """获取指定账号的通知模式及配置"""
+    acc = get_account_by_key(key)
+    if not acc:
+        return {"notify_mode": "global", "notify_config": {}}
+    mode = acc.get("notify_mode") or "global"
+    raw_cfg = acc.get("notify_config") or "{}"
+    cfg = {}
+    if isinstance(raw_cfg, str) and raw_cfg.strip():
+        try:
+            cfg = json.loads(raw_cfg)
+        except Exception:
+            cfg = {}
+    elif isinstance(raw_cfg, dict):
+        cfg = raw_cfg
+    return {"notify_mode": mode, "notify_config": cfg}
+
+
+def set_account_notify_config(key: str, mode: str, config: Dict[str, Any]) -> bool:
+    """更新指定账号的通知模式及配置"""
+    cfg_str = json.dumps(config, ensure_ascii=False) if isinstance(config, dict) else str(config or "{}")
+    res = update_account_profile(key, {
+        "notify_mode": mode or "global",
+        "notify_config": cfg_str
+    })
+    return res is not None
 
 
 
@@ -681,6 +717,36 @@ def set_setting(key: str, value: Any):
 
 # ---------------- 霸王餐订单操作接口 ---------------- #
 
+def auto_cancel_expired_orders(account_key: Optional[str] = None) -> int:
+    """
+    自动检测并批量更新所有已超时的待处理订单为已取消 (cancelled)。
+    判定规则：
+    1. status == 'pending' 且 (timeout_time > 0 且 timeout_time < 当前时间戳)
+    2. 或 status == 'pending' 且 (expire_time != '' 且 expire_time < 当前日期时间)
+    """
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    now_ts = int(time.time())
+    sql = """
+        UPDATE orders
+        SET status = 'cancelled', updated_at = :now_str
+        WHERE status = 'pending' AND (
+            (timeout_time > 0 AND timeout_time < :now_ts) OR
+            (expire_time != '' AND expire_time < :now_str)
+        )
+    """
+    params: Dict[str, Any] = {"now_str": now_str, "now_ts": now_ts}
+    if account_key:
+        sql += " AND account_key = :account_key"
+        params["account_key"] = account_key
+    try:
+        with get_conn() as conn:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
+
 def get_orders(
     account_key: Optional[str] = None,
     status: Optional[str] = None,
@@ -689,6 +755,9 @@ def get_orders(
     limit: int = 50,
     offset: int = 0
 ) -> List[Dict[str, Any]]:
+    # 查询前先执行过期超时订单自动自愈与取消
+    auto_cancel_expired_orders(account_key=account_key)
+
     sql = "SELECT * FROM orders WHERE 1=1"
     params: Dict[str, Any] = {}
     if account_key:
@@ -804,6 +873,7 @@ def delete_order(order_id: int) -> bool:
 
 
 def get_order_stats(account_key: Optional[str] = None) -> Dict[str, Any]:
+    auto_cancel_expired_orders(account_key=account_key)
     with get_conn() as conn:
         sql = "SELECT status, order_money, rebate_money FROM orders WHERE 1=1"
         params: Dict[str, Any] = {}
@@ -830,6 +900,7 @@ def get_order_stats(account_key: Optional[str] = None) -> Dict[str, Any]:
 
 
 def get_dashboard_chart_data(account_key: Optional[str] = None) -> Dict[str, Any]:
+    auto_cancel_expired_orders(account_key=account_key)
     import datetime
     with get_conn() as conn:
         sql = "SELECT status, platform, order_money, rebate_money, created_at, order_time FROM orders WHERE 1=1"

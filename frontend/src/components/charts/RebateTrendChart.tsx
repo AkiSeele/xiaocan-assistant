@@ -200,17 +200,16 @@ export const RebateTrendChart: React.FC<RebateTrendChartProps> = ({ data, loadin
 
   if (loading) {
     return (
-      <div className="w-full h-64 flex flex-col justify-center p-4">
-        <Skeleton.Title style={{ width: '40%', marginBottom: 16 }} />
-        <Skeleton.Paragraph rows={4} style={{ marginBottom: 16 }} />
-        <Skeleton.Button style={{ width: '100%', height: 32 }} />
+      <div className="w-full h-full min-h-[140px] flex flex-col justify-center p-3">
+        <Skeleton.Title style={{ width: '40%', marginBottom: 12 }} />
+        <Skeleton.Paragraph rows={3} style={{ marginBottom: 12 }} />
       </div>
     );
   }
 
   return (
-    <div className="w-full">
-      <div ref={chartRef} className="w-full h-64" />
+    <div className="w-full h-full min-h-0">
+      <div ref={chartRef} className="w-full h-full min-h-[140px]" />
     </div>
   );
 };

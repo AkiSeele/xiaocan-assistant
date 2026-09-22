@@ -173,28 +173,26 @@ export const OrderDistributionChart: React.FC<OrderDistributionChartProps> = ({
 
   if (loading) {
     return (
-      <div className="w-full h-56 flex flex-col justify-center p-4">
-        <Skeleton.Title style={{ width: '40%', marginBottom: 14 }} />
-        <Skeleton.Paragraph rows={3} style={{ marginBottom: 14 }} />
-        <Skeleton.Button style={{ width: '70%', height: 28 }} />
+      <div className="w-full h-full min-h-[140px] flex flex-col justify-center p-3">
+        <Skeleton.Title style={{ width: '40%', marginBottom: 12 }} />
+        <Skeleton.Paragraph rows={3} style={{ marginBottom: 12 }} />
       </div>
     );
   }
 
   return (
-    <div className="w-full">
-      <div className="flex justify-end mb-1.5">
+    <div className="w-full h-full min-h-0 flex flex-col">
+      <div className="flex justify-end mb-1 shrink-0">
         <RadioGroup
           type="button"
           value={viewType}
           onChange={(e) => setViewType(e.target.value as any)}
-          buttonSize="small"
         >
           <Radio value="status">状态分布</Radio>
           <Radio value="platform">平台渠道</Radio>
         </RadioGroup>
       </div>
-      <div ref={chartRef} className="w-full h-52" />
+      <div ref={chartRef} className="w-full flex-1 min-h-[120px]" />
     </div>
   );
 };

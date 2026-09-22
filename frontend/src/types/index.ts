@@ -21,9 +21,39 @@ export interface Account {
   completed_number?: number;
   yb_point?: number;
   unreceived_points?: number;
+  notify_mode?: AccountNotifyMode;
+  notify_config?: AccountNotifyConfig | Record<string, any> | string;
   expires_at: string;
   is_active: number;
   created_at: string;
+  updated_at?: string;
+}
+
+export type AccountNotifyMode = 'global' | 'custom' | 'disabled';
+
+export interface AccountNotifyConfig {
+  channel?: 'wecom' | 'feishu' | 'dingtalk' | 'bark' | 'telegram' | 'qq_bot' | 'clawbot' | string;
+  wecom_webhook?: string;
+  feishu_webhook?: string;
+  dingtalk_webhook?: string;
+  dingtalk_secret?: string;
+  bark_url?: string;
+  tg_bot_token?: string;
+  tg_chat_id?: string;
+  qq_bot_api?: string;
+  qq_bot_user_id?: string;
+  qq_bot_token?: string;
+  clawbot_auth_path?: string;
+  clawbot_auth_json?: string;
+}
+
+export interface AccountNotifyResponse {
+  ok: boolean;
+  data?: {
+    notify_mode: 'global' | 'custom' | 'disabled';
+    notify_config: AccountNotifyConfig;
+  };
+  message?: string;
 }
 
 export interface TaskParamField {
@@ -47,6 +77,7 @@ export interface TaskItem {
   cron_time: string;
   fixed_time?: boolean;
   time_label?: string;
+  next_run_time?: string;
   params?: Record<string, any>;
   param_defs?: TaskParamField[];
 }
@@ -177,6 +208,7 @@ export interface StoreAppointment {
   order_money?: number;
   rebate_price?: number;
   rebate_desc?: string;
+  condition?: string;
   rebate_type?: string;
   rebate_card_id?: string;
   redpack_mode?: number;
@@ -248,6 +280,49 @@ export interface BatchDailyResult {
   all_ok: boolean;
   results: BatchDailyResultItem[];
   message: string;
+}
+
+export interface XiaoCanMessageChannel {
+  channel_id: number;
+  channel_name: string;
+  icon?: string;
+  unread: number;
+  detail?: {
+    title?: string;
+    content?: string;
+    create_time?: number;
+  };
+}
+
+export interface XiaoCanMessage {
+  message_id: number;
+  title: string;
+  content: string;
+  object_id?: string;
+  object_name?: string;
+  channel_id: number;
+  sub_channel_id?: number;
+  unread: number;
+  icon_res?: string;
+  icon?: string;
+  jump_url?: string;
+  picture?: string;
+  create_time: number;
+  custom_message?: {
+    notify_type?: number;
+    custom_message_type?: number;
+    params?: string;
+    create_time?: number;
+  };
+}
+
+export interface XiaoCanMessagesResponse {
+  ok: boolean;
+  channels: XiaoCanMessageChannel[];
+  messages: XiaoCanMessage[];
+  unread_total: number;
+  error?: string;
+  message?: string;
 }
 
 export interface ClawBotStatus {
@@ -428,5 +503,14 @@ export interface LocationSearchResult {
   latitude?: string;
   longitude?: string;
   source?: string;
+}
+
+export interface XiaoCanMessagesResponse {
+  ok: boolean;
+  channels: XiaoCanMessageChannel[];
+  messages: XiaoCanMessage[];
+  unread_total: number;
+  error?: string;
+  message?: string;
 }
 

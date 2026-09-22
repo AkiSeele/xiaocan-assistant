@@ -1,5 +1,5 @@
 import React from 'react';
-import { Nav, Select, Avatar, Space, Button, Tooltip, Dropdown } from '@douyinfe/semi-ui';
+import { Nav, Select, Avatar, Space, Button, Tooltip, Dropdown, Tag } from '@douyinfe/semi-ui';
 import {
   IconHome,
   IconUser,
@@ -51,33 +51,36 @@ export const SideNav: React.FC = () => {
           logo: isSidebarCollapsed ? (
             <Tooltip content="小蚕小帮手" position="right">
               <div
-                className="w-10 h-10 rounded-xl bg-semi-color-primary-light-default flex items-center justify-center cursor-pointer transition-all duration-200 hover:scale-105 shadow-xs mx-auto"
+                className="w-10 h-10 flex items-center justify-center cursor-pointer transition-all duration-200 hover:scale-105 mx-auto"
                 onClick={() => setActiveTab('dashboard')}
               >
                 <img
                   src="/logo.png"
                   alt="小蚕小帮手"
-                  className="w-8 h-8 object-contain rounded-lg"
+                  className="w-8.5 h-8.5 object-contain rounded-xl shadow-xs"
                 />
               </div>
             </Tooltip>
           ) : (
             <div
-              className="w-8 h-8 rounded-xl bg-semi-color-primary-light-default flex items-center justify-center cursor-pointer transition-transform duration-200 hover:scale-105 shrink-0"
+              className="w-9 h-9 flex items-center justify-center cursor-pointer transition-transform duration-200 hover:scale-105 shrink-0"
               onClick={() => setActiveTab('dashboard')}
             >
               <img
                 src="/logo.png"
                 alt="小蚕小帮手"
-                className="w-6.5 h-6.5 object-contain rounded-lg"
+                className="w-8 h-8 object-contain rounded-xl shadow-xs"
               />
             </div>
           ),
           text: (
-            <div className="flex items-center ml-2.5 cursor-pointer select-none" onClick={() => setActiveTab('dashboard')}>
+            <div className="flex items-center gap-2 ml-2 cursor-pointer select-none" onClick={() => setActiveTab('dashboard')}>
               <span className="font-bold text-[16px] text-semi-color-text-0 tracking-tight hover:text-semi-color-primary transition-colors">
                 小蚕小帮手
               </span>
+              <Tag size="small" color="blue" type="light" shape="square" className="text-[10px] font-semibold px-1 py-0 scale-90 origin-left">
+                助手版
+              </Tag>
             </div>
           ),
         }}

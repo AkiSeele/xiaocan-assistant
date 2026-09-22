@@ -355,7 +355,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                     from .notifier import send_system_notification
                                     await send_system_notification(
                                         title="整点红包雨中奖提醒",
-                                        content=f"账号【{nickname}】在场次 #{event_id} ({begin_str}场) 斩获 {len(items)} 个红包：{p_str}！"
+                                        content=f"账号【{nickname}】在场次 #{event_id} ({begin_str}场) 斩获 {len(items)} 个红包：{p_str}！",
+                                        account_key=account_key
                                     )
                                 else:
                                     log_output += f"[{ts_fmt}] [公共红包雨] 抓取结算完成 (上报点击 {actual_clicks} 次)，但本场未分配到有效红包 (可能名额已发完或限额)\n"
@@ -370,7 +371,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                     from .notifier import send_system_notification
                                     await send_system_notification(
                                         title="红包雨风控安全拦截",
-                                        content=f"账号【{nickname}】参与场次 #{event_id} 红包雨触发安全风控，请在微信小程序完成一次人机验证。"
+                                        content=f"账号【{nickname}】参与场次 #{event_id} 红包雨触发安全风控，请在微信小程序完成一次人机验证。",
+                                        account_key=account_key
                                     )
                                     break
                                 else:
@@ -459,7 +461,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                             from .notifier import send_system_notification
                             await send_system_notification(
                                 title="抢SVIP大牌券成功",
-                                content=f"账号【{nickname}】在 {st_str} 场次成功抢到【{p_name}】！"
+                                content=f"账号【{nickname}】在 {st_str} 场次成功抢到【{p_name}】！",
+                                account_key=account_key
                             )
                             break
                         except XiaoCanRPCError as e:
@@ -643,7 +646,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢SVIP返利券成功",
-                            content=f"账号【{nickname}】成功领取【{p_name}】！"
+                            content=f"账号【{nickname}】成功领取【{p_name}】！",
+                            account_key=account_key
                         )
                     except XiaoCanRPCError as ce:
                         if ce.code == 50010:
@@ -682,7 +686,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢每月免单券成功",
-                            content=f"账号【{nickname}】成功抢到【{p_name}】！"
+                            content=f"账号【{nickname}】成功抢到【{p_name}】！",
+                            account_key=account_key
                         )
                     except XiaoCanRPCError as ce:
                         if ce.code == 50010:
@@ -738,7 +743,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢影音会员周卡成功",
-                            content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{p_name}】！"
+                            content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{p_name}】！",
+                            account_key=account_key
                         )
                     except XiaoCanRPCError as ce:
                         if ce.code == 50010:
@@ -776,14 +782,16 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     from .notifier import send_system_notification
                     await send_system_notification(
                         title="小蚕账号凭据已过期",
-                        content=f"账号【{nickname}】登录凭据已过期（失效时间: {exp_str}），请重新在微信小程序直连提取更新！"
+                        content=f"账号【{nickname}】登录凭据已过期（失效时间: {exp_str}），请重新在微信小程序直连提取更新！",
+                        account_key=account_key
                     )
                 elif days_left <= warn_days:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 凭据即将到期预警: 剩余 {days_left:.1f} 天（到期时间: {exp_str}，阈值: {warn_days}天）\n"
                     from .notifier import send_system_notification
                     await send_system_notification(
                         title="小蚕凭据即将到期预警",
-                        content=f"账号【{nickname}】凭据将在 {days_left:.1f} 天后失效（到期时间: {exp_str}），请提前更新避免掉线！"
+                        content=f"账号【{nickname}】凭据将在 {days_left:.1f} 天后失效（到期时间: {exp_str}），请提前更新避免掉线！",
+                        account_key=account_key
                     )
                 else:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 凭据状态良好: 剩余有效时间 {days_left:.1f} 天（到期时间: {exp_str}）\n"
@@ -816,7 +824,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     from .notifier import send_system_notification
                     await send_system_notification(
                         title="小蚕特权卡券到期提醒",
-                        content=f"账号【{nickname}】有 {len(expiring)} 张卡券即将过期（{sample}），请尽快使用！"
+                        content=f"账号【{nickname}】有 {len(expiring)} 张卡券即将过期（{sample}），请尽快使用！",
+                        account_key=account_key
                     )
                 else:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 卡券核验完成: 暂无即将在 {warn_hours} 小时内过期的特权券\n"

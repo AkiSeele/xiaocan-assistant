@@ -196,7 +196,7 @@ async def run_dual_rebate_monitor(
                 title = f"美团双返利今日基准 (共{dual_count}家)"
                 content = "\n".join(body_lines)
                 try:
-                    await send_system_notification(title=title, content=content)
+                    await send_system_notification(title=title, content=content, account_key=account_key)
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 今日首轮基准清单已通过通知发送 (共 {dual_count} 家)")
                 except Exception as ne:
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 基准清单通知发送异常: {ne}")
@@ -387,7 +387,7 @@ async def run_dual_rebate_monitor(
     title = f"美团双返利变动 ({change_summary})"
     content = "\n".join(body_lines)
     try:
-        await send_system_notification(title=title, content=content)
+        await send_system_notification(title=title, content=content, account_key=account_key)
         log_lines.append(f"[{time.strftime('%H:%M:%S')}] 变动通知已成功发送 ({change_summary})")
     except Exception as ne:
         log_lines.append(f"[{time.strftime('%H:%M:%S')}] 变动通知发送异常: {ne}")

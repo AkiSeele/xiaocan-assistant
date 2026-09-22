@@ -8,8 +8,12 @@
 5. Telegram Bot 推送
 """
 import os
+import time
 import json
 import uuid
+import hmac
+import hashlib
+import urllib.parse
 import base64
 import logging
 from typing import Dict, Any, Optional, Tuple
@@ -186,11 +190,259 @@ async def test_single_channel(channel: str, config: Dict[str, Any]) -> Dict[str,
         except Exception as e:
             return {"ok": False, "channel": "telegram", "message": f"Telegram 测试失败: {str(e)}"}
 
+    elif channel == "feishu":
+        webhook = (config.get("feishu_webhook") or "").strip()
+        return await send_feishu_notification(webhook, test_title, test_content)
+
+    elif channel == "dingtalk":
+        webhook = (config.get("dingtalk_webhook") or "").strip()
+        secret = (config.get("dingtalk_secret") or "").strip()
+        return await send_dingtalk_notification(webhook, secret, test_title, test_content)
+
     return {"ok": False, "channel": channel, "message": f"未知通知渠道: {channel}"}
 
 
-async def send_system_notification(title: str, content: str, level: str = "info") -> Dict[str, Any]:
-    """向所有已启用的通知通道全量广播告警或任务完成消息"""
+async def send_feishu_notification(webhook_url: str, title: str, content: str) -> Dict[str, Any]:
+    """向飞书自定义群机器人 Webhook 推送富文本消息"""
+    url = (webhook_url or "").strip()
+    if not url or not url.startswith("http"):
+        return {"ok": False, "channel": "feishu", "message": "飞书 Webhook 地址格式不正确"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            payload = {
+                "msg_type": "post",
+                "content": {
+                    "post": {
+                        "zh_cn": {
+                            "title": f"【小蚕助手】{title}",
+                            "content": [
+                                [{"tag": "text", "text": content}]
+                            ]
+                        }
+                    }
+                }
+            }
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                res_data = resp.json()
+                if res_data.get("code") == 0 or res_data.get("StatusCode") == 0:
+                    return {"ok": True, "channel": "feishu", "message": "飞书机器人通知发送成功"}
+                return {"ok": False, "channel": "feishu", "message": f"飞书返回错误: {res_data.get('msg')}"}
+            return {"ok": False, "channel": "feishu", "message": f"飞书 HTTP 状态码: {resp.status_code}"}
+    except Exception as e:
+        logger.warning(f"飞书通知发送异常: {e}")
+        return {"ok": False, "channel": "feishu", "message": f"飞书发送异常: {str(e)}"}
+
+
+async def send_dingtalk_notification(webhook_url: str, secret: Optional[str], title: str, content: str) -> Dict[str, Any]:
+    """向钉钉自定义机器人 Webhook 推送 Markdown 消息 (支持加签鉴权)"""
+    url = (webhook_url or "").strip()
+    if not url or not url.startswith("http"):
+        return {"ok": False, "channel": "dingtalk", "message": "钉钉 Webhook 地址格式不正确"}
+
+    target_url = url
+    if secret and secret.strip():
+        timestamp = str(round(time.time() * 1000))
+        secret_enc = secret.strip().encode("utf-8")
+        string_to_sign = f"{timestamp}\n{secret.strip()}".encode("utf-8")
+        hmac_code = hmac.new(secret_enc, string_to_sign, digestmod=hashlib.sha256).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        sep = "&" if "?" in target_url else "?"
+        target_url = f"{target_url}{sep}timestamp={timestamp}&sign={sign}"
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            payload = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "title": f"【小蚕助手】{title}",
+                    "text": f"### 【小蚕助手】{title}\n\n{content}"
+                }
+            }
+            resp = await client.post(target_url, json=payload)
+            if resp.status_code == 200:
+                res_data = resp.json()
+                if res_data.get("errcode") == 0:
+                    return {"ok": True, "channel": "dingtalk", "message": "钉钉机器人通知发送成功"}
+                return {"ok": False, "channel": "dingtalk", "message": f"钉钉返回错误: {res_data.get('errmsg')}"}
+            return {"ok": False, "channel": "dingtalk", "message": f"钉钉 HTTP 状态码: {resp.status_code}"}
+    except Exception as e:
+        logger.warning(f"钉钉通知发送异常: {e}")
+        return {"ok": False, "channel": "dingtalk", "message": f"钉钉发送异常: {str(e)}"}
+
+
+async def send_single_custom_channel(channel: str, config: Dict[str, Any], title: str, content: str) -> Dict[str, Any]:
+    """向指定的单通道定向发送消息 (按权重优先级派发)"""
+    # 1. 微信官方 ClawBot (腾讯 iLink) - 最高权重
+    if channel == "clawbot":
+        return await send_clawbot_notification(
+            title=title,
+            content=content,
+            custom_path=config.get("clawbot_auth_path"),
+            auth_json_str=config.get("clawbot_auth_json")
+        )
+
+    # 2. 企业微信群机器人
+    elif channel == "wecom":
+        webhook = (config.get("wecom_webhook") or "").strip()
+        if not webhook or not webhook.startswith("http"):
+            return {"ok": False, "channel": "wecom", "message": "企业微信 Webhook 地址格式不正确"}
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                md_content = f"### 【小蚕助手】{title}\n\n{content}"
+                resp = await client.post(webhook, json={"msgtype": "markdown", "markdown": {"content": md_content}})
+                if resp.status_code == 200:
+                    return {"ok": True, "channel": "wecom", "message": "企业微信通知发送成功"}
+                return {"ok": False, "channel": "wecom", "message": f"企业微信 HTTP 状态码: {resp.status_code}"}
+        except Exception as e:
+            return {"ok": False, "channel": "wecom", "message": f"企业微信异常: {str(e)}"}
+
+    # 3. 钉钉群机器人
+    elif channel == "dingtalk":
+        webhook = (config.get("dingtalk_webhook") or "").strip()
+        secret = (config.get("dingtalk_secret") or "").strip()
+        return await send_dingtalk_notification(webhook, secret, title, content)
+
+    # 4. 飞书群机器人
+    elif channel == "feishu":
+        webhook = (config.get("feishu_webhook") or "").strip()
+        return await send_feishu_notification(webhook, title, content)
+
+    # 5. iOS Bark 推送
+    elif channel == "bark":
+        bark_url = (config.get("bark_url") or "").strip()
+        if not bark_url:
+            return {"ok": False, "channel": "bark", "message": "Bark URL 不能为空"}
+        # 支持用户输入纯 key 或完整 URL
+        if not bark_url.startswith("http"):
+            bark_url = f"https://api.day.app/{bark_url}"
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                payload = {
+                    "title": f"【小蚕助手】{title}",
+                    "body": content,
+                    "group": "小蚕自动化",
+                    "icon": "https://img.icons8.com/color/96/weixing.png"
+                }
+                resp = await client.post(bark_url.rstrip("/"), json=payload)
+                if resp.status_code == 200:
+                    return {"ok": True, "channel": "bark", "message": "Bark 专属推送成功"}
+                return {"ok": False, "channel": "bark", "message": f"Bark HTTP 状态码: {resp.status_code}"}
+        except Exception as e:
+            return {"ok": False, "channel": "bark", "message": f"Bark 异常: {str(e)}"}
+
+    # 6. QQ 机器人 (私聊/群聊)
+    elif channel == "qq_bot":
+        return await send_qq_bot_notification(
+            title=title,
+            content=content,
+            api_url=config.get("qq_bot_api"),
+            user_id=config.get("qq_bot_user_id"),
+            group_id=config.get("qq_bot_group_id"),
+            target_type="private" if config.get("qq_bot_user_id") else "group",
+            token=config.get("qq_bot_token")
+        )
+
+    # 7. Telegram Bot
+    elif channel == "telegram":
+        tg_token = (config.get("tg_bot_token") or "").strip()
+        tg_chat_id = (config.get("tg_chat_id") or "").strip()
+        if not tg_token or not tg_chat_id:
+            return {"ok": False, "channel": "telegram", "message": "Telegram Bot Token 或 Chat ID 未填写"}
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                api_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                payload = {
+                    "chat_id": tg_chat_id,
+                    "text": f"*{title}*\n\n{content}",
+                    "parse_mode": "Markdown"
+                }
+                resp = await client.post(api_url, json=payload)
+                if resp.status_code == 200:
+                    return {"ok": True, "channel": "telegram", "message": "Telegram 专属推送成功"}
+                return {"ok": False, "channel": "telegram", "message": f"Telegram HTTP: {resp.status_code}"}
+        except Exception as e:
+            return {"ok": False, "channel": "telegram", "message": f"Telegram 异常: {str(e)}"}
+
+    return {"ok": False, "channel": channel, "message": f"不支持的单通道类型: {channel}"}
+
+
+async def send_account_notification(account_key: str, title: str, content: str, level: str = "info") -> Dict[str, Any]:
+    """精准向指定账号绑定的专属通道定向推送"""
+    if not account_key or not account_key.strip():
+        return await _send_global_system_notification(title, content, level)
+
+    cfg_info = db.get_account_notify_config(account_key.strip())
+    mode = cfg_info.get("notify_mode") or "global"
+    cfg = cfg_info.get("notify_config") or {}
+
+    if mode == "disabled":
+        logger.info(f"账号 [{account_key}] 已配置静音模式，跳过消息通知")
+        return {"ok": True, "skipped": True, "channel": "disabled", "message": "账号已静音"}
+
+    if mode == "custom":
+        channel = cfg.get("channel")
+        if not channel:
+            logger.warning(f"账号 [{account_key}] 配置为独立通道但未选择具体通道类型，降级走全局通知")
+            return await _send_global_system_notification(title, content, level)
+        res = await send_single_custom_channel(channel, cfg, title, content)
+        logger.info(f"账号 [{account_key}] 专属通道 [{channel}] 发送结果: {res.get('ok')} - {res.get('message')}")
+        return res
+
+    # global 模式下退回全局广播
+    return await _send_global_system_notification(title, content, level)
+
+
+async def test_account_channel(account_key: str, mode: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """即时测试指定账号的通知通道连通性"""
+    acc = db.get_account_by_key(account_key)
+    acc_name = acc.get("nickname") if acc else account_key
+    test_title = f"专属通知连通测试 · {acc_name}"
+    test_content = (
+        f"这是一条发往账号【{acc_name}】专属通道的连通性测试消息。\n"
+        f"如果您收到本条推送，说明您的独立个人通道已正确接入，后续该账号的中签、抢单与预警消息将仅定向发送至此处！"
+    )
+
+    if mode == "disabled":
+        return {"ok": True, "message": "当前为静音模式，已跳过发送"}
+
+    if mode == "global":
+        # 测试全局通道连通性
+        res = await _send_global_system_notification(test_title, test_content)
+        return {
+            "ok": res.get("ok", False),
+            "message": f"已触发全局通道广播测试 (成功通道: {', '.join(res.get('channels', [])) or '无'})"
+        }
+
+    channel = config.get("channel")
+    if not channel:
+        return {"ok": False, "message": "请先选择需要绑定的通知渠道类型"}
+
+    return await send_single_custom_channel(channel, config, test_title, test_content)
+
+
+async def send_system_notification(
+    title: str,
+    content: str,
+    level: str = "info",
+    account_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    智能分发系统通知：
+    1. 若提供了 account_key，且该账号独立配置了 notify_mode ('custom' 或 'disabled')，则精准按账号策略单播派发；
+    2. 若未提供 account_key 或账号配置为 'global'，则全量广播至系统全局配置的通知通道。
+    """
+    if account_key and account_key.strip():
+        cfg_info = db.get_account_notify_config(account_key.strip())
+        mode = cfg_info.get("notify_mode") or "global"
+        if mode in ("custom", "disabled"):
+            return await send_account_notification(account_key.strip(), title, content, level)
+
+    return await _send_global_system_notification(title, content, level)
+
+
+async def _send_global_system_notification(title: str, content: str, level: str = "info") -> Dict[str, Any]:
+    """向所有已启用的全局通知通道广播消息"""
     channels_sent = []
     errors = []
 

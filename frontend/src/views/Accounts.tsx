@@ -26,7 +26,8 @@ import {
   SideSheet,
   Progress,
   RadioGroup,
-  Radio
+  Radio,
+  Select
 } from '@douyinfe/semi-ui';
 import { useGSAP, gsap } from '../utils/animations';
 
@@ -52,12 +53,14 @@ import {
   IconUser,
   IconShield,
   IconKey,
-  IconTick
+  IconTick,
+  IconSend,
+  IconBell
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { useOnActivated } from '../utils/useOnActivated';
-import type { Account, AccountDetailData } from '../types';
+import type { Account, AccountDetailData, AccountNotifyConfig, AccountNotifyMode, ClawBotStatus } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -131,6 +134,99 @@ export const Accounts: React.FC = () => {
   const [cardFilterStatus, setCardFilterStatus] = useState<number>(0);
   const [cardsLoading, setCardsLoading] = useState(false);
   const [activeDetailTab, setActiveDetailTab] = useState<string>('redpacks');
+
+  // 账号专属推送配置模态框状态
+  const [notifyModalVisible, setNotifyModalVisible] = useState(false);
+  const [notifyAccount, setNotifyAccount] = useState<Account | null>(null);
+  const [notifyLoading, setNotifyLoading] = useState(false);
+  const [notifySaving, setNotifySaving] = useState(false);
+  const [notifyTesting, setNotifyTesting] = useState(false);
+  const [notifyMode, setNotifyMode] = useState<AccountNotifyMode>('global');
+  const [notifyChannel, setNotifyChannel] = useState<string>('clawbot');
+  const [notifyConfig, setNotifyConfig] = useState<AccountNotifyConfig>({});
+  const [systemClawbotStatus, setSystemClawbotStatus] = useState<ClawBotStatus | null>(null);
+
+  const handleOpenNotifyModal = async (acc: Account) => {
+    setNotifyAccount(acc);
+    setNotifyModalVisible(true);
+    setNotifyLoading(true);
+
+    // 同步查询系统当前内置 ClawBot 状态
+    api.getClawBotStatus().then((r) => {
+      if (r && r.ok) setSystemClawbotStatus(r);
+    }).catch(() => {});
+
+    try {
+      const res = await api.getAccountNotifyConfig(acc.key);
+      if (res.ok && res.data) {
+        const mode = res.data.notify_mode || 'global';
+        const cfg = res.data.notify_config || {};
+        setNotifyMode(mode);
+        setNotifyConfig(cfg);
+        setNotifyChannel(cfg.channel || 'clawbot');
+      } else {
+        setNotifyMode((acc.notify_mode as AccountNotifyMode) || 'global');
+        let parsedCfg: AccountNotifyConfig = {};
+        if (typeof acc.notify_config === 'string') {
+          try {
+            parsedCfg = JSON.parse(acc.notify_config);
+          } catch {}
+        } else if (acc.notify_config && typeof acc.notify_config === 'object') {
+          parsedCfg = acc.notify_config as AccountNotifyConfig;
+        }
+        setNotifyConfig(parsedCfg);
+        setNotifyChannel(parsedCfg.channel || 'clawbot');
+      }
+    } catch (e: any) {
+      Toast.error(`获取推送配置失败: ${e.message || e}`);
+    } finally {
+      setNotifyLoading(false);
+    }
+  };
+
+  const handleSaveNotifyConfig = async () => {
+    if (!notifyAccount) return;
+    setNotifySaving(true);
+    try {
+      const fullConfig: AccountNotifyConfig = {
+        ...notifyConfig,
+        channel: notifyChannel,
+      };
+      const res = await api.saveAccountNotifyConfig(notifyAccount.key, notifyMode, fullConfig);
+      if (res.ok) {
+        Toast.success(res.message || '账号专属推送配置保存成功！');
+        setNotifyModalVisible(false);
+        await loadAccounts();
+      } else {
+        Toast.error(res.message || '保存配置失败');
+      }
+    } catch (e: any) {
+      Toast.error(`保存配置异常: ${e.message || e}`);
+    } finally {
+      setNotifySaving(false);
+    }
+  };
+
+  const handleTestNotify = async () => {
+    if (!notifyAccount) return;
+    setNotifyTesting(true);
+    try {
+      const fullConfig: AccountNotifyConfig = {
+        ...notifyConfig,
+        channel: notifyChannel,
+      };
+      const res = await api.testAccountNotify(notifyAccount.key, notifyMode, fullConfig);
+      if (res.ok) {
+        Toast.success(res.message || '测试消息发送成功，请前往对应客户端查收！');
+      } else {
+        Toast.error(res.message || '测试推送失败，请检查配置参数');
+      }
+    } catch (e: any) {
+      Toast.error(`测试异常: ${e.message || e}`);
+    } finally {
+      setNotifyTesting(false);
+    }
+  };
 
   // 时间戳格式化辅助函数
   const formatTimestamp = (ts?: number | string) => {
@@ -521,6 +617,31 @@ export const Accounts: React.FC = () => {
                         {acc.is_plus ? `SVIP${acc.vip_level || 1}` : `VIP${acc.vip_level || 1}`}
                       </Tag>
                       <Tag color="green" size="small">在线</Tag>
+                      {acc.notify_mode === 'custom' && (() => {
+                        let ch = '';
+                        try {
+                          if (typeof acc.notify_config === 'string') {
+                            ch = JSON.parse(acc.notify_config)?.channel || '';
+                          } else if (acc.notify_config) {
+                            ch = (acc.notify_config as any)?.channel || '';
+                          }
+                        } catch {}
+                        const isClaw = ch === 'clawbot' || !ch;
+                        return (
+                          <Tooltip content={isClaw ? "已绑定微信官方 ClawBot 专属通道，通知直达个人微信服务号" : `已绑定专属推送通道 (${ch})，通知仅定向发送给该账号`}>
+                            <Tag color={isClaw ? "green" : "violet"} size="small" prefixIcon={<IconBell size="small" />}>
+                              {isClaw ? "微信推送" : "专属推送"}
+                            </Tag>
+                          </Tooltip>
+                        );
+                      })()}
+                      {acc.notify_mode === 'disabled' && (
+                        <Tooltip content="已开启静音免打扰，该账号中签与抢单不触发外部推送">
+                          <Tag color="grey" size="small" prefixIcon={<IconBell size="small" />}>
+                            免打扰
+                          </Tag>
+                        </Tooltip>
+                      )}
                     </Space>
                   }
                 >
@@ -613,6 +734,21 @@ export const Accounts: React.FC = () => {
                     </div>
 
                     <Space spacing="tight">
+                      <Tooltip content="配置该账号专属消息推送 (企业微信/飞书/钉钉/Bark/QQ等)">
+                        <Button
+                          theme="light"
+                          type="tertiary"
+                          size="small"
+                          icon={<IconBell />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenNotifyModal(acc);
+                          }}
+                        >
+                          推送
+                        </Button>
+                      </Tooltip>
+
                       <Button
                         theme="solid"
                         type="primary"
@@ -1515,6 +1651,302 @@ export const Accounts: React.FC = () => {
           </div>
         )}
       </SideSheet>
+
+      {/* 账号专属消息推送配置模态对话框 */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2">
+            <IconBell className="text-semi-color-primary" />
+            <span>账号专属推送配置 - 【{notifyAccount?.nickname || '未命名账号'}】</span>
+          </div>
+        }
+        visible={notifyModalVisible}
+        onCancel={() => setNotifyModalVisible(false)}
+        width={660}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              theme="light"
+              onClick={() => setNotifyModalVisible(false)}
+            >
+              取消
+            </Button>
+            <Button
+              theme="solid"
+              type="primary"
+              loading={notifySaving}
+              onClick={handleSaveNotifyConfig}
+            >
+              保存配置
+            </Button>
+          </div>
+        }
+      >
+        {notifyLoading ? (
+          <div className="py-16 flex flex-col items-center justify-center">
+            <Spin tip="正在读取账号推送配置..." />
+          </div>
+        ) : (
+          <div className="space-y-4 py-2">
+            <Banner
+              type="info"
+              description="在公司电脑或多用户共享部署环境下，为各小蚕账号独立配置专属通道后，抢单成功、中签等消息将定向推送给账号责任人，互不打扰。"
+            />
+
+            <div>
+              <Text strong className="block mb-2 text-sm text-semi-color-text-0">
+                推送派发模式
+              </Text>
+              <RadioGroup
+                type="card"
+                direction="vertical"
+                value={notifyMode}
+                onChange={(e) => setNotifyMode(e.target.value as AccountNotifyMode)}
+                className="w-full space-y-2"
+              >
+                <Radio
+                  value="global"
+                  extra="使用系统全局设置中统一配置的默认通道（所有账号消息统一广播到全局通道）。"
+                >
+                  <div className="font-medium text-sm text-semi-color-text-0">跟随系统全局设置 (默认)</div>
+                </Radio>
+                <Radio
+                  value="custom"
+                  extra="为该账号绑定独立的个人通道，中签、抢单、免单券变动等仅向本人定向派发。"
+                >
+                  <div className="font-medium text-sm text-semi-color-text-0">绑定个人专属独立通道 (推荐)</div>
+                </Radio>
+                <Radio
+                  value="disabled"
+                  extra="此账号完全静音，发生抢单或中签时不触发任何外部推送打扰。"
+                >
+                  <div className="font-medium text-sm text-semi-color-text-0">静音免打扰模式</div>
+                </Radio>
+              </RadioGroup>
+            </div>
+
+            {notifyMode === 'custom' && (
+              <div className="p-4 rounded-lg bg-semi-color-fill-0 border border-semi-color-border space-y-4">
+                <div className="flex items-center justify-between">
+                  <Text strong className="text-sm text-semi-color-text-0">专属通道类型</Text>
+                  <Select
+                    value={notifyChannel}
+                    onChange={(val) => setNotifyChannel(val as string)}
+                    style={{ width: 240 }}
+                  >
+                    <Select.Option value="clawbot">微信官方 ClawBot (iLink) (首选·推荐)</Select.Option>
+                    <Select.Option value="wecom">企业微信群机器人</Select.Option>
+                    <Select.Option value="dingtalk">钉钉群机器人</Select.Option>
+                    <Select.Option value="feishu">飞书群机器人</Select.Option>
+                    <Select.Option value="bark">iOS Bark 推送</Select.Option>
+                    <Select.Option value="qq_bot">QQ 机器人 (私聊/群聊)</Select.Option>
+                    <Select.Option value="telegram">Telegram Bot</Select.Option>
+                  </Select>
+                </div>
+
+                <Divider />
+
+                {/* 1. 微信官方 ClawBot (首选·最高权重) */}
+                {notifyChannel === 'clawbot' && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-semi-color-primary-light-default/20 rounded-lg border border-semi-color-primary-light-active">
+                      <div className="flex items-center justify-between">
+                        <Text strong className="text-xs text-semi-color-primary">
+                          系统微信通道状态：
+                          {systemClawbotStatus?.ready ? (
+                            <span className="text-semi-color-success ml-1">
+                              [已就绪] 微信用户: {systemClawbotStatus.user_id || '已授权'}
+                            </span>
+                          ) : (
+                            <span className="text-semi-color-text-2 ml-1">[未检测到全局登录] 可在下方配置个人凭证或系统设置扫码</span>
+                          )}
+                        </Text>
+                      </div>
+                      <Text size="small" type="tertiary" className="block mt-1">
+                        默认模式：若该账号负责人即系统已绑定的微信，下方输入框保持留空即可直接复用（零配置直推）。
+                      </Text>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">个人独立微信凭证路径 (多用户分流可选)：</Text>
+                      <Input
+                        placeholder="留空则自动复用系统微信，或填写个人 clawbot-auth.json 绝对路径"
+                        value={notifyConfig.clawbot_auth_path || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, clawbot_auth_path: val })}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">或直接粘贴凭证 JSON 密文 (多用户分流可选)：</Text>
+                      <TextArea
+                        placeholder='例如: {"token": "...", "userId": "..."}'
+                        rows={2}
+                        value={notifyConfig.clawbot_auth_json || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, clawbot_auth_json: val })}
+                      />
+                    </div>
+                    <Text type="tertiary" size="small">
+                      权重说明：微信官方 ClawBot 享有最高分发权重，经腾讯官方 iLink 平台推送至微信服务号，不折叠且支持即时通知。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 2. 企业微信 */}
+                {notifyChannel === 'wecom' && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <Text strong className="text-xs">企业微信 Webhook 地址：</Text>
+                    </div>
+                    <Input
+                      placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx"
+                      value={notifyConfig.wecom_webhook || ''}
+                      onChange={(val) => setNotifyConfig({ ...notifyConfig, wecom_webhook: val })}
+                    />
+                    <Text type="tertiary" size="small">
+                      支持将个人测试群或内部专属群的企业微信机器人 Webhook 填入此处。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 3. 钉钉 */}
+                {notifyChannel === 'dingtalk' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">钉钉自定义机器人 Webhook 地址：</Text>
+                      <Input
+                        placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxxx"
+                        value={notifyConfig.dingtalk_webhook || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, dingtalk_webhook: val })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">加签安全密钥 Secret (可选)：</Text>
+                      <Input
+                        placeholder="SECxxxx (若钉钉机器人开启了加签鉴权请填写)"
+                        value={notifyConfig.dingtalk_secret || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, dingtalk_secret: val })}
+                      />
+                    </div>
+                    <Text type="tertiary" size="small">
+                      若钉钉机器人勾选了「加签」，请填写对应 Secret，系统将自动使用 HMAC-SHA256 计算签名。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 4. 飞书 */}
+                {notifyChannel === 'feishu' && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <Text strong className="text-xs">飞书自定义机器人 Webhook 地址：</Text>
+                    </div>
+                    <Input
+                      placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+                      value={notifyConfig.feishu_webhook || ''}
+                      onChange={(val) => setNotifyConfig({ ...notifyConfig, feishu_webhook: val })}
+                    />
+                    <Text type="tertiary" size="small">
+                      飞书群设置 - 群机器人 - 添加自定义机器人，将获取到的 Webhook 填入此处。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 5. Bark */}
+                {notifyChannel === 'bark' && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <Text strong className="text-xs">Bark Key 或完整推送 URL：</Text>
+                    </div>
+                    <Input
+                      placeholder="例如: 2b8fxxxx 或 https://api.day.app/2b8fxxxx"
+                      value={notifyConfig.bark_url || ''}
+                      onChange={(val) => setNotifyConfig({ ...notifyConfig, bark_url: val })}
+                    />
+                    <Text type="tertiary" size="small">
+                      支持 iOS Bark App，输入个人设备 Key 或自建 Bark 服务的完整 URL。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 6. QQ 机器人 */}
+                {notifyChannel === 'qq_bot' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">OneBot HTTP API 根地址：</Text>
+                      <Input
+                        placeholder="例如: http://127.0.0.1:5700"
+                        value={notifyConfig.qq_bot_api || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, qq_bot_api: val })}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">接收人 QQ 号 (私聊定向)：</Text>
+                        <Input
+                          placeholder="例如: 10001"
+                          value={notifyConfig.qq_bot_user_id || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, qq_bot_user_id: val })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">接收群号 (可选，优先私聊)：</Text>
+                        <Input
+                          placeholder="例如: 954658571"
+                          value={(notifyConfig as any).qq_bot_group_id || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, qq_bot_group_id: val } as any)}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">API 访问 Token (可选)：</Text>
+                      <Input
+                        placeholder="若 OneBot 服务端开启了 Authorization 则填写"
+                        value={notifyConfig.qq_bot_token || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, qq_bot_token: val })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* 7. Telegram */}
+                {notifyChannel === 'telegram' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Telegram Bot Token：</Text>
+                      <Input
+                        placeholder="例如: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                        value={notifyConfig.tg_bot_token || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_bot_token: val })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Telegram 个人/群组 Chat ID：</Text>
+                      <Input
+                        placeholder="例如: 987654321 或 -100123456789"
+                        value={notifyConfig.tg_chat_id || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_chat_id: val })}
+                      />
+                    </div>
+                    <Text type="tertiary" size="small">
+                      可向 @userinfobot 发送消息获取您的个人数字 Chat ID。
+                    </Text>
+                  </div>
+                )}
+
+                <div className="flex justify-end pt-1">
+                  <Button
+                    theme="light"
+                    icon={<IconSend />}
+                    loading={notifyTesting}
+                    onClick={handleTestNotify}
+                  >
+                    测试此通道连通性
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
 
     </div>
   );

@@ -162,7 +162,7 @@ export const App: React.FC = () => {
         <div className="shrink-0 z-10">
           <TopHeader />
         </div>
-        <Content className="flex-1 min-h-0 bg-semi-color-bg-0 p-4 md:p-6 overflow-hidden flex flex-col">
+        <Content className="flex-1 min-h-0 bg-semi-color-bg-0 p-3 sm:p-3.5 sm:px-5 overflow-hidden flex flex-col">
           <ErrorBoundary>
             <Suspense fallback={<PageLoading />}>
               <div
@@ -173,8 +173,8 @@ export const App: React.FC = () => {
                   <div
                     key="tab-dashboard"
                     data-tab="dashboard"
-                    style={{ display: activeTab === 'dashboard' ? 'block' : 'none' }}
-                    className="w-full h-full overflow-y-auto pr-1"
+                    style={{ display: activeTab === 'dashboard' ? 'flex' : 'none' }}
+                    className="w-full h-full min-h-0 overflow-hidden flex flex-col"
                   >
                     <Dashboard />
                   </div>
@@ -184,7 +184,7 @@ export const App: React.FC = () => {
                     key="tab-accounts"
                     data-tab="accounts"
                     style={{ display: activeTab === 'accounts' ? 'block' : 'none' }}
-                    className="w-full h-full overflow-y-auto pr-1"
+                    className="w-full h-full overflow-y-auto overflow-x-hidden pr-1"
                   >
                     <Accounts />
                   </div>
@@ -194,7 +194,7 @@ export const App: React.FC = () => {
                     key="tab-automation"
                     data-tab="automation"
                     style={{ display: activeTab === 'automation' ? 'block' : 'none' }}
-                    className="w-full h-full overflow-y-auto pr-1"
+                    className="w-full h-full overflow-y-auto overflow-x-hidden pr-1"
                   >
                     <Automation />
                   </div>
@@ -234,7 +234,7 @@ export const App: React.FC = () => {
                     key="tab-settings"
                     data-tab="settings"
                     style={{ display: activeTab === 'settings' ? 'block' : 'none' }}
-                    className="w-full h-full overflow-y-auto pr-1"
+                    className="w-full h-full overflow-y-auto overflow-x-hidden pr-1"
                   >
                     <SettingsView />
                   </div>

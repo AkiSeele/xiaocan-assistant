@@ -13,7 +13,8 @@ import {
   Input,
   RadioGroup,
   Radio,
-  Empty
+  Empty,
+  Modal
 } from '@douyinfe/semi-ui';
 import { gsap, useGSAP } from '../utils/animations';
 
@@ -48,6 +49,23 @@ const getConditionTagColor = (condition?: string): 'green' | 'cyan' | 'blue' | '
   return 'cyan';
 };
 
+const formatRemainingTime = (remainingSec: number | null | undefined): string => {
+  if (remainingSec === null || remainingSec === undefined) return '';
+  if (remainingSec <= 0) return '已超时';
+  const totalMinutes = Math.floor(remainingSec / 60);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return hours > 0 ? `剩 ${days}天${hours}小时` : `剩 ${days}天`;
+  }
+  if (hours > 0) {
+    return minutes > 0 ? `剩 ${hours}小时${minutes}分钟` : `剩 ${hours}小时`;
+  }
+  return `剩 ${Math.max(1, minutes)}分钟`;
+};
+
 export const OrdersView: React.FC = () => {
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const accounts = useAppStore((s) => s.accounts);
@@ -61,6 +79,9 @@ export const OrdersView: React.FC = () => {
   const [activeStatusTab, setActiveStatusTab] = useState<string>('all');
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
+  const [uploadModalOrder, setUploadModalOrder] = useState<Order | null>(null);
+  const [platformOrderIdInput, setPlatformOrderIdInput] = useState<string>('');
+  const [submitting, setSubmitting] = useState<boolean>(false);
 
   // 纯净视口高度自适应：监听表格卡片容器，杜绝 DOM querySelector 与强制同步重排
   useEffect(() => {
@@ -165,6 +186,42 @@ export const OrdersView: React.FC = () => {
     Toast.success(`${label}已复制到剪贴板`);
   };
 
+  // 打开待上传回填单号弹窗 (平台禁止二次修改)
+  const handleOpenUploadModal = (order: Order) => {
+    if (order.platform_order_id) {
+      Toast.warning('外卖单号已绑定，平台禁止修改');
+      return;
+    }
+    setUploadModalOrder(order);
+    setPlatformOrderIdInput('');
+  };
+
+  // 提交/更新外卖单号
+  const handleConfirmSubmitId = async () => {
+    if (!uploadModalOrder) return;
+    const orderIdToSubmit = platformOrderIdInput.trim();
+    if (!orderIdToSubmit) {
+      Toast.warning('请输入外卖平台订单号');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await api.submitPlatformOrderId(uploadModalOrder.id, orderIdToSubmit);
+      if (res.ok) {
+        Toast.success(res.message || '外卖单号已成功绑定！');
+        setUploadModalOrder(null);
+        setPlatformOrderIdInput('');
+        fetchOrders(undefined, true);
+      } else {
+        Toast.error(res.message || '单号提交失败，请重试');
+      }
+    } catch (e: any) {
+      Toast.error(`提交异常: ${e.message || e}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const DEFAULT_PLATFORM_ICONS: Record<string, string> = {
     jingdong: 'https://img10.360buyimg.com/imagetools/jfs/t1/282159/28/8442/32950/67e10a0dFb8e53ae1/3a4d405ef2b69aff.jpg',
     jd: 'https://img10.360buyimg.com/imagetools/jfs/t1/282159/28/8442/32950/67e10a0dFb8e53ae1/3a4d405ef2b69aff.jpg',
@@ -252,10 +309,10 @@ export const OrdersView: React.FC = () => {
     {
       title: '外卖单号 / 审核状态',
       dataIndex: 'status',
-      width: 260,
+      width: 270,
       render: (status: string, row?: Order) => {
         const hasExtId = !!row?.platform_order_id;
-        let badgeColor: 'green' | 'amber' | 'blue' | 'red' | 'grey' = 'grey';
+        let badgeColor: 'green' | 'amber' | 'blue' | 'red' | 'grey' | 'cyan' = 'grey';
         let statusText = '未知状态';
 
         if (status === 'completed') {
@@ -265,8 +322,13 @@ export const OrdersView: React.FC = () => {
           badgeColor = 'amber';
           statusText = '平台审核中';
         } else if (status === 'pending') {
-          badgeColor = 'blue';
-          statusText = '待提交外卖单号';
+          if (hasExtId) {
+            badgeColor = 'cyan';
+            statusText = '已下单待反馈';
+          } else {
+            badgeColor = 'blue';
+            statusText = '待提交外卖单号';
+          }
         } else if (status === 'rejected') {
           badgeColor = 'red';
           statusText = row?.reject_reason ? `已驳回: ${row.reject_reason}` : '已驳回';
@@ -277,18 +339,10 @@ export const OrdersView: React.FC = () => {
 
         const nowSec = Math.floor(Date.now() / 1000);
         const remainingSec = row?.timeout_time ? row.timeout_time - nowSec : null;
-        let countdownStr = '';
-        if (remainingSec !== null) {
-          if (remainingSec > 0) {
-            const m = Math.floor(remainingSec / 60);
-            countdownStr = `剩 ${m} 分钟`;
-          } else {
-            countdownStr = '已超时';
-          }
-        }
+        const countdownStr = formatRemainingTime(remainingSec);
 
         return (
-          <div className="max-w-[260px]">
+          <div className="max-w-[270px]">
             <Space spacing="tight">
               <Tag color={badgeColor} size="small">
                 {statusText}
@@ -302,17 +356,32 @@ export const OrdersView: React.FC = () => {
             <div className="mt-1.5 text-xs font-mono">
               {hasExtId ? (
                 <div className="flex items-center gap-1 text-semi-color-text-1">
-                  <span className="truncate max-w-[170px]">单号: {row?.platform_order_id}</span>
+                  <span className="truncate max-w-[170px]" title={row?.platform_order_id}>
+                    单号: {row?.platform_order_id}
+                  </span>
                   <Button
                     theme="borderless"
                     icon={<IconCopy size="small" />}
                     size="small"
-                    className="p-0.5 ml-1 h-5 flex-shrink-0"
+                    className="p-0.5 ml-0.5 h-5 flex-shrink-0"
                     onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
                   />
                 </div>
               ) : (
-                <span className="text-semi-color-text-3">未绑定外卖单号</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-semi-color-text-3">未绑定外卖单号</span>
+                  {status === 'pending' && (
+                    <Button
+                      theme="light"
+                      type="primary"
+                      size="small"
+                      className="!py-0.5 !px-1.5 text-xs h-5"
+                      onClick={() => row && handleOpenUploadModal(row)}
+                    >
+                      回填单号
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -522,6 +591,45 @@ export const OrdersView: React.FC = () => {
           />
         </div>
       </Card>
+
+      {/* 回填外卖单号弹窗 (禁止二次修改) */}
+      <Modal
+        title="回填外卖单号"
+        visible={!!uploadModalOrder}
+        onOk={handleConfirmSubmitId}
+        onCancel={() => {
+          setUploadModalOrder(null);
+          setPlatformOrderIdInput('');
+        }}
+        confirmLoading={submitting}
+        okText="确认提交单号"
+        cancelText="取消"
+        width={440}
+      >
+        <div className="space-y-3 py-1">
+          <div className="p-2.5 rounded-lg bg-semi-color-fill-0 border border-semi-color-border-subtle text-xs text-semi-color-text-1">
+            <div className="font-semibold text-semi-color-text-0">{uploadModalOrder?.store_name}</div>
+            <div className="mt-1 flex items-center gap-3 text-semi-color-text-2">
+              <span>实付门槛: ¥{uploadModalOrder?.order_money}</span>
+              <span>预计返利: ¥{uploadModalOrder?.rebate_money}</span>
+            </div>
+          </div>
+          <div>
+            <Text size="small" type="secondary" className="block mb-1">
+              请输入外卖平台 (美团/饿了么/京东) 订单号：
+            </Text>
+            <Input
+              placeholder="例如：3002311852210111003"
+              value={platformOrderIdInput}
+              onChange={(val) => setPlatformOrderIdInput(val || '')}
+              autoFocus
+            />
+          </div>
+          <Text size="small" type="tertiary" className="text-[11px] block text-amber-600 dark:text-amber-400">
+            提示: 单号提交后官方将锁定绑定关系，平台禁止二次修改，请务必核对正确。
+          </Text>
+        </div>
+      </Modal>
     </div>
   );
 };
