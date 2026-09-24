@@ -154,6 +154,8 @@ export interface StoreItem {
   percent_plans?: StorePromotion[];
   selected_fixed_pid?: string;
   selected_percent_pid?: string;
+  fixed_left?: number;
+  percent_left?: number;
 }
 
 export interface Order {
@@ -198,7 +200,7 @@ export interface StoreAppointment {
   promotion_id: string;
   status: 'pending' | 'scheduled' | 'primed' | 'monitoring' | 'success' | 'failed' | 'cancelled' | 'expired' | string;
   early_ms: number;
-  task_type?: 'countdown' | 'monitor' | string;
+  task_type?: 'countdown' | 'monitor' | 'name_monitor' | 'keyword' | string;
   start_time?: string;
   until_time?: string;
   notified_31m?: number;
@@ -215,8 +217,36 @@ export interface StoreAppointment {
   redpack_id?: string;
   redpack_name?: string;
   use_advance_card?: number | boolean;
+  keyword?: string;
+  match_mode?: 'contains' | 'exact' | string;
+  min_rebate_price?: number;
+  min_rebate_rate?: number;
+  rebate_mode_filter?: 'all' | 'fixed' | 'percent' | string;
+  auto_stop_on_success?: number | boolean;
+  max_order_money?: number;
+  log_id?: number;
   outcome?: string;
   created_at: string;
+}
+
+export interface NameMonitorPayload {
+  account_key: string;
+  keyword: string;
+  match_mode?: 'contains' | 'exact';
+  platform?: 'all' | 'meituan' | 'eleme';
+  rebate_mode_filter?: 'all' | 'fixed' | 'percent';
+  min_rebate_price?: number;
+  min_rebate_rate?: number;
+  max_order_money?: number;
+  auto_stop_on_success?: number;
+  timeout_sec?: number;
+  check_interval?: number;
+  start_time?: string;
+  until_time?: string;
+  redpack_mode?: number;
+  redpack_id?: string;
+  redpack_name?: string;
+  store_icon?: string;
 }
 
 export interface JobLog {

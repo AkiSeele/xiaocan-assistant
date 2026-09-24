@@ -7,6 +7,7 @@
 """
 import asyncio
 import logging
+import random
 import time
 import uuid
 from datetime import datetime
@@ -564,8 +565,8 @@ async def process_active_appointments() -> bool:
                             t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                             _append_apt_log(aid, linked_log_id, f"[{t_now}] 抢单流程结束: {last_msg}", sync_db=True, status="error")
 
-        # ---------------- 分支三：定时搜索任务 (task_type == 'keyword') ---------------- #
-        elif task_type == "keyword":
+        # ---------------- 分支三：店名监听与定时搜索任务 (name_monitor / keyword) ---------------- #
+        elif task_type in ("name_monitor", "keyword", "keyword_monitor"):
             linked_log_id = int(apt.get("log_id") or 0)
             # 1. 检查是否达到开始时间
             start_ts = _parse_time_today(apt.get("start_time"))
@@ -575,69 +576,213 @@ async def process_active_appointments() -> bool:
             # 2. 检查是否超过截止时间
             until_ts = _parse_time_today(apt.get("until_time"))
             if until_ts and now_ts >= until_ts:
-                outcome_msg = f"已达到设定的定时搜索截止时间 {apt.get('until_time')}，自动结束"
+                outcome_msg = f"已达到设定的店名监听截止时间 {apt.get('until_time')}，自动结束"
                 db.update_appointment(aid, {
                     "status": "expired",
                     "outcome": outcome_msg
                 })
+                invalidate_worker_cache()
                 if linked_log_id > 0:
                     t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 定时搜索截止时间到达 ({apt.get('until_time')})，定时搜索任务结束", sync_db=True, status="error")
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 店名监听截止时间到达 ({apt.get('until_time')})，监听任务自动结束", sync_db=True, status="error")
                 continue
 
-            # 3. 检查频率 (默认每 check_interval 秒搜索一次，最低 10 秒)
-            interval = max(10, int(apt.get("check_interval") or 30))
+            # 3. 检查频率 (默认每 check_interval 秒搜索一次，最低 5 秒)
+            interval = max(5, int(apt.get("check_interval") or 10))
             last_checked = _parse_time_today(apt.get("last_checked_at"))
             if last_checked and (now_ts - last_checked) < interval:
                 continue
 
             db.update_appointment(aid, {"last_checked_at": now_str})
 
-            # 4. 调用小蚕官方微服务实时搜索
+            # 4. 执行双源嗅探与多档位优选
             _apt_poll_counters[aid] = _apt_poll_counters.get(aid, 0) + 1
             poll_cnt = _apt_poll_counters[aid]
+            
+            # 防风控随机微抖动
+            await asyncio.sleep(random.uniform(0.1, 0.4))
+            
+            kw = (apt.get("keyword") or apt.get("store_name") or "").strip()
+            match_mode = apt.get("match_mode") or "contains"
+            target_plat = apt.get("platform") or "all"
+            rebate_mode_filter = apt.get("rebate_mode_filter") or "all"
+            min_rebate_price = float(apt.get("min_rebate_price") or 0.0)
+            min_rebate_rate = float(apt.get("min_rebate_rate") or 0.0)
+            max_order_money = float(apt.get("max_order_money") or 0.0)
+            auto_stop = int(apt.get("auto_stop_on_success") if apt.get("auto_stop_on_success") is not None else 1)
+
+            token = account.get("token")
+            silk_id = account.get("silk_id")
+            user_id = account.get("user_id")
+            city_code = account.get("city_code", 440303)
+            lon = str(account.get("longitude", "114.13166"))
+            lat = str(account.get("latitude", "22.548361"))
+
             try:
-                kw = apt.get("store_name", "").strip()
-                s_res = await client.search_stores(
-                    keyword=kw,
-                    city_code=account.get("city_code", 440303),
-                    longitude=str(account.get("longitude", "114.13166")),
-                    latitude=str(account.get("latitude", "22.548361")),
-                    offset=0,
-                    limit=10,
-                    token=account["token"],
-                    silk_id=account.get("silk_id"),
-                    user_id=account.get("user_id")
-                )
-                prom_list = s_res.get("promotion_list") or []
-                matched = None
-                for p in prom_list:
-                    # 匹配平台
-                    p_plat = "meituan" if p.get("store_platform") == 1 else "eleme"
-                    if apt.get("platform") and apt.get("platform") != p_plat:
+                from ..api.endpoints import _extract_all_promos_from_raw, _normalize_shangjin_item
+
+                search_tasks = [
+                    client.search_stores(
+                        keyword=kw,
+                        city_code=city_code,
+                        longitude=lon,
+                        latitude=lat,
+                        offset=0,
+                        limit=20,
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id
+                    )
+                ]
+                has_sj = False
+                if target_plat in ("all", "meituan"):
+                    has_sj = True
+                    search_tasks.append(
+                        client.search_shangjin_stores(
+                            keyword=kw,
+                            latitude=float(lat),
+                            longitude=float(lon),
+                            token=token,
+                            silk_id=silk_id,
+                            user_id=user_id,
+                            city_code=city_code,
+                            sort_type=3
+                        )
+                    )
+
+                results = await asyncio.gather(*search_tasks, return_exceptions=True)
+                search_res = results[0] if len(results) > 0 and not isinstance(results[0], Exception) else {}
+                sj_res = results[1] if has_sj and len(results) > 1 and not isinstance(results[1], Exception) else {}
+
+                candidates = []
+                # 解析常规活动列表
+                raw_proms = search_res.get("promotions") or search_res.get("promotion_list") or search_res.get("feed_items") or []
+                for p in raw_proms:
+                    extracted = _extract_all_promos_from_raw(p, is_search=True, user_lat=float(lat), user_lon=float(lon))
+                    candidates.extend(extracted)
+
+                # 解析美团赏金按比例活动
+                if isinstance(sj_res, dict):
+                    pois = sj_res.get("poi_list") or []
+                    for poi in pois:
+                        sj_items = _normalize_shangjin_item(poi, user_lat=float(lat), user_lon=float(lon))
+                        candidates.extend(sj_items)
+
+                # 规则过滤与匹配
+                matched_candidates = []
+                total_found_stores = set()
+                kw_lower = kw.lower()
+
+                for c in candidates:
+                    s_name = (c.get("name") or "").strip()
+                    if not s_name:
                         continue
-                    left_num = p.get("left_number") or p.get("meituan_left_number") or p.get("eleme_left_number") or 0
-                    if left_num > 0:
-                        matched = p
-                        break
+                    total_found_stores.add(s_name)
+
+                    # 1. 店名匹配规则
+                    if match_mode == "exact":
+                        if s_name.lower() != kw_lower:
+                            continue
+                    else:
+                        if kw_lower not in s_name.lower():
+                            continue
+
+                    # 2. 平台过滤
+                    c_plat = c.get("platform")
+                    if target_plat != "all" and c_plat != target_plat:
+                        continue
+
+                    # 3. 返利模式过滤 (all / fixed / percent)
+                    c_rtype = c.get("rebate_type")
+                    if rebate_mode_filter != "all" and c_rtype != rebate_mode_filter:
+                        continue
+
+                    # 4. 最低返利金额
+                    c_rebate_price = float(c.get("rebate_price") or 0.0)
+                    if min_rebate_price > 0 and c_rebate_price < min_rebate_price:
+                        continue
+
+                    # 5. 最低返利比例
+                    c_rebate_rate = float(c.get("rebate_rate") or 0.0)
+                    if min_rebate_rate > 0 and c_rebate_rate < min_rebate_rate:
+                        continue
+
+                    # 6. 最高起送/门槛金额
+                    c_order_money = float(c.get("order_money") or 0.0)
+                    if max_order_money > 0 and c_order_money > max_order_money:
+                        continue
+
+                    # 7. 库存名额
+                    c_left = int(c.get("left_number") or 0)
+                    if c_left <= 0:
+                        continue
+
+                    matched_candidates.append(c)
+
+                # 按最优返利比选 (优先返利金额最高，次选返利比例最高)
+                matched_candidates.sort(
+                    key=lambda x: (float(x.get("rebate_price") or 0.0), float(x.get("rebate_rate") or 0.0)),
+                    reverse=True
+                )
 
                 t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                step_str = f"[{t_now}] 第 {poll_cnt} 次商户检索: 关键词「{kw}」，搜索结果返回 {len(prom_list)} 家商户，持续跟踪中..."
-                if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt % 3 == 0 or matched is not None), status="running")
+                best_item = matched_candidates[0] if matched_candidates else None
 
-                if matched:
-                    logger.info(f"定时搜索 #{aid} 搜到目标商户【{matched.get('store_name')}】(pid={matched.get('promotion_id')})，立即触发官方抢单！")
+                if best_item:
+                    store_label = best_item.get("name", kw)
+                    rebate_label = best_item.get("rebate_desc", "")
+                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探成功: 检索到「{store_label}」有可抢名额 ({rebate_label}, 剩余库存 {best_item.get('left_number')} 份)，立即触发闪电抢单！"
+                    logger.info(f"店名监听 #{aid} 命中可用方案【{store_label}】({rebate_label})，立即触发抢单！")
+                    if linked_log_id > 0:
+                        _append_apt_log(aid, linked_log_id, step_str, sync_db=True, status="running")
+
                     grab_apt = dict(apt)
-                    grab_apt["promotion_id"] = str(matched["promotion_id"])
-                    grab_apt["store_name"] = matched.get("store_name", kw)
-                    res = await execute_grab_for_appointment(grab_apt, account, advance=False, action_source="store_keyword")
-                    if res["ok"]:
-                        logger.info(f"定时搜索 #{aid} 抢单成功！")
+                    grab_apt["promotion_id"] = str(best_item.get("promotion_id", ""))
+                    grab_apt["store_id"] = str(best_item.get("store_id", "0"))
+                    grab_apt["store_name"] = store_label
+                    grab_apt["store_icon"] = best_item.get("store_icon", "")
+                    grab_apt["platform"] = best_item.get("platform", "meituan")
+                    grab_apt["store_platform"] = int(best_item.get("store_platform") or (1 if best_item.get("platform") == "meituan" else 2))
+                    grab_apt["order_money"] = float(best_item.get("order_money") or 0.0)
+                    grab_apt["rebate_price"] = float(best_item.get("rebate_price") or 0.0)
+                    grab_apt["rebate_desc"] = rebate_label
+                    grab_apt["rebate_type"] = best_item.get("rebate_type", "fixed")
+
+                    res = await execute_grab_for_appointment(grab_apt, account, advance=False, action_source="store_monitor")
+                    t_grab = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    if res.get("ok"):
+                        succ_msg = f"抢单成功: 【{store_label}】{rebate_label}"
+                        logger.info(f"店名监听 #{aid} {succ_msg}")
+                        if auto_stop:
+                            db.update_appointment(aid, {
+                                "status": "completed",
+                                "outcome": succ_msg,
+                                "store_name": store_label,
+                                "promotion_id": str(best_item.get("promotion_id", ""))
+                            })
+                            invalidate_worker_cache()
+                            if linked_log_id > 0:
+                                _append_apt_log(aid, linked_log_id, f"[{t_grab}] {succ_msg}，任务已达成并自动停止", sync_db=True, status="success")
+                        else:
+                            if linked_log_id > 0:
+                                _append_apt_log(aid, linked_log_id, f"[{t_grab}] {succ_msg}，保持持续监听模式", sync_db=True, status="running")
                     else:
-                        logger.warning(f"定时搜索 #{aid} 抢单失败: {res['message']}，继续保持搜索")
+                        fail_msg = res.get("message") or "名额被抢占或网络响应延迟"
+                        logger.warning(f"店名监听 #{aid} 抢单尝试未成功: {fail_msg}")
+                        if linked_log_id > 0:
+                            _append_apt_log(aid, linked_log_id, f"[{t_grab}] 抢单尝试返回: {fail_msg}，继续保持高频蹲守", sync_db=True, status="running")
+                else:
+                    # 未找到符合条件的方案
+                    store_count = len(total_found_stores)
+                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探: 关键词「{kw}」，发现 {store_count} 家商户 (当前暂无满足条件的剩余名额)，持续保持监听..."
+                    if linked_log_id > 0:
+                        _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt % 3 == 0), status="running")
+
             except Exception as se:
-                logger.debug(f"定时搜索执行异常: {se}")
+                logger.warning(f"店名监听 #{aid} 执行异常: {se}")
+                if linked_log_id > 0:
+                    t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    _append_apt_log(aid, linked_log_id, f"[{t_err}] 嗅探执行异常: {se}，将在下次周期重试", sync_db=False, status="running")
 
     return has_primed
 

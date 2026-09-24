@@ -17,8 +17,7 @@ import {
   Spin,
   Select,
   RadioGroup,
-  Radio,
-  Input
+  Radio
 } from '@douyinfe/semi-ui';
 import {
   IconPlay,
@@ -47,6 +46,11 @@ import { useOnActivated } from '../utils/useOnActivated';
 import type { JobLog, StoreAppointment, OrderStats, DashboardChartData, XiaoCanMessage, XiaoCanMessageChannel, Order, TaskItem } from '../types';
 
 const { Text } = Typography;
+
+const cleanEmoji = (text?: string): string => {
+  if (!text) return '';
+  return text.replace(/[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}]|[\u{2300}-\u{23FF}]|[\u{2B50}-\u{2B55}]|[\u{FE00}-\u{FE0F}]|[\u{200D}]/gu, '').trim();
+};
 
 // 智能提取日志中的有效业务执行结果摘要 (过滤无意义的启动时间戳行与前缀)
 const getLogSummary = (txt: string): string => {
@@ -165,9 +169,6 @@ export const Dashboard: React.FC = () => {
   // 待上传外卖订单 (官方限额 3 笔) 状态
   const [pendingOrders, setPendingOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState<boolean>(false);
-  const [uploadModalOrder, setUploadModalOrder] = useState<Order | null>(null);
-  const [platformOrderIdInput, setPlatformOrderIdInput] = useState<string>('');
-  const [submittingPlatformId, setSubmittingPlatformId] = useState<boolean>(false);
   const [pendingAccountFilter, setPendingAccountFilter] = useState<'current' | 'all'>('current');
 
   // 本账号待执行与进行中任务状态
@@ -292,42 +293,6 @@ export const Dashboard: React.FC = () => {
     }
   };
 
-  // 打开待上传订单回填单号弹窗 (平台禁止二次修改)
-  const handleOpenUploadModal = (order: Order) => {
-    if (order.platform_order_id) {
-      Toast.warning('外卖单号已绑定，平台禁止修改');
-      return;
-    }
-    setUploadModalOrder(order);
-    setPlatformOrderIdInput('');
-  };
-
-  // 确认提交外卖平台单号
-  const handleSubmitPlatformId = async () => {
-    if (!uploadModalOrder) return;
-    const orderIdToSubmit = platformOrderIdInput.trim();
-    if (!orderIdToSubmit) {
-      Toast.warning('请输入外卖平台订单编号');
-      return;
-    }
-    setSubmittingPlatformId(true);
-    try {
-      const res = await api.submitPlatformOrderId(uploadModalOrder.id, orderIdToSubmit);
-      if (res.ok) {
-        Toast.success('外卖单号提交成功，已进入官方审核！');
-        setUploadModalOrder(null);
-        setPlatformOrderIdInput('');
-        fetchPendingOrders();
-        loadDashboardData(true, true);
-      } else {
-        Toast.error(res.message || '提交单号失败');
-      }
-    } catch (e: any) {
-      Toast.error(`提交异常: ${e.message || e}`);
-    } finally {
-      setSubmittingPlatformId(false);
-    }
-  };
 
   // 批量推送消息提醒 (接入 Semi Design 全局 Notification 组件)
   const handleNotifyAllUnread = () => {
@@ -718,7 +683,7 @@ export const Dashboard: React.FC = () => {
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span
-                className="font-bold text-sm sm:text-base text-semi-color-text-0 truncate max-w-[200px] cursor-pointer hover:text-semi-color-primary transition-colors"
+                className="font-bold text-base sm:text-lg text-semi-color-text-0 truncate max-w-[240px] cursor-pointer hover:text-semi-color-primary transition-colors"
                 onClick={() => setActiveTab('accounts')}
               >
                 {currentAccount?.nickname || '未选择主控账号'}
@@ -727,13 +692,13 @@ export const Dashboard: React.FC = () => {
                 color={currentAccount?.is_plus ? 'amber' : 'blue'}
                 size="small"
                 shape="circle"
-                className="font-semibold text-[11px]"
+                className="font-semibold text-xs"
               >
                 {currentAccount?.is_plus
                   ? `SVIP${currentAccount?.vip_level || 1}`
                   : `VIP${currentAccount?.vip_level || 1}`}
               </Tag>
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium shrink-0">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium shrink-0">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
                 <span>主控托管中</span>
               </div>
@@ -744,7 +709,7 @@ export const Dashboard: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center gap-3 text-xs text-semi-color-text-2 mt-0.5 flex-wrap">
+            <div className="flex items-center gap-3 text-xs text-semi-color-text-2 mt-1 flex-wrap">
               <span>
                 密钥: <span className="font-mono text-semi-color-text-1">{currentAccount?.key ? `${currentAccount.key.slice(0, 10)}...` : '无'}</span>
               </span>
@@ -756,30 +721,6 @@ export const Dashboard: React.FC = () => {
                   成长值: <span className="font-mono text-semi-color-text-1">{(currentAccount?.vip_score || 0).toLocaleString()}</span>
                 </span>
               )}
-            </div>
-          </div>
-        </div>
-
-        {/* 中间：主控核心资产看板 (低饱和中性微看板，大字号聚焦真金白银) */}
-        <div className="hidden md:flex items-center gap-3.5 bg-semi-color-fill-0/60 border border-semi-color-border-subtle rounded-xl px-4 py-1.5 shrink-0">
-          <div className="text-center px-1">
-            <div className="text-[11px] text-semi-color-text-2">钱包余额</div>
-            <div className="font-mono font-bold text-sm text-emerald-600 dark:text-emerald-400">
-              ¥{((currentAccount?.silk || 0) / 100).toFixed(2)}
-            </div>
-          </div>
-          <div className="w-px h-6 bg-semi-color-border/60" />
-          <div className="text-center px-1">
-            <div className="text-[11px] text-semi-color-text-2">累计提现</div>
-            <div className="font-mono font-bold text-sm text-semi-color-text-0">
-              ¥{((currentAccount?.withdraw_total || 0) / 100).toFixed(2)}
-            </div>
-          </div>
-          <div className="w-px h-6 bg-semi-color-border/60" />
-          <div className="text-center px-1">
-            <div className="text-[11px] text-semi-color-text-2">元宝积分</div>
-            <div className="font-mono font-bold text-sm text-amber-600 dark:text-amber-400">
-              {(currentAccount?.yb_point || 0).toLocaleString()}
             </div>
           </div>
         </div>
@@ -851,7 +792,7 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* 4 大核心资产 Bento 卡片 (紧凑型大字号，高度严格受控) */}
+      {/* 4 大核心资产 Bento 卡片 (大字号聚焦核心资产与调度) */}
       <Row gutter={[10, 10]} className="w-full !mx-0 shrink-0">
         {/* 1. 累计到账返现 */}
         <Col xs={12} sm={6}>
@@ -864,26 +805,26 @@ export const Dashboard: React.FC = () => {
             <Card
               shadows="hover"
               className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '8px 12px' }}
+              bodyStyle={{ padding: '12px 14px' }}
             >
               <div className="flex justify-between items-center">
                 <Space align="center" spacing="tight">
-                  <div className="w-6 h-6 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                     <IconCheckCircleStroked size="small" />
                   </div>
-                  <Text type="secondary" size="small" className="text-xs font-medium">累计到账返现</Text>
+                  <Text type="secondary" className="text-sm font-semibold">累计到账返现</Text>
                 </Space>
                 <Tooltip content="已成功核销并结算入账的霸王餐总返利">
                   <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
                 </Tooltip>
               </div>
-              <div className="flex items-baseline gap-1 my-0.5">
-                <span className="text-xs font-semibold text-semi-color-text-2">¥</span>
-                <span className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-semi-color-text-0">
+              <div className="flex items-baseline gap-1 my-1">
+                <span className="text-sm font-semibold text-semi-color-text-2">¥</span>
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
                   {orderStats.total_rebate.toFixed(2)}
                 </span>
               </div>
-              <Text type="tertiary" size="small" className="text-[11px] block truncate">
+              <Text type="tertiary" size="small" className="text-xs block truncate">
                 已结算 <span className="text-semi-color-text-1 font-medium">{orderStats.completed_orders}</span> 笔订单
               </Text>
             </Card>
@@ -901,26 +842,26 @@ export const Dashboard: React.FC = () => {
             <Card
               shadows="hover"
               className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '8px 12px' }}
+              bodyStyle={{ padding: '12px 14px' }}
             >
               <div className="flex justify-between items-center">
                 <Space align="center" spacing="tight">
-                  <div className="w-6 h-6 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                     <IconPriceTag size="small" />
                   </div>
-                  <Text type="secondary" size="small" className="text-xs font-medium">在途/待入账</Text>
+                  <Text type="secondary" className="text-sm font-semibold">在途/待入账</Text>
                 </Space>
                 <Tooltip content="已提交外卖单号，正由小蚕与商家审核中的返利金额">
                   <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
                 </Tooltip>
               </div>
-              <div className="flex items-baseline gap-1 my-0.5">
-                <span className="text-xs font-semibold text-semi-color-text-2">¥</span>
-                <span className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-semi-color-text-0">
+              <div className="flex items-baseline gap-1 my-1">
+                <span className="text-sm font-semibold text-semi-color-text-2">¥</span>
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
                   {orderStats.pending_rebate.toFixed(2)}
                 </span>
               </div>
-              <Text type="tertiary" size="small" className="text-[11px] block truncate">
+              <Text type="tertiary" size="small" className="text-xs block truncate">
                 审核中 <span className="text-semi-color-text-1 font-medium">{orderStats.pending_orders}</span> 单 · 预计2~24h
               </Text>
             </Card>
@@ -938,26 +879,26 @@ export const Dashboard: React.FC = () => {
             <Card
               shadows="hover"
               className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '8px 12px' }}
+              bodyStyle={{ padding: '12px 14px' }}
             >
               <div className="flex justify-between items-center">
                 <Space align="center" spacing="tight">
-                  <div className="w-6 h-6 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
                     <IconShoppingBag size="small" />
                   </div>
-                  <Text type="secondary" size="small" className="text-xs font-medium">今日已省外卖费</Text>
+                  <Text type="secondary" className="text-sm font-semibold">今日已省外卖费</Text>
                 </Space>
                 <Tooltip content="今日已实际核销到账的霸王餐返现总额">
                   <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
                 </Tooltip>
               </div>
-              <div className="flex items-baseline gap-1 my-0.5">
-                <span className="text-xs font-semibold text-semi-color-text-2">¥</span>
-                <span className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-semi-color-text-0">
+              <div className="flex items-baseline gap-1 my-1">
+                <span className="text-sm font-semibold text-semi-color-text-2">¥</span>
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
                   {(chartData?.today_summary?.today_savings || 0).toFixed(2)}
                 </span>
               </div>
-              <Text type="tertiary" size="small" className="text-[11px] block truncate">
+              <Text type="tertiary" size="small" className="text-xs block truncate">
                 今日到账 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)}</span> 笔
                 {(chartData?.today_summary?.today_pending_orders ?? 0) > 0 && (
                   <span> · 在途 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_pending_orders}</span> 单</span>
@@ -978,26 +919,26 @@ export const Dashboard: React.FC = () => {
             <Card
               shadows="hover"
               className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '8px 12px' }}
+              bodyStyle={{ padding: '12px 14px' }}
             >
               <div className="flex justify-between items-center">
                 <Space align="center" spacing="tight">
-                  <div className="w-6 h-6 rounded-md bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                  <div className="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
                     <IconPlay size="small" />
                   </div>
-                  <Text type="secondary" size="small" className="text-xs font-medium">任务调度中心</Text>
+                  <Text type="secondary" className="text-sm font-semibold">任务调度中心</Text>
                 </Space>
                 <Tooltip content="APScheduler 毫秒级调度中心全天候定时任务">
                   <IconActivity size="small" className="text-purple-500 cursor-pointer" />
                 </Tooltip>
               </div>
-              <div className="flex items-baseline gap-1 my-0.5">
-                <span className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-semi-color-text-0">
+              <div className="flex items-baseline gap-1 my-1">
+                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
                   {enabledTaskCount}
                 </span>
                 <span className="text-xs font-medium text-semi-color-text-2">/ {totalTaskCount} 项开启</span>
               </div>
-              <Text type="tertiary" size="small" className="text-[11px] flex items-center gap-1.5 truncate">
+              <Text type="tertiary" size="small" className="text-xs flex items-center gap-1.5 truncate">
                 <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0"></span>
                 <span className="truncate">
                   {enabledTaskCount > 0 ? '定时秒杀就绪' : '任务待开启'}
@@ -1021,14 +962,14 @@ export const Dashboard: React.FC = () => {
                   <div className="w-5 h-5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
                     <IconShoppingBag size="extra-small" />
                   </div>
-                  <span className="font-bold text-sm text-semi-color-text-0">
+                  <span className="font-bold text-base text-semi-color-text-0">
                     霸王餐待办工单
                   </span>
                   <Tag
                     color={pendingOrders.length > 0 ? 'amber' : 'grey'}
                     size="small"
                     shape="circle"
-                    className="text-[10px]"
+                    className="text-xs"
                   >
                     {pendingOrders.length > 0 ? `${pendingOrders.length}/3 待处理` : '0/3 官方限额'}
                   </Tag>
@@ -1107,37 +1048,48 @@ export const Dashboard: React.FC = () => {
                         </Avatar>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-bold text-xs text-semi-color-text-0 truncate max-w-[150px]" title={order.store_name}>
-                              {order.store_name}
-                            </span>
-                            <Tag size="small" color={order.platform === 'meituan' ? 'amber' : 'blue'} className="text-[9px] scale-95 origin-left shrink-0">
+                            <Tooltip content={`点击复制: ${cleanEmoji(order.store_name)}`} position="top" showArrow>
+                              <span
+                                className="font-bold text-sm text-semi-color-text-0 truncate max-w-[200px] cursor-pointer hover:text-semi-color-primary transition-colors"
+                                onClick={() => {
+                                  const sname = cleanEmoji(order.store_name);
+                                  if (sname) {
+                                    navigator.clipboard.writeText(sname);
+                                    Toast.success(`已复制店铺名称: ${sname}`);
+                                  }
+                                }}
+                              >
+                                {cleanEmoji(order.store_name)}
+                              </span>
+                            </Tooltip>
+                            <Tag size="small" color={order.platform === 'meituan' ? 'amber' : 'blue'} className="shrink-0">
                               {order.platform === 'meituan' ? '美团' : '饿了么'}
                             </Tag>
                             {isBound ? (
-                              <Tag size="small" color="cyan" className="text-[9px] scale-95 origin-left shrink-0">
+                              <Tag size="small" color="cyan" className="shrink-0">
                                 已下单待反馈
                               </Tag>
                             ) : (
-                              <Tag size="small" color="amber" className="text-[9px] scale-95 origin-left shrink-0">
+                              <Tag size="small" color="amber" className="shrink-0">
                                 待提交外卖单号
                               </Tag>
                             )}
                             {acc && accounts.length > 1 && (
-                              <Tag size="small" color="grey" type="light" className="text-[9px] truncate max-w-[60px] shrink-0">
+                              <Tag size="small" color="grey" type="light" className="truncate max-w-[80px] shrink-0">
                                 {acc.nickname}
                               </Tag>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-semi-color-text-2 flex-wrap">
+                          <div className="flex items-center gap-2 mt-1 text-xs text-semi-color-text-2 flex-wrap">
                             <span className="text-emerald-600 dark:text-emerald-400 font-bold font-mono">
                               返 ¥{order.rebate_money?.toFixed(2) || '0.00'}
                             </span>
                             <span>门槛 ¥{order.order_money}</span>
-                            <Tag size="small" color={getConditionTagColor(order.condition)} className="text-[9px]">
+                            <Tag size="small" color={getConditionTagColor(order.condition)}>
                               {order.condition || '用餐反馈'}
                             </Tag>
                             {isBound && (
-                              <span className="font-mono text-[10px] text-semi-color-text-1">
+                              <span className="font-mono text-xs text-semi-color-text-1">
                                 单号: {order.platform_order_id}
                               </span>
                             )}
@@ -1161,21 +1113,19 @@ export const Dashboard: React.FC = () => {
                           size="small"
                           color="cyan"
                           type="light"
-                          className="shrink-0 text-[10px] font-medium !py-0.5"
+                          className="shrink-0 text-xs font-medium !py-0.5"
                         >
                           待送达反馈
                         </Tag>
                       ) : (
-                        <Button
-                          theme="solid"
-                          type="primary"
+                        <Tag
                           size="small"
-                          icon={<IconTick />}
-                          onClick={() => handleOpenUploadModal(order)}
-                          className="shrink-0 text-xs font-semibold bg-amber-500 hover:bg-amber-600 border-amber-500 text-white !py-1 !h-auto"
+                          color="amber"
+                          type="light"
+                          className="shrink-0 text-xs font-medium !py-0.5"
                         >
-                          回填单号
-                        </Button>
+                          待APP填单
+                        </Tag>
                       )}
                     </div>
                   );
@@ -1187,7 +1137,7 @@ export const Dashboard: React.FC = () => {
                   <IconCheckCircleStroked className="text-emerald-500 shrink-0" size="small" />
                   <div className="text-xs min-w-0">
                     <span className="text-semi-color-text-1 font-medium">当前无待处理工单</span>
-                    <span className="text-semi-color-text-2 ml-1 hidden sm:inline">(官方限额 3 笔，抢单后请在此回填外卖单号)</span>
+                    <span className="text-semi-color-text-2 ml-1 hidden sm:inline">(官方限额 3 笔，抢单后请在小蚕APP回填外卖单号)</span>
                   </div>
                 </div>
                 <Button
@@ -1203,10 +1153,10 @@ export const Dashboard: React.FC = () => {
               </div>
             )}
 
-            <div className="pt-1 mt-auto shrink-0 border-t border-semi-color-border/60 flex items-center justify-between text-[11px] text-semi-color-text-2">
+            <div className="pt-1.5 mt-auto shrink-0 border-t border-semi-color-border/60 flex items-center justify-between text-xs text-semi-color-text-2">
               <span className="flex items-center gap-1 text-semi-color-text-2">
                 <IconAlertCircle size="extra-small" className="text-amber-500" />
-                抢单后请在规定时限内完成下单并回填 (单号绑定后锁定，禁止修改)
+                抢单后请在规定时限内前往小蚕APP完成下单并绑定单号
               </span>
               <span
                 className="text-semi-color-primary cursor-pointer hover:underline"
@@ -1225,10 +1175,10 @@ export const Dashboard: React.FC = () => {
                   <div className="w-5 h-5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                     <IconBolt size="extra-small" />
                   </div>
-                  <span className="font-bold text-sm text-semi-color-text-0">
+                  <span className="font-bold text-base text-semi-color-text-0">
                     今日自动化守护
                   </span>
-                  <Tag color="cyan" size="small" shape="circle" className="text-[10px]">
+                  <Tag color="cyan" size="small" shape="circle" className="text-xs">
                     已开启 {enabledTaskCount} 项
                   </Tag>
                 </div>
@@ -1342,31 +1292,44 @@ export const Dashboard: React.FC = () => {
 
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-semibold text-xs text-semi-color-text-0 truncate max-w-[150px]" title={t.label}>
-                              {t.label}
-                            </span>
-                            <Tag size="small" color={t.categoryColor} className="text-[9px] scale-95 origin-left shrink-0">
+                            <Tooltip content={isAppt ? `点击复制: ${cleanEmoji(t.label)}` : t.label} position="top" showArrow>
+                              <span
+                                className={`font-semibold text-sm text-semi-color-text-0 truncate max-w-[180px] ${isAppt ? 'cursor-pointer hover:text-semi-color-primary transition-colors' : ''}`}
+                                onClick={() => {
+                                  if (isAppt) {
+                                    const sname = cleanEmoji(t.label);
+                                    if (sname) {
+                                      navigator.clipboard.writeText(sname);
+                                      Toast.success(`已复制店铺名称: ${sname}`);
+                                    }
+                                  }
+                                }}
+                              >
+                                {cleanEmoji(t.label)}
+                              </span>
+                            </Tooltip>
+                            <Tag size="small" color={t.categoryColor} className="shrink-0">
                               {t.categoryLabel}
                             </Tag>
                             {t.vip && (
-                              <Tag size="small" color="purple" type="light" className="text-[9px] scale-95 origin-left shrink-0">
+                              <Tag size="small" color="purple" type="light" className="shrink-0">
                                 {t.vip}
                               </Tag>
                             )}
                             {t.platform && (
-                              <Tag size="small" color={t.platform === 'meituan' ? 'amber' : 'blue'} className="text-[9px] scale-95 origin-left shrink-0">
+                              <Tag size="small" color={t.platform === 'meituan' ? 'amber' : 'blue'} className="shrink-0">
                                 {t.platform === 'meituan' ? '美团' : '饿了么'}
                               </Tag>
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-semi-color-text-2 flex-wrap">
+                          <div className="flex items-center gap-2 mt-1 text-xs text-semi-color-text-2 flex-wrap">
                             <span className="flex items-center gap-0.5">
                               <IconClock size="extra-small" />
                               {t.timeText}
                             </span>
                             {t.nextRunTime && (
-                              <span className="text-semi-color-primary font-mono text-[10px]">
+                              <span className="text-semi-color-primary font-mono text-xs">
                                 下次: {t.nextRunTime.split(' ')[1] || t.nextRunTime}
                               </span>
                             )}
@@ -1382,7 +1345,7 @@ export const Dashboard: React.FC = () => {
                       <div className="flex items-center gap-1.5 shrink-0">
                         {isAppt ? (
                           <div className="flex items-center gap-1">
-                            <Tag size="small" color={t.statusColor} className="text-[10px]">
+                            <Tag size="small" color={t.statusColor}>
                               {t.statusText}
                             </Tag>
                             <Button
@@ -1435,7 +1398,7 @@ export const Dashboard: React.FC = () => {
             </div>
 
             {/* 卡片底栏 */}
-            <div className="pt-1.5 mt-auto shrink-0 border-t border-semi-color-border/60 flex items-center justify-between text-[11px] text-semi-color-text-2">
+            <div className="pt-1.5 mt-auto shrink-0 border-t border-semi-color-border/60 flex items-center justify-between text-xs text-semi-color-text-2">
               <span className="flex items-center gap-1">
                 <IconActivity size="extra-small" className="text-semi-color-primary" />
                 秒杀抢单提前 25 秒自动压枪 · 毫秒级时钟校准
@@ -1464,18 +1427,18 @@ export const Dashboard: React.FC = () => {
                 >
                   <Radio value="feed">
                     <span className="text-xs font-medium">运行动态</span>
-                    <Tag size="small" color="blue" shape="circle" className="ml-1 text-[10px]">
+                    <Tag size="small" color="blue" shape="circle" className="ml-1 text-xs">
                       {recentLogs.length}
                     </Tag>
                   </Radio>
                   <Radio value="messages">
                     <span className="text-xs font-medium">官方消息</span>
                     {messagesUnreadTotal > 0 ? (
-                      <Tag size="small" color="red" shape="circle" className="ml-1 text-[10px] font-bold">
+                      <Tag size="small" color="red" shape="circle" className="ml-1 text-xs font-bold">
                         {messagesUnreadTotal}
                       </Tag>
                     ) : (
-                      <Tag size="small" color="grey" shape="circle" className="ml-1 text-[10px]">
+                      <Tag size="small" color="grey" shape="circle" className="ml-1 text-xs">
                         0
                       </Tag>
                     )}
@@ -1602,17 +1565,17 @@ export const Dashboard: React.FC = () => {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="font-mono text-[11px] text-semi-color-text-2 shrink-0">
+                              <span className="font-mono text-xs text-semi-color-text-2 shrink-0">
                                 {log.created_at?.split(' ')[1] || log.created_at}
                               </span>
                               <div className="w-4 h-4 rounded bg-semi-color-fill-0 flex items-center justify-center shrink-0">
                                 <TaskIcon taskId={log.task_id} className="w-3.5 h-3.5" />
                               </div>
-                              <span className="font-bold text-xs text-semi-color-text-0 truncate max-w-[120px]">
+                              <span className="font-bold text-sm text-semi-color-text-0 truncate max-w-[140px]">
                                 {taskTitle}
                               </span>
                               {acc && (
-                                <Tag size="small" color="grey" type="light" className="text-[9px] shrink-0 truncate max-w-[60px]">
+                                <Tag size="small" color="grey" type="light" className="shrink-0 truncate max-w-[80px]">
                                   {acc.nickname}
                                 </Tag>
                               )}
@@ -1620,15 +1583,15 @@ export const Dashboard: React.FC = () => {
 
                             <div className="flex items-center gap-1 shrink-0">
                               {log.status === 'running' ? (
-                                <Tag color="cyan" prefixIcon={<IconSpin spin />} size="small" className="text-[10px]">
+                                <Tag color="cyan" prefixIcon={<IconSpin spin />} size="small">
                                   进行中
                                 </Tag>
                               ) : log.status === 'success' ? (
-                                <Tag color="green" prefixIcon={<IconCheckCircleStroked />} size="small" className="text-[10px]">
+                                <Tag color="green" prefixIcon={<IconCheckCircleStroked />} size="small">
                                   成功
                                 </Tag>
                               ) : (
-                                <Tag color="red" prefixIcon={<IconAlertCircle />} size="small" className="text-[10px]">
+                                <Tag color="red" prefixIcon={<IconAlertCircle />} size="small">
                                   异常
                                 </Tag>
                               )}
@@ -1636,7 +1599,7 @@ export const Dashboard: React.FC = () => {
                             </div>
                           </div>
 
-                          <div className="mt-1 text-xs text-semi-color-text-1 group-hover:text-semi-color-text-0 transition-colors line-clamp-1 break-all">
+                          <div className="mt-1.5 text-xs text-semi-color-text-1 group-hover:text-semi-color-text-0 transition-colors line-clamp-1 break-all">
                             {summary}
                           </div>
                         </div>
@@ -1653,7 +1616,7 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 {/* 动态底栏 */}
-                <div className="shrink-0 pt-1.5 pb-1 px-3 mt-auto border-t border-semi-color-border/60 flex justify-between items-center text-[11px] text-semi-color-text-2">
+                <div className="shrink-0 pt-1.5 pb-1 px-3 mt-auto border-t border-semi-color-border/60 flex justify-between items-center text-xs text-semi-color-text-2">
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
                     <span>调度就绪 · 点击任一流水可查阅完整执行控制台</span>
@@ -1680,7 +1643,7 @@ export const Dashboard: React.FC = () => {
                     }}
                   >
                     <Radio value={0}>
-                      <span className="text-[11px]">全部</span>
+                      <span className="text-xs">全部</span>
                     </Radio>
                     {[1, 2, 3, 4].map((cid) => {
                       const cMeta = CHANNEL_META[cid];
@@ -1688,9 +1651,9 @@ export const Dashboard: React.FC = () => {
                       const unread = ch?.unread ?? 0;
                       return (
                         <Radio key={cid} value={cid}>
-                          <span className="text-[11px]">{cMeta.name}</span>
+                          <span className="text-xs">{cMeta.name}</span>
                           {unread > 0 && (
-                            <span className="ml-0.5 text-[9px] text-red-500 font-bold">
+                            <span className="ml-0.5 text-xs text-red-500 font-bold">
                               ({unread})
                             </span>
                           )}
@@ -1773,24 +1736,24 @@ export const Dashboard: React.FC = () => {
 
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5 w-full">
-                              <Tag color={meta.color} size="small" shape="square" className="text-[9px] shrink-0">
+                              <Tag color={meta.color} size="small" shape="square" className="shrink-0">
                                 {meta.name}
                               </Tag>
                               {msg.object_name && (
                                 <Tooltip content={msg.object_name}>
-                                  <Tag color="teal" size="small" className="text-[9px] truncate max-w-[120px] shrink-0">
+                                  <Tag color="teal" size="small" className="truncate max-w-[120px] shrink-0">
                                     {msg.object_name}
                                   </Tag>
                                 </Tooltip>
                               )}
-                              <span className={`text-xs truncate ${isUnread ? 'text-semi-color-text-0 font-semibold' : 'text-semi-color-text-1 font-medium'}`}>
+                              <span className={`text-sm truncate ${isUnread ? 'text-semi-color-text-0 font-semibold' : 'text-semi-color-text-1 font-medium'}`}>
                                 {msg.title}
                               </span>
-                              <span className="ml-auto text-[10px] font-mono text-semi-color-text-2 shrink-0">
+                              <span className="ml-auto text-xs font-mono text-semi-color-text-2 shrink-0">
                                 {formatMsgTime(msg.create_time)}
                               </span>
                             </div>
-                            <p className="text-xs text-semi-color-text-2 line-clamp-2 leading-relaxed mt-0.5 select-text">
+                            <p className="text-xs text-semi-color-text-2 line-clamp-2 leading-relaxed mt-1 select-text">
                               {msg.content}
                             </p>
                           </div>
@@ -1801,7 +1764,7 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 {/* 消息底栏 */}
-                <div className="shrink-0 pt-1.5 pb-1 px-3 mt-auto border-t border-semi-color-border/60 flex justify-between items-center text-[11px] text-semi-color-text-2">
+                <div className="shrink-0 pt-1.5 pb-1 px-3 mt-auto border-t border-semi-color-border/60 flex justify-between items-center text-xs text-semi-color-text-2">
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
                     <span>直连 SilkwormMessageCenter 微服务</span>
@@ -1816,81 +1779,7 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* 回填外卖单号弹窗 (禁止二次修改) */}
-      <Modal
-        visible={Boolean(uploadModalOrder)}
-        title="回填外卖订单编号"
-        onCancel={() => setUploadModalOrder(null)}
-        footer={
-          <div className="flex justify-end items-center gap-2">
-            <Button
-              theme="light"
-              type="tertiary"
-              onClick={() => setUploadModalOrder(null)}
-              disabled={submittingPlatformId}
-            >
-              取消
-            </Button>
-            <Button
-              theme="solid"
-              type="primary"
-              loading={submittingPlatformId}
-              icon={<IconTick />}
-              onClick={handleSubmitPlatformId}
-            >
-              确认提交单号
-            </Button>
-          </div>
-        }
-        width={480}
-      >
-        {uploadModalOrder && (
-          <div className="space-y-3.5">
-            <div className="p-3 bg-semi-color-fill-0 rounded-lg border border-semi-color-border space-y-2 text-xs">
-              <div className="flex justify-between items-center">
-                <span className="text-semi-color-text-2">霸王餐店铺:</span>
-                <span className="font-bold text-semi-color-text-0 truncate max-w-[280px]">{uploadModalOrder.store_name}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-semi-color-text-2">下单平台:</span>
-                <Tag size="small" color={uploadModalOrder.platform === 'meituan' ? 'amber' : 'blue'}>
-                  {uploadModalOrder.platform === 'meituan' ? '美团外卖' : '饿了么'}
-                </Tag>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-semi-color-text-2">返现金额:</span>
-                <span className="font-bold text-emerald-600 font-mono">
-                  ¥{uploadModalOrder.rebate_money?.toFixed(2) || '0.00'}
-                </span>
-              </div>
-              {uploadModalOrder.condition && (
-                <div className="flex justify-between items-center">
-                  <span className="text-semi-color-text-2">评价要求:</span>
-                  <Tag size="small" color={getConditionTagColor(uploadModalOrder.condition)}>
-                    {uploadModalOrder.condition}
-                  </Tag>
-                </div>
-              )}
-            </div>
 
-            <div className="space-y-1.5">
-              <div className="text-xs font-semibold text-semi-color-text-0">
-                外卖平台订单号 <span className="text-red-500">*</span>
-              </div>
-              <Input
-                value={platformOrderIdInput}
-                onChange={setPlatformOrderIdInput}
-                placeholder="例如：3002311852210111003"
-                showClear
-                autoFocus
-              />
-              <div className="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                提示: 在外卖平台完成下单支付后，复制订单号绑定至小蚕。单号提交后官方将锁定，平台禁止二次修改，请务必核对无误。
-              </div>
-            </div>
-          </div>
-        )}
-      </Modal>
 
       {/* 日志输出查看详情弹窗 */}
       <Modal

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -122,6 +122,8 @@ export const api = {
   grabStoreNow: (data: { account_key: string; store_id?: string; store_name?: string; promotion_id: string; platform?: string; order_money?: number; rebate_price?: number; rebate_desc?: string; advance?: boolean; redpack_id?: string; redpack_name?: string; redpack_mode?: number }) =>
     client.post<{ ok: boolean; order_id?: number; can_monitor?: boolean; message: string }>('/store/grab-now', data).then(r => r.data),
   createAppointment: (data: Partial<StoreAppointment>) => client.post<{ ok: boolean; appointment_id: number; message: string }>('/store/appoint', data).then(r => r.data),
+  createNameMonitor: (data: NameMonitorPayload) =>
+    client.post<{ ok: boolean; appointment_id: number; message: string }>('/store/name-monitor', data).then(r => r.data),
   getAppointments: (accountKey?: string) => client.get<{ ok: boolean; appointments: StoreAppointment[]; total: number }>('/store/appointments', { params: { account_key: accountKey } }).then(r => r.data),
   stopAppointment: (id: number) => client.post<{ ok: boolean; message: string }>(`/store/appointments/${id}/stop`).then(r => r.data),
   cancelAppointment: (id: number) => client.delete<{ ok: boolean; message: string }>(`/store/appointments/${id}`).then(r => r.data),

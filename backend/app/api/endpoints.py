@@ -1083,6 +1083,14 @@ def _parse_store_promotion_item(
     # 平台解析：1=美团, 2=饿了么, 3=京东
     tp = p.get("tp_promotion") or {}
     platform_code = p.get("store_platform") or store_obj.get("store_platform") or tp.get("store_platform")
+    p_plat = str(p.get("platform") or store_obj.get("platform") or "").lower().strip()
+    if p_plat in ("jingdong", "jd"):
+        platform_code = 3
+    elif p_plat in ("eleme", "taobao", "ele"):
+        platform_code = 2
+    elif p_plat == "meituan":
+        platform_code = 1
+
     if not platform_code:
         if p.get("eleme_status") and not p.get("meituan_status"):
             platform_code = 2
@@ -1253,7 +1261,16 @@ def _parse_store_promotion_item(
 
     same_group_id = int(p.get("same_group_id") or 0)
     if_use_red_pack = bool(p.get("if_use_red_pack", True))
-    address = store_obj.get("address") or store_obj.get("address_detail") or ""
+    address = (
+        store_obj.get("address") or 
+        store_obj.get("address_detail") or 
+        store_obj.get("store_address") or 
+        store_obj.get("poi_address") or 
+        p.get("address") or 
+        p.get("address_detail") or 
+        p.get("store_address") or 
+        ""
+    )
 
     return {
         "store_id": store_id,
@@ -1719,8 +1736,8 @@ async def get_stores(
     elif sort_by == "left":
         stores.sort(key=lambda x: x["left_number"], reverse=True)
 
-    # 4. 同名商家多任务合并 (Requirement 4 / Option B)
-    # 按同平台同分店唯一标识聚合（防止不同分店相互混淆，同时深度合并同一分店名下的满减与按比例返活动）
+    # 4. 同名商家多任务合并 (同平台同分店深度聚合，跨平台严格独立拆分)
+    # 按「同平台 + 同分店唯一标识」聚合，美团/饿了么/京东即使同店同名也作为独立商户卡片展示，档位绝不跨平台混淆
     merged_stores = []
     store_map = {}
     branch_to_key = {}
@@ -1729,24 +1746,43 @@ async def get_stores(
     for s in stores:
         sid = str(s.get("store_id") or "").strip()
         sname = str(s.get("name") or "").strip()
-        splat = s.get("platform") or "meituan"
+        
+        # 严格平台代码规范化，杜绝不同平台混淆
+        splat = str(s.get("platform") or "").lower().strip()
+        store_plat = s.get("store_platform")
+        if not splat or splat == "all":
+            if store_plat == 2:
+                splat = "eleme"
+            elif store_plat == 3:
+                splat = "jingdong"
+            else:
+                splat = "meituan"
+        if splat in ("taobao", "ele"):
+            splat = "eleme"
+        elif splat in ("jd",):
+            splat = "jingdong"
+
+        plat_code = 3 if splat == "jingdong" else (2 if splat == "eleme" else 1)
+
+        # 核心分店主键：以平台为命名空间隔离，杜绝同店名跨平台合并！
         branch_k = _get_store_branch_key(splat, sname)
 
-        # 确定主键：优先基于该分店或有效 store_id 关联已有条目
+        # 确定主键：有效 store_id 必须携带平台前缀，杜绝跨平台同 store_id 错乱合并！
+        plat_sid = f"{splat}_{sid}" if sid and sid != "0" else None
         store_key = None
-        if sid and sid != "0" and sid in id_to_key:
-            store_key = id_to_key[sid]
+        if plat_sid and plat_sid in id_to_key:
+            store_key = id_to_key[plat_sid]
         elif branch_k in branch_to_key:
             store_key = branch_to_key[branch_k]
-        elif sid and sid != "0":
+        elif plat_sid:
             store_key = f"{splat}_id_{sid}"
         else:
             store_key = branch_k
 
         if branch_k not in branch_to_key:
             branch_to_key[branch_k] = store_key
-        if sid and sid != "0" and sid not in id_to_key:
-            id_to_key[sid] = store_key
+        if plat_sid and plat_sid not in id_to_key:
+            id_to_key[plat_sid] = store_key
 
         promo_item = {
             "promotion_id": s["promotion_id"],
@@ -1766,7 +1802,7 @@ async def get_stores(
             "start_date_timestamp": s.get("start_date_timestamp"),
             "end_date_timestamp": s.get("end_date_timestamp"),
             "platform": splat,
-            "store_platform": s.get("store_platform", 1),
+            "store_platform": plat_code,
             "need_brand_coupon": s.get("need_brand_coupon", False),
             "brand_left_number": s.get("brand_left_number", 0),
             "is_vip_brand": s.get("is_vip_brand", False),
@@ -1779,12 +1815,28 @@ async def get_stores(
 
         if store_key not in store_map:
             store_copy = dict(s)
+            store_copy["platform"] = splat
+            store_copy["store_platform"] = plat_code
             store_copy["promotions"] = [promo_item]
             store_copy["promotion_count"] = 1
             store_map[store_key] = store_copy
             merged_stores.append(store_copy)
         else:
             existing = store_map[store_key]
+            existing_plat = existing.get("platform") or "meituan"
+
+            # 严格防线：若平台不一致，绝对禁止合并到已有条目中，创建独立商户条目！
+            if existing_plat != splat:
+                isolated_key = f"{splat}_{store_key}"
+                store_copy = dict(s)
+                store_copy["platform"] = splat
+                store_copy["store_platform"] = plat_code
+                store_copy["promotions"] = [promo_item]
+                store_copy["promotion_count"] = 1
+                store_map[isolated_key] = store_copy
+                merged_stores.append(store_copy)
+                continue
+
             if not any(p["promotion_id"] == s["promotion_id"] for p in existing["promotions"]):
                 existing["promotions"].append(promo_item)
                 existing["promotion_count"] = len(existing["promotions"])
@@ -1826,7 +1878,15 @@ async def get_stores(
                     existing["start_time"] = s["start_time"]
                     existing["end_time"] = s["end_time"]
 
+                # 无论是否为最佳方案，只要当前活动具备有效门牌地址，即刻为商户补齐地址
+                if s.get("address") and not existing.get("address"):
+                    existing["address"] = s["address"]
+
+    # 再次保障每个店铺名下的档位只属于本平台，并拆分 fixed_plans 与 percent_plans
     for ms in merged_stores:
+        ms_plat = ms.get("platform") or "meituan"
+        ms["promotions"] = [p for p in ms.get("promotions", []) if (p.get("platform") or "meituan") == ms_plat]
+        ms["promotion_count"] = len(ms["promotions"])
         f_plans = [p for p in ms.get("promotions", []) if p.get("rebate_type") == "fixed"]
         p_plans = [p for p in ms.get("promotions", []) if p.get("rebate_type") == "percent"]
         ms["fixed_plans"] = f_plans
@@ -2417,6 +2477,20 @@ async def scan_dual_rebate_stores(
         if best_dist == 0 and base.get("distance_text"):
             best_dist_text = base.get("distance_text")
 
+        # 深度提取同店多方案中包含的有效真实门牌地址（满减活动由官方下发门牌地址，按比例赏金接口官方未下发）
+        best_address = ""
+        for p in plist:
+            addr = (p.get("address") or "").strip()
+            if addr:
+                best_address = addr
+                break
+        if not best_address:
+            for fp in fixed_plans:
+                addr = (fp.get("address") or "").strip()
+                if addr:
+                    best_address = addr
+                    break
+
         store_item = {
             "store_id": base.get("store_id") or str(uuid.uuid4()),
             "name": _clean_emoji(base.get("name", "美团同店双返利店铺")),
@@ -2431,13 +2505,14 @@ async def scan_dual_rebate_stores(
             "end_time": best_fixed.get("end_time", "23:59"),
             "opening_hours": base.get("opening_hours") or "00:00-23:59",
             "delivery_time_tip": base.get("delivery_time_tip") or "",
-            "address": base.get("address", ""),
+            "address": best_address or base.get("address", ""),
             
-            # 整合的两大核心方案：一个实付、一个百分比
             "fixed_plan": best_fixed,
             "percent_plan": best_percent,
             "fixed_plans": fixed_plans,
             "percent_plans": percent_plans,
+            "fixed_left": max(0, int(best_fixed.get("left_number") or 0)),
+            "percent_left": max(0, int(best_percent.get("left_number") or 0)),
 
             # 兼容通用字段
             "order_money": best_fixed.get("order_money", 0),
@@ -2789,6 +2864,111 @@ async def create_keyword_watch(data: Dict[str, Any] = Body(...)):
         db.update_job_log(log_id, status="running", output=updated_s_log)
 
     return {"ok": True, "appointment_id": aid, "appointment": {"id": aid, "start_at": start_at}, "message": f"已添加定时搜索「{keyword}」-> {start_at}"}
+
+
+@router.post("/store/name-monitor")
+async def create_name_monitor(data: Dict[str, Any] = Body(...)):
+    """
+    创建店名抢单监听任务：
+    支持多平台 (美团/饿了么/全部)、匹配模式 (包含/精确)、模式过滤 (全部/满返/按比例)、
+    最低返利金额、最低返利比例、最高起送门槛、成功后自动停止等全方位配置。
+    """
+    account_key = data.get("account") or data.get("account_key")
+    if not account_key or not db.get_account_by_key(account_key):
+        raise HTTPException(status_code=400, detail="未找到有效账号")
+
+    keyword = (data.get("keyword") or data.get("store_name") or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="缺少监听商户名称或关键词")
+
+    match_mode = data.get("match_mode") or "contains"
+    platform = data.get("platform") or "all"
+    rebate_mode_filter = data.get("rebate_mode_filter") or "all"
+    min_rebate_price = float(data.get("min_rebate_price") or 0.0)
+    min_rebate_rate = float(data.get("min_rebate_rate") or 0.0)
+    max_order_money = float(data.get("max_order_money") or 0.0)
+    auto_stop_on_success = int(data.get("auto_stop_on_success") if data.get("auto_stop_on_success") is not None else 1)
+
+    raw_timeout = data.get("timeout_sec")
+    timeout_sec = int(raw_timeout) if raw_timeout is not None else 7200
+    poll_sec = max(5, int(data.get("check_interval") or data.get("poll_sec") or 10))
+
+    now = datetime.now()
+    start_at = data.get("start_time") or now.strftime("%H:%M")
+    if data.get("until_time"):
+        until_str = data.get("until_time")
+    elif timeout_sec > 0:
+        until_dt = now + timedelta(seconds=timeout_sec)
+        until_str = until_dt.strftime("%H:%M")
+    else:
+        until_str = "23:59"
+
+    job_id = f"job_namemon_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    account = db.get_account_by_key(account_key)
+    nick = account.get("nickname") if account else account_key
+
+    plat_desc = "全平台 (美团/饿了么)" if platform == "all" else ("美团外卖" if platform == "meituan" else "饿了么")
+    match_desc = "包含匹配" if match_mode == "contains" else "精确完全匹配"
+    filter_desc = "全部方案" if rebate_mode_filter == "all" else ("仅实付满返" if rebate_mode_filter == "fixed" else "仅按比例返")
+    req_parts = []
+    if min_rebate_price > 0:
+        req_parts.append(f"最低返利 ¥{min_rebate_price:.1f}")
+    if min_rebate_rate > 0:
+        req_parts.append(f"最低比例 {min_rebate_rate:.0f}%")
+    if max_order_money > 0:
+        req_parts.append(f"门槛≤¥{max_order_money:.1f}")
+    req_str = "、".join(req_parts) if req_parts else "不设额外门槛"
+
+    s_log = (
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 创建店名抢单监听任务 - 调度引擎装载就绪\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标商户关键词: 「{keyword}」 (模式: {match_desc} | 平台: {plat_desc})\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 方案筛选要求: {filter_desc} | 阈值规则: {req_str}\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听频率: 每 {poll_sec} 秒嗅探一次 | 时段: {start_at} 至 {until_str} | 抢成自停: {'开启' if auto_stop_on_success else '关闭'}\n"
+        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 执行账号: 【{nick}】，高频嗅探与自动秒抢通道已就绪..."
+    )
+    log_id = 0
+    try:
+        log_id = db.add_job_log(job_id, account_key, "store_monitor", "running", s_log)
+    except Exception:
+        pass
+
+    apt_data = {
+        "account_key": account_key,
+        "store_id": "0",
+        "store_name": keyword,
+        "store_icon": data.get("store_icon") or "",
+        "promotion_id": "0",
+        "task_type": "name_monitor",
+        "start_time": start_at,
+        "until_time": until_str,
+        "check_interval": poll_sec,
+        "platform": platform,
+        "keyword": keyword,
+        "match_mode": match_mode,
+        "rebate_mode_filter": rebate_mode_filter,
+        "min_rebate_price": min_rebate_price,
+        "min_rebate_rate": min_rebate_rate,
+        "max_order_money": max_order_money,
+        "auto_stop_on_success": auto_stop_on_success,
+        "redpack_mode": int(data.get("redpack_mode", 0)),
+        "redpack_id": str(data.get("redpack_id") or ""),
+        "redpack_name": str(data.get("redpack_name") or ""),
+        "rebate_desc": f"店名监听【{keyword}】({plat_desc})",
+        "log_id": log_id
+    }
+    aid = db.add_appointment(apt_data)
+    if log_id > 0:
+        updated_s_log = s_log.replace("调度引擎装载就绪", f"任务编号 #{aid}")
+        db.update_job_log(log_id, status="running", output=updated_s_log)
+
+    from ..core.appointment_worker import invalidate_worker_cache
+    invalidate_worker_cache()
+
+    return {
+        "ok": True,
+        "appointment_id": aid,
+        "message": f"已启动「{keyword}」店名监听抢单任务 (编号 #{aid})"
+    }
 
 
 @router.get("/store/appointments")

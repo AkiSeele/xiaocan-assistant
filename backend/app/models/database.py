@@ -223,6 +223,20 @@ def init_db():
         c.execute("ALTER TABLE store_appointments ADD COLUMN redpack_id TEXT DEFAULT ''")
     if "redpack_name" not in apt_cols:
         c.execute("ALTER TABLE store_appointments ADD COLUMN redpack_name TEXT DEFAULT ''")
+    if "keyword" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN keyword TEXT DEFAULT ''")
+    if "match_mode" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN match_mode TEXT DEFAULT 'contains'")
+    if "min_rebate_price" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN min_rebate_price REAL DEFAULT 0")
+    if "min_rebate_rate" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN min_rebate_rate REAL DEFAULT 0")
+    if "rebate_mode_filter" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN rebate_mode_filter TEXT DEFAULT 'all'")
+    if "auto_stop_on_success" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN auto_stop_on_success INTEGER DEFAULT 1")
+    if "max_order_money" not in apt_cols:
+        c.execute("ALTER TABLE store_appointments ADD COLUMN max_order_money REAL DEFAULT 0")
 
     # 自动自愈 store_appointments 中缺失 store_icon 的记录 (从 orders 表或同店名同ID回填)
     try:
@@ -626,7 +640,7 @@ def add_appointment(data: Dict[str, Any]) -> int:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     status = data.get("status")
     if not status:
-        status = "monitoring" if data.get("task_type") == "monitor" else "scheduled"
+        status = "monitoring" if data.get("task_type") in ("monitor", "name_monitor", "keyword") else "scheduled"
 
     store_icon = (data.get("store_icon") or data.get("icon") or "").strip()
     with get_conn() as conn:
@@ -646,9 +660,10 @@ def add_appointment(data: Dict[str, Any]) -> int:
             early_ms, rebate_card_id, redpack_mode, outcome, created_at,
             task_type, start_time, until_time, notified_31m, notified_1m,
             check_interval, platform, order_money, rebate_price, rebate_desc, rebate_type, log_id,
-            use_advance_card, redpack_id, redpack_name
+            use_advance_card, redpack_id, redpack_name,
+            keyword, match_mode, min_rebate_price, min_rebate_rate, rebate_mode_filter, auto_stop_on_success, max_order_money
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["account_key"],
             str(data.get("store_id", "")),
@@ -675,7 +690,14 @@ def add_appointment(data: Dict[str, Any]) -> int:
             int(data.get("log_id") or 0),
             int(data.get("use_advance_card") or 0),
             str(data.get("redpack_id") or ""),
-            str(data.get("redpack_name") or "")
+            str(data.get("redpack_name") or ""),
+            str(data.get("keyword") or ""),
+            str(data.get("match_mode") or "contains"),
+            float(data.get("min_rebate_price") or 0.0),
+            float(data.get("min_rebate_rate") or 0.0),
+            str(data.get("rebate_mode_filter") or "all"),
+            int(data.get("auto_stop_on_success") if data.get("auto_stop_on_success") is not None else 1),
+            float(data.get("max_order_money") or 0.0)
         ))
         conn.commit()
         return cur.lastrowid

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   Card,
   Typography,
@@ -80,6 +80,10 @@ export const LogsView: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const [tableScrollY, setTableScrollY] = useState<number>(460);
+
+  // 表格受控分页状态（彻底杜绝弹窗交互或数据刷新时意外跳回第 1 页）
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(20);
 
   // 详情弹窗
   const [detailModalVisible, setDetailModalVisible] = useState<boolean>(false);
@@ -181,30 +185,47 @@ export const LogsView: React.FC = () => {
     return () => clearInterval(interval);
   }, [hasRunning, filterAccount]);
 
-  const handleOpenDetail = (log: JobLog) => {
+  const handleOpenDetail = useCallback((log: JobLog) => {
     setActiveLog(log);
     setDetailModalVisible(true);
-  };
+  }, []);
 
   const handleCopy = (text: string) => {
     navigator.clipboard?.writeText(text);
     Toast.success('日志内容已复制到剪贴板');
   };
 
-  const filteredLogs = logs.filter(item => {
-    if (filterStatus !== 'all' && item.status !== filterStatus) {
-      return false;
-    }
-    if (filterCategory === 'store') {
-      return STORE_TASK_KEYS.has(item.task_id);
-    }
-    if (filterCategory === 'daily') {
-      return !STORE_TASK_KEYS.has(item.task_id);
-    }
-    return true;
-  });
+  const filteredLogs = useMemo(() => {
+    return logs.filter(item => {
+      if (filterStatus !== 'all' && item.status !== filterStatus) {
+        return false;
+      }
+      if (filterCategory === 'store') {
+        return STORE_TASK_KEYS.has(item.task_id);
+      }
+      if (filterCategory === 'daily') {
+        return !STORE_TASK_KEYS.has(item.task_id);
+      }
+      return true;
+    });
+  }, [logs, filterStatus, filterCategory]);
 
-  const columns = [
+  // 当用户主动更改筛选条件时，重置回第 1 页
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterAccount, filterStatus, filterCategory]);
+
+  // 边界保护：若筛选后数据量缩减导致当前页超出最大页数，自动收敛
+  const totalPages = Math.ceil(filteredLogs.length / pageSize) || 1;
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [totalPages, currentPage]);
+
+  const columns = useMemo(() => [
     {
       title: '序号',
       dataIndex: 'id',
@@ -375,7 +396,7 @@ export const LogsView: React.FC = () => {
         </div>
       ),
     },
-  ];
+  ], [accounts, handleOpenDetail]);
 
   return (
     <div ref={containerRef} className="w-full flex flex-col h-full min-h-0 space-y-3">
@@ -562,9 +583,30 @@ export const LogsView: React.FC = () => {
             dataSource={filteredLogs}
             loading={loading}
             pagination={{
-              pageSize: 20,
+              currentPage: safeCurrentPage,
+              pageSize,
+              total: filteredLogs.length,
               showSizeChanger: true,
               pageSizeOpts: [10, 20, 50, 100],
+              onPageChange: (page: number) => {
+                setCurrentPage(page);
+              },
+              onPageSizeChange: (newPageSize: number) => {
+                setPageSize(newPageSize);
+                setCurrentPage(1);
+              },
+              onChange: (page: number, newPageSize: number) => {
+                setCurrentPage(page);
+                setPageSize(newPageSize);
+              },
+            }}
+            onChange={(changeInfo) => {
+              if (changeInfo?.pagination?.currentPage) {
+                setCurrentPage(changeInfo.pagination.currentPage);
+              }
+              if (changeInfo?.pagination?.pageSize) {
+                setPageSize(changeInfo.pagination.pageSize);
+              }
             }}
             scroll={{ y: tableScrollY, x: 1060 }}
             size="middle"

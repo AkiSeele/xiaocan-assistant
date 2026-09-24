@@ -264,7 +264,14 @@ export const OrdersView: React.FC = () => {
                 <Tag color={platInfo.color} size="small" shape="square" className="flex-shrink-0">
                   {platInfo.label}
                 </Tag>
-                <Typography.Text ellipsis={{ showTooltip: true }} style={{ maxWidth: 220 }} strong className="text-[14px]">
+                <Typography.Text
+                  ellipsis={{ showTooltip: true }}
+                  style={{ maxWidth: 220, cursor: 'pointer' }}
+                  strong
+                  className="text-[14px] hover:text-semi-color-primary transition-colors"
+                  title="点击复制店铺名"
+                  onClick={() => handleCopyText(name, '店铺名称')}
+                >
                   {name}
                 </Typography.Text>
               </div>

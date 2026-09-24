@@ -47,10 +47,12 @@ def _clear_account_snapshot(account_key: str):
 
 
 def _format_store_entry(idx: int, s: Dict[str, Any]) -> str:
-    """移动端紧凑型排版（微信/QQ 专属单店 2 行呈现，删除距离，排版深度优化）"""
+    """移动端紧凑型排版（微信/QQ 专属单店 2 行呈现，标明实付与比例各自剩余单数）"""
     name = (s.get("name") or "未知店铺").strip()
     fixed_desc = (s.get("fixed_desc") or "").strip()
     pct_desc = (s.get("percent_desc") or "").strip()
+    fixed_left = int(s.get("fixed_left") if s.get("fixed_left") is not None else ((s.get("fixed_plan") or {}).get("left_number") or 0))
+    percent_left = int(s.get("percent_left") if s.get("percent_left") is not None else ((s.get("percent_plan") or {}).get("left_number") or 0))
 
     # 规范化金额描述: "返21% (最高¥14)" -> "返21% (封顶14元)"
     pct_desc = pct_desc.replace("¥", "").replace("最高", "封顶")
@@ -59,10 +61,10 @@ def _format_store_entry(idx: int, s: Dict[str, Any]) -> str:
 
     plan_parts = []
     if fixed_desc:
-        plan_parts.append(fixed_desc)
+        plan_parts.append(f"实付: {fixed_desc} (剩{fixed_left}单)")
     if pct_desc:
-        plan_parts.append(pct_desc)
-    plans_text = " | ".join(plan_parts) if plan_parts else "同店双方案"
+        plan_parts.append(f"比例: {pct_desc} (剩{percent_left}单)")
+    plans_text = " | ".join(plan_parts) if plan_parts else f"实付剩{fixed_left}单 | 比例剩{percent_left}单"
 
     return f"[{idx:02d}] {name}\n     {plans_text}"
 
@@ -148,8 +150,12 @@ async def run_dual_rebate_monitor(
     for s in stores:
         sname = (s.get("name") or "").strip()
         skey = _get_store_branch_key("meituan", sname)
-        fixed_desc = (s.get("fixed_plan") or {}).get("rebate_desc") or (s.get("rebate_desc") or "")
-        pct_desc = (s.get("percent_plan") or {}).get("rebate_desc") or ""
+        fixed_plan = s.get("fixed_plan") or {}
+        percent_plan = s.get("percent_plan") or {}
+        fixed_desc = fixed_plan.get("rebate_desc") or (s.get("rebate_desc") or "")
+        pct_desc = percent_plan.get("rebate_desc") or ""
+        fixed_left = int(fixed_plan.get("left_number") or 0)
+        percent_left = int(percent_plan.get("left_number") or 0)
         current_map[skey] = {
             "name": sname,
             "branch_key": skey,
@@ -157,6 +163,8 @@ async def run_dual_rebate_monitor(
             "distance_text": s.get("distance_text", "附近"),
             "fixed_desc": fixed_desc,
             "percent_desc": pct_desc,
+            "fixed_left": fixed_left,
+            "percent_left": percent_left,
             "order_money": s.get("order_money", 0),
             "rebate_price": s.get("rebate_price", 0),
             "rebate_rate": s.get("rebate_rate", 0),
@@ -247,14 +255,20 @@ async def run_dual_rebate_monitor(
                     for s in stores:
                         sname = (s.get("name") or "").strip()
                         skey = _get_store_branch_key("meituan", sname)
-                        fixed_desc = (s.get("fixed_plan") or {}).get("rebate_desc") or (s.get("rebate_desc") or "")
-                        pct_desc = (s.get("percent_plan") or {}).get("rebate_desc") or ""
+                        fixed_plan = s.get("fixed_plan") or {}
+                        percent_plan = s.get("percent_plan") or {}
+                        fixed_desc = fixed_plan.get("rebate_desc") or (s.get("rebate_desc") or "")
+                        pct_desc = percent_plan.get("rebate_desc") or ""
+                        fixed_left = int(fixed_plan.get("left_number") or 0)
+                        percent_left = int(percent_plan.get("left_number") or 0)
                         current_map[skey] = {
                             "name": sname,
                             "branch_key": skey,
                             "distance_text": s.get("distance_text", "附近"),
                             "fixed_desc": fixed_desc,
                             "percent_desc": pct_desc,
+                            "fixed_left": fixed_left,
+                            "percent_left": percent_left,
                             "order_money": s.get("order_money", 0),
                             "rebate_price": s.get("rebate_price", 0),
                             "rebate_rate": s.get("rebate_rate", 0),
