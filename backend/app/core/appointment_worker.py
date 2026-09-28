@@ -388,185 +388,8 @@ async def process_active_appointments() -> bool:
             invalidate_worker_cache()
             continue
 
-        # ---------------- 分支一：名额监听捡漏任务 (status == 'monitoring') ---------------- #
-        if status == "monitoring" or task_type == "monitor":
-            linked_log_id = int(apt.get("log_id") or 0)
-            # 1. 检查是否达到截止时间
-            until_ts = _parse_time_today(apt.get("until_time"))
-            if until_ts and now_ts >= until_ts:
-                outcome_msg = f"已达到设定的监听截止时间 {apt.get('until_time')}，自动结束监听"
-                db.update_appointment(aid, {
-                    "status": "expired",
-                    "outcome": outcome_msg
-                })
-                logger.info(f"监听任务 #{aid} 已超时结束 (until_time={apt.get('until_time')})")
-                if linked_log_id > 0:
-                    exp_line = f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听截止时间已到达 ({apt.get('until_time')})，名额监听自动停止"
-                    _append_apt_log(aid, linked_log_id, exp_line, sync_db=True, status="error")
-                continue
-
-            # 2. 控制检查频率 (默认每 check_interval 秒检查一次，最低 3 秒)
-            interval = max(3, int(apt.get("check_interval") or 5))
-            last_checked = _parse_time_today(apt.get("last_checked_at"))
-            if last_checked and (now_ts - last_checked) < interval:
-                continue
-
-            # 更新最后检查时间戳
-            db.update_appointment(aid, {"last_checked_at": now_str})
-
-            # 3. 查验最新实时库存
-            _apt_poll_counters[aid] = _apt_poll_counters.get(aid, 0) + 1
-            poll_cnt = _apt_poll_counters[aid]
-            try:
-                detail = await client.get_store_promotion_detail(
-                    promotion_id=apt["promotion_id"],
-                    token=account["token"],
-                    silk_id=account.get("silk_id"),
-                    user_id=account.get("user_id"),
-                    city_code=account.get("city_code", 440303)
-                )
-                pdetail = detail.get("promotion_detail") or {}
-                mt_left = pdetail.get("meituan_left_number", 0)
-                ele_left = pdetail.get("eleme_left_number", 0)
-                plat = apt.get("platform", "meituan")
-                target_left = mt_left if plat == "meituan" else ele_left
-                if target_left is None or target_left == 0:
-                    target_left = pdetail.get("left_number", 0)
-
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                step_str = f"[{t_now}] 第 {poll_cnt} 次名额检测: 美团余量 {mt_left or 0} 份 / 饿了么余量 {ele_left or 0} 份，持续监听中..."
-                # 每轮巡检追加，且每 3 次或有名额变动时向数据库落盘一次
-                sync_needed = (poll_cnt % 3 == 0) or (target_left and int(target_left) > 0)
-                if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, step_str, sync_db=sync_needed, status="running")
-
-                if target_left and int(target_left) > 0:
-                    fire_str = f"[{t_now}] 捕获到目标名额放单 (剩余: {target_left} 份)！立即触发闪电抢单..."
-                    logger.info(f"监听任务 #{aid} 捕获到名额放单 (剩余: {target_left})！立即触发闪电抢单...")
-                    if linked_log_id > 0:
-                        _append_apt_log(aid, linked_log_id, fire_str, sync_db=True, status="running")
-                    res = await execute_grab_for_appointment(apt, account, advance=False, action_source="store_monitor")
-                    if not res["ok"]:
-                        logger.warning(f"监听捕获后抢单失败: {res['message']}，继续保持监听")
-            except Exception as e:
-                logger.debug(f"轮询活动实时库存异常 (非致命): {e}")
-
-        # ---------------- 分支二：倒计时预约任务 (status in 'scheduled', 'primed', 'pending') ---------------- #
-        elif status in ("scheduled", "primed", "pending"):
-            linked_log_id = int(apt.get("log_id") or 0)
-            start_ts = _parse_time_today(apt.get("start_time"))
-            if not start_ts:
-                continue
-
-            use_advance = bool(apt.get("use_advance_card"))
-            # 开启超前抢单券时，开抢时刻提前 30 分钟 (1800 秒)
-            effective_start_ts = (start_ts - 30 * 60) if use_advance else start_ts
-            diff = effective_start_ts - now_ts
-            early_sec = max(0.0, float(apt.get("early_ms") or 500) / 1000.0)
-
-            # 标记是否有临近开抢任务 (若在 35 秒内，开启 20ms 自适应超高精度监测)
-            if 0 < diff <= 35:
-                has_primed = True
-
-            eff_time_str = datetime.fromtimestamp(effective_start_ts).strftime("%H:%M")
-            adv_prefix = "【超前抢单·提前30分钟】" if use_advance else ""
-
-            # 1. 倒计时 31 分钟预热通知提醒
-            if diff <= (31 * 60) and not apt.get("notified_31m"):
-                db.update_appointment(aid, {"notified_31m": 1})
-                logger.info(f"任务 #{aid} 触发倒计时 31 分钟预热通知 (超前券: {use_advance})")
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 倒计时 31 分钟到达，已发送开火预热通知与通道就绪检查 {adv_prefix}(开火目标: {eff_time_str})", sync_db=True, status="running")
-                try:
-                    await send_system_notification(
-                        title="霸王餐开抢预热提醒",
-                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪！",
-                        account_key=apt.get("account_key")
-                    )
-                except Exception as ne:
-                    logger.warning(f"发送系统预热通知失败: {ne}")
-
-            # 2. 倒计时 25 秒：长连接热激活 + 提前解析并锁定最高可用红包 (消除开火网络耗时)
-            if diff <= 25 and not apt.get("prewarmed"):
-                apt["prewarmed"] = 1
-                db.update_appointment(aid, {"status": "primed"})
-                logger.info(f"预约任务 #{aid} 提前 25 秒唤醒预热，长连接热激活并提前解析锁定红包...")
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 提前 25 秒唤醒：长连接握手热激活，预检锁定红包资产，微秒自旋压枪...", sync_db=True, status="running")
-                try:
-                    # 提前探测一次连接与锁定最优红包
-                    await client.get_user_info(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
-                    if apt.get("redpack_mode", 0) == 0 and not apt.get("cached_redpack_id"):
-                        max_rp = await client.get_user_max_redpack(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
-                        rep_pack = max_rp.get("rep_pack") or {}
-                        if not rep_pack and max_rp.get("platform_red_packs"):
-                            rep_pack = max_rp["platform_red_packs"][0]
-                        if rep_pack and rep_pack.get("user_red_pack_id"):
-                            apt["cached_redpack_id"] = int(rep_pack["user_red_pack_id"])
-                            logger.info(f"预约任务 #{aid} 已提前锁定最优红包 #{apt['cached_redpack_id']}")
-                    elif apt.get("redpack_mode") == 1 and apt.get("redpack_id") and not apt.get("cached_redpack_id"):
-                        spec_id = int(apt["redpack_id"])
-                        rplist_res = await client.get_app_redpack_list(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303), page=1, page_size=50)
-                        unused = rplist_res.get("unused_items") or []
-                        matched = any(int(item.get("user_red_pack_id") or 0) == spec_id for item in unused)
-                        if matched:
-                            apt["cached_redpack_id"] = spec_id
-                            logger.info(f"预约任务 #{aid} 已提前核验并锁定指定红包 #{spec_id}")
-                        else:
-                            if unused:
-                                sorted_unused = sorted(unused, key=lambda x: float(x.get("reward_num") or 0), reverse=True)
-                                apt["cached_redpack_id"] = int(sorted_unused[0]["user_red_pack_id"])
-                                logger.info(f"预约任务 #{aid} 预设红包 #{spec_id} 已在端外失效，提前自愈替换为最优红包 #{apt['cached_redpack_id']}")
-                except Exception as rpe:
-                    logger.debug(f"预约任务提前解析红包异常: {rpe}")
-
-            # 3. 准点 / 提前量到达 (diff <= early_sec)：突发毫秒抢单！
-            if diff <= early_sec:
-                adv_log = "【超前抢单提前30分钟】" if use_advance else ""
-                logger.info(f"任务 #{aid} 抢单时刻到达 (提前量 {early_sec}s, {adv_log})，发起突发毫秒抢单！")
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                if linked_log_id > 0:
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 预定开抢时刻到达 (提前量 {early_sec*1000:.0f}ms, {adv_log})，全速发射抢单报文！", sync_db=True, status="running")
-                grab_ok = False
-                last_msg = "抢单未生效"
-                for try_idx in range(1, 4):
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    res = await execute_grab_for_appointment(apt, account, advance=use_advance, action_source="store_appoint")
-                    if res.get("ok"):
-                        logger.info(f"[{ts_fmt}] 任务 #{aid} 第{try_idx}次抢单成功！")
-                        grab_ok = True
-                        break
-                    else:
-                        last_msg = res.get("message") or "名额已满或尚未开仓"
-                        logger.warning(f"[{ts_fmt}] 任务 #{aid} 第{try_idx}次抢单提示: {last_msg}")
-                        if res.get("code") in (40003, 40004, 40037, 40038, 40039, 40040):
-                            break
-                    await asyncio.sleep(0.06)
-
-                if not grab_ok:
-                    until_str = apt.get("until_time")
-                    if until_str:
-                        db.update_appointment(aid, {
-                            "status": "monitoring",
-                            "outcome": f"首轮抢单未锁定 ({last_msg})，已自动切换为持续捡漏监听模式（持续至 {until_str}）"
-                        })
-                        logger.info(f"任务 #{aid} 首轮抢单未成功，已自动转入持续监听捡漏至 {until_str}")
-                        if linked_log_id > 0:
-                            t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                            _append_apt_log(aid, linked_log_id, f"[{t_now}] 首轮抢单未锁定 ({last_msg})，已自适应无缝转入实时名额监听捡漏模式（截止 {until_str}）...", sync_db=True, status="running")
-                    else:
-                        db.update_appointment(aid, {
-                            "status": "failed",
-                            "outcome": f"抢单失败: {last_msg}"
-                        })
-                        if linked_log_id > 0:
-                            t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                            _append_apt_log(aid, linked_log_id, f"[{t_now}] 抢单流程结束: {last_msg}", sync_db=True, status="error")
-
-        # ---------------- 分支三：店名监听与定时搜索任务 (name_monitor / keyword) ---------------- #
-        elif task_type in ("name_monitor", "keyword", "keyword_monitor"):
+        # ---------------- 分支一：店名抢单监听与智能嗅探 (name_monitor / keyword) ---------------- #
+        if task_type in ("name_monitor", "keyword", "keyword_monitor"):
             linked_log_id = int(apt.get("log_id") or 0)
             # 1. 检查是否达到开始时间
             start_ts = _parse_time_today(apt.get("start_time"))
@@ -587,21 +410,22 @@ async def process_active_appointments() -> bool:
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 店名监听截止时间到达 ({apt.get('until_time')})，监听任务自动结束", sync_db=True, status="error")
                 continue
 
-            # 3. 检查频率 (默认每 check_interval 秒搜索一次，最低 5 秒)
-            interval = max(5, int(apt.get("check_interval") or 10))
+            # 3. 检查频率 (默认每 check_interval 秒搜索一次，最低 3 秒)
+            interval = max(3, int(apt.get("check_interval") or 5))
             last_checked = _parse_time_today(apt.get("last_checked_at"))
             if last_checked and (now_ts - last_checked) < interval:
                 continue
 
+            apt["last_checked_at"] = now_str
             db.update_appointment(aid, {"last_checked_at": now_str})
 
             # 4. 执行双源嗅探与多档位优选
             _apt_poll_counters[aid] = _apt_poll_counters.get(aid, 0) + 1
             poll_cnt = _apt_poll_counters[aid]
-            
+
             # 防风控随机微抖动
             await asyncio.sleep(random.uniform(0.1, 0.4))
-            
+
             kw = (apt.get("keyword") or apt.get("store_name") or "").strip()
             match_mode = apt.get("match_mode") or "contains"
             target_plat = apt.get("platform") or "all"
@@ -614,9 +438,9 @@ async def process_active_appointments() -> bool:
             token = account.get("token")
             silk_id = account.get("silk_id")
             user_id = account.get("user_id")
-            city_code = account.get("city_code", 440303)
-            lon = str(account.get("longitude", "114.13166"))
-            lat = str(account.get("latitude", "22.548361"))
+            city_code = int(account.get("city_code") or 440300)
+            lon = str(account.get("longitude") or "114.13166")
+            lat = str(account.get("latitude") or "22.548361")
 
             try:
                 from ..api.endpoints import _extract_all_promos_from_raw, _normalize_shangjin_item
@@ -748,7 +572,14 @@ async def process_active_appointments() -> bool:
                     grab_apt["rebate_desc"] = rebate_label
                     grab_apt["rebate_type"] = best_item.get("rebate_type", "fixed")
 
-                    res = await execute_grab_for_appointment(grab_apt, account, advance=False, action_source="store_monitor")
+                    is_adv = False
+                    if apt.get("use_advance_card"):
+                        s_time = best_item.get("start_time") or apt.get("start_time")
+                        s_ts = _parse_time_today(s_time)
+                        if s_ts and now_ts < s_ts:
+                            is_adv = True
+
+                    res = await execute_grab_for_appointment(grab_apt, account, advance=is_adv, action_source="store_monitor")
                     t_grab = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                     if res.get("ok"):
                         succ_msg = f"抢单成功: 【{store_label}】{rebate_label}"
@@ -776,13 +607,200 @@ async def process_active_appointments() -> bool:
                     store_count = len(total_found_stores)
                     step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探: 关键词「{kw}」，发现 {store_count} 家商户 (当前暂无满足条件的剩余名额)，持续保持监听..."
                     if linked_log_id > 0:
-                        _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt % 3 == 0), status="running")
+                        _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt == 1 or poll_cnt % 3 == 0), status="running")
 
             except Exception as se:
                 logger.warning(f"店名监听 #{aid} 执行异常: {se}")
                 if linked_log_id > 0:
                     t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                     _append_apt_log(aid, linked_log_id, f"[{t_err}] 嗅探执行异常: {se}，将在下次周期重试", sync_db=False, status="running")
+
+        # ---------------- 分支二：单店名额监听捡漏任务 (task_type == "monitor" or status == "monitoring") ---------------- #
+        elif task_type == "monitor" or status == "monitoring":
+            linked_log_id = int(apt.get("log_id") or 0)
+            # 1. 检查是否达到截止时间
+            until_ts = _parse_time_today(apt.get("until_time"))
+            if until_ts and now_ts >= until_ts:
+                outcome_msg = f"已达到设定的监听截止时间 {apt.get('until_time')}，自动结束监听"
+                db.update_appointment(aid, {
+                    "status": "expired",
+                    "outcome": outcome_msg
+                })
+                logger.info(f"监听任务 #{aid} 已超时结束 (until_time={apt.get('until_time')})")
+                if linked_log_id > 0:
+                    exp_line = f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听截止时间已到达 ({apt.get('until_time')})，名额监听自动停止"
+                    _append_apt_log(aid, linked_log_id, exp_line, sync_db=True, status="error")
+                continue
+
+            # 2. 控制检查频率 (默认每 check_interval 秒检查一次，最低 3 秒)
+            interval = max(3, int(apt.get("check_interval") or 5))
+            last_checked = _parse_time_today(apt.get("last_checked_at"))
+            if last_checked and (now_ts - last_checked) < interval:
+                continue
+
+            # 更新最后检查时间戳
+            apt["last_checked_at"] = now_str
+            db.update_appointment(aid, {"last_checked_at": now_str})
+
+            # 3. 查验最新实时库存
+            _apt_poll_counters[aid] = _apt_poll_counters.get(aid, 0) + 1
+            poll_cnt = _apt_poll_counters[aid]
+            try:
+                detail = await client.get_store_promotion_detail(
+                    promotion_id=apt["promotion_id"],
+                    token=account["token"],
+                    silk_id=account.get("silk_id"),
+                    user_id=account.get("user_id"),
+                    city_code=account.get("city_code", 440303)
+                )
+                pdetail = detail.get("promotion_detail") or {}
+                mt_left = pdetail.get("meituan_left_number", 0)
+                ele_left = pdetail.get("eleme_left_number", 0)
+                plat = apt.get("platform", "meituan")
+                target_left = mt_left if plat == "meituan" else ele_left
+                if target_left is None or target_left == 0:
+                    target_left = pdetail.get("left_number", 0)
+
+                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                step_str = f"[{t_now}] 第 {poll_cnt} 次名额检测: 美团余量 {mt_left or 0} 份 / 饿了么余量 {ele_left or 0} 份，持续监听中..."
+                # 每轮巡检追加，且首轮或每 3 次或有名额变动时向数据库落盘一次
+                sync_needed = (poll_cnt == 1) or (poll_cnt % 3 == 0) or (target_left and int(target_left) > 0)
+                if linked_log_id > 0:
+                    _append_apt_log(aid, linked_log_id, step_str, sync_db=sync_needed, status="running")
+
+                if target_left and int(target_left) > 0:
+                    # 关键修复：智能识别超前抢单窗口期
+                    # 若用户开启了超前抢单券，且当前时间仍在正点开抢之前，必须携带 advance=True，否则官方返回活动未开始 (错误码 4)
+                    is_adv = False
+                    if apt.get("use_advance_card"):
+                        start_ts = _parse_time_today(apt.get("start_time"))
+                        if start_ts and now_ts < start_ts:
+                            is_adv = True
+
+                    adv_tag = "【超前券·提前抢单】" if is_adv else ""
+                    fire_str = f"[{t_now}] 捕获到目标名额放单 (剩余: {target_left} 份)！{adv_tag}立即触发闪电抢单..."
+                    logger.info(f"监听任务 #{aid} 捕获到名额放单 (剩余: {target_left})！{adv_tag}立即触发闪电抢单...")
+                    if linked_log_id > 0:
+                        _append_apt_log(aid, linked_log_id, fire_str, sync_db=True, status="running")
+                    res = await execute_grab_for_appointment(apt, account, advance=is_adv, action_source="store_monitor")
+                    if not res["ok"]:
+                        logger.warning(f"监听捕获后抢单失败: {res['message']}，继续保持监听")
+            except Exception as e:
+                logger.debug(f"轮询活动实时库存异常 (非致命): {e}")
+
+        # ---------------- 分支三：倒计时预约任务 (status in 'scheduled', 'primed', 'pending') ---------------- #
+        elif status in ("scheduled", "primed", "pending"):
+            linked_log_id = int(apt.get("log_id") or 0)
+            start_ts = _parse_time_today(apt.get("start_time"))
+            if not start_ts:
+                continue
+
+            use_advance = bool(apt.get("use_advance_card"))
+            # 开启超前抢单券时，开抢时刻提前 30 分钟 (1800 秒)
+            effective_start_ts = (start_ts - 30 * 60) if use_advance else start_ts
+            diff = effective_start_ts - now_ts
+            early_sec = max(0.0, float(apt.get("early_ms") or 500) / 1000.0)
+
+            # 标记是否有临近开抢任务 (若在 35 秒内，开启 20ms 自适应超高精度监测)
+            if 0 < diff <= 35:
+                has_primed = True
+
+            eff_time_str = datetime.fromtimestamp(effective_start_ts).strftime("%H:%M")
+            adv_prefix = "【超前抢单·提前30分钟】" if use_advance else ""
+
+            # 1. 倒计时 31 分钟预热通知提醒
+            if diff <= (31 * 60) and not apt.get("notified_31m"):
+                db.update_appointment(aid, {"notified_31m": 1})
+                logger.info(f"任务 #{aid} 触发倒计时 31 分钟预热通知 (超前券: {use_advance})")
+                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                if linked_log_id > 0:
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 倒计时 31 分钟到达，已发送开火预热通知与通道就绪检查 {adv_prefix}(开火目标: {eff_time_str})", sync_db=True, status="running")
+                try:
+                    await send_system_notification(
+                        title="霸王餐开抢预热提醒",
+                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪！",
+                        account_key=apt.get("account_key")
+                    )
+                except Exception as ne:
+                    logger.warning(f"发送系统预热通知失败: {ne}")
+
+            # 2. 倒计时 25 秒：长连接热激活 + 提前解析并锁定最高可用红包 (消除开火网络耗时)
+            if diff <= 25 and not apt.get("prewarmed"):
+                apt["prewarmed"] = 1
+                db.update_appointment(aid, {"status": "primed"})
+                logger.info(f"预约任务 #{aid} 提前 25 秒唤醒预热，长连接热激活并提前解析锁定红包...")
+                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                if linked_log_id > 0:
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 提前 25 秒唤醒：长连接握手热激活，预检锁定红包资产，微秒自旋压枪...", sync_db=True, status="running")
+                try:
+                    # 提前探测一次连接与锁定最优红包
+                    await client.get_user_info(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
+                    if apt.get("redpack_mode", 0) == 0 and not apt.get("cached_redpack_id"):
+                        max_rp = await client.get_user_max_redpack(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
+                        rep_pack = max_rp.get("rep_pack") or {}
+                        if not rep_pack and max_rp.get("platform_red_packs"):
+                            rep_pack = max_rp["platform_red_packs"][0]
+                        if rep_pack and rep_pack.get("user_red_pack_id"):
+                            apt["cached_redpack_id"] = int(rep_pack["user_red_pack_id"])
+                            logger.info(f"预约任务 #{aid} 已提前锁定最优红包 #{apt['cached_redpack_id']}")
+                    elif apt.get("redpack_mode") == 1 and apt.get("redpack_id") and not apt.get("cached_redpack_id"):
+                        spec_id = int(apt["redpack_id"])
+                        rplist_res = await client.get_app_redpack_list(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303), page=1, page_size=50)
+                        unused = rplist_res.get("unused_items") or []
+                        matched = any(int(item.get("user_red_pack_id") or 0) == spec_id for item in unused)
+                        if matched:
+                            apt["cached_redpack_id"] = spec_id
+                            logger.info(f"预约任务 #{aid} 已提前核验并锁定指定红包 #{spec_id}")
+                        else:
+                            if unused:
+                                sorted_unused = sorted(unused, key=lambda x: float(x.get("reward_num") or 0), reverse=True)
+                                apt["cached_redpack_id"] = int(sorted_unused[0]["user_red_pack_id"])
+                                logger.info(f"预约任务 #{aid} 预设红包 #{spec_id} 已在端外失效，提前自愈替换为最优红包 #{apt['cached_redpack_id']}")
+                except Exception as rpe:
+                    logger.debug(f"预约任务提前解析红包异常: {rpe}")
+
+            # 3. 准点 / 提前量到达 (diff <= early_sec)：突发毫秒抢单！
+            if diff <= early_sec:
+                adv_log = "【超前抢单提前30分钟】" if use_advance else ""
+                logger.info(f"任务 #{aid} 抢单时刻到达 (提前量 {early_sec}s, {adv_log})，发起突发毫秒抢单！")
+                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                if linked_log_id > 0:
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] 预定开抢时刻到达 (提前量 {early_sec*1000:.0f}ms, {adv_log})，全速发射抢单报文！", sync_db=True, status="running")
+                grab_ok = False
+                last_msg = "抢单未生效"
+                for try_idx in range(1, 4):
+                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    res = await execute_grab_for_appointment(apt, account, advance=use_advance, action_source="store_appoint")
+                    if res.get("ok"):
+                        logger.info(f"[{ts_fmt}] 任务 #{aid} 第{try_idx}次抢单成功！")
+                        grab_ok = True
+                        break
+                    else:
+                        last_msg = res.get("message") or "名额已满或尚未开仓"
+                        logger.warning(f"[{ts_fmt}] 任务 #{aid} 第{try_idx}次抢单提示: {last_msg}")
+                        if res.get("code") in (40003, 40004, 40037, 40038, 40039, 40040):
+                            break
+                    await asyncio.sleep(0.06)
+
+                if not grab_ok:
+                    until_str = apt.get("until_time")
+                    if until_str:
+                        db.update_appointment(aid, {
+                            "status": "monitoring",
+                            "outcome": f"首轮抢单未锁定 ({last_msg})，已自动切换为持续捡漏监听模式（持续至 {until_str}）"
+                        })
+                        logger.info(f"任务 #{aid} 首轮抢单未成功，已自动转入持续监听捡漏至 {until_str}")
+                        if linked_log_id > 0:
+                            t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            _append_apt_log(aid, linked_log_id, f"[{t_now}] 首轮抢单未锁定 ({last_msg})，已自适应无缝转入实时名额监听捡漏模式（截止 {until_str}）...", sync_db=True, status="running")
+                    else:
+                        db.update_appointment(aid, {
+                            "status": "failed",
+                            "outcome": f"抢单失败: {last_msg}"
+                        })
+                        if linked_log_id > 0:
+                            t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            _append_apt_log(aid, linked_log_id, f"[{t_now}] 抢单流程结束: {last_msg}", sync_db=True, status="error")
 
     return has_primed
 

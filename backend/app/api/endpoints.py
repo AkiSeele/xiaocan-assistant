@@ -3010,6 +3010,8 @@ async def stop_appointment(aid: int):
             db.add_job_log(job_id, acc_key, "store_monitor", "error", s_log)
         except Exception:
             pass
+    from ..core.appointment_worker import invalidate_worker_cache
+    invalidate_worker_cache()
     return {"ok": True, "message": "已主动停止该名额监听任务"}
 
 
@@ -3041,6 +3043,8 @@ async def cancel_appointment(aid: int):
             except Exception:
                 pass
     db.delete_appointment(aid)
+    from ..core.appointment_worker import invalidate_worker_cache
+    invalidate_worker_cache()
     return {"ok": True, "message": "已取消预约"}
 
 
