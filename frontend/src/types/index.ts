@@ -23,6 +23,7 @@ export interface Account {
   unreceived_points?: number;
   notify_mode?: AccountNotifyMode;
   notify_config?: AccountNotifyConfig | Record<string, any> | string;
+  client_mode?: string;
   expires_at: string;
   is_active: number;
   created_at: string;

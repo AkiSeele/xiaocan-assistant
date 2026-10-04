@@ -35,38 +35,29 @@ def generate_headers(
     user_id: Optional[str] = None,
     silk_id: Optional[str] = None,
     nami: Optional[str] = None,
-    time_millis: Optional[int] = None
+    time_millis: Optional[int] = None,
+    platform: str = "app"
 ) -> Dict[str, str]:
-    """生成小蚕霸王餐网关调用所需的全部请求头 (英雄联盟特征头规范)"""
+    """
+    生成小蚕霸王餐网关调用所需的全部请求头 (英雄联盟特征头规范)
+    全局默认采用官方独立 App 原生客户端协议规范，彻底杜绝 50010 限制
+    """
     if time_millis is None:
         time_millis = int(time.time() * 1000)
     if nami is None:
         nami = generate_nami()
 
     ashe = get_ashe(time_millis, server_name, method_name, nami)
+    is_mini = str(platform).lower() == "mini"
 
     headers = {
         "x-City": str(city_code),
         "X-Garen": str(time_millis),
         "X-Nami": nami,
-        "X-Platform": "mini",
-        "version": "3.20.6.67",
-        "X-Version": "3.20.6.67",
-        "appid": "20",
-        "X-App-Sr": "20",
-        "X-Model": "microsoft microsoft",
         "x-Annie": "XC",
-        "xweb_xhr": "1",
         "servername": server_name,
         "methodname": method_name,
         "X-Ashe": ashe,
-        "Referer": "https://servicewechat.com/wx52ae177248081591/798/page-frame.html",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) "
-            "NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) "
-            "UnifiedPCWindowsWechat(0xf254173b) XWEB/19027"
-        ),
         "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
         "Accept-Encoding": "gzip, deflate, br",
@@ -75,6 +66,32 @@ def generate_headers(
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty"
     }
+
+    if is_mini:
+        # 微信小程序环境特征 (仅在显式指定 mini 时生效)
+        headers["X-Platform"] = "mini"
+        headers["appid"] = "20"
+        headers["X-App-Sr"] = "20"
+        headers["version"] = "3.20.6.67"
+        headers["X-Version"] = "3.20.6.67"
+        headers["X-Model"] = "microsoft microsoft"
+        headers["xweb_xhr"] = "1"
+        headers["Referer"] = "https://servicewechat.com/wx52ae177248081591/798/page-frame.html"
+        headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) "
+            "NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13) "
+            "UnifiedPCWindowsWechat(0xf254173b) XWEB/19027"
+        )
+    else:
+        # 全局默认采用移动独立 App 原生协议特征 (彻底突破大牌券、影音周卡等 50010 限制)
+        headers["X-Platform"] = "app"
+        headers["appid"] = "10"
+        headers["X-App-Sr"] = "10"
+        headers["version"] = "3.20.0"
+        headers["X-Version"] = "3.20.0"
+        headers["X-Model"] = "Android Phone"
+        headers["User-Agent"] = "XiaoCan/3.20.0 (Linux; U; Android 14; zh-cn; Mobile) okhttp/4.12.0"
 
     if user_id:
         headers["x-Vayne"] = str(user_id)

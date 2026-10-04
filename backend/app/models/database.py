@@ -81,6 +81,8 @@ def init_db():
         c.execute("ALTER TABLE accounts ADD COLUMN notify_mode TEXT DEFAULT 'global'")
     if "notify_config" not in acc_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN notify_config TEXT DEFAULT '{}'")
+    if "client_mode" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN client_mode TEXT DEFAULT 'app'")
 
     # 2. 自动化任务开关与调度表
     c.execute("""
@@ -397,15 +399,16 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
     final_user_id = user_id or (existing.get("user_id") if existing else "")
     final_token = token or (existing.get("token") if existing else "")
     final_expires_at = exp_time or (existing.get("expires_at") if existing else "2099-12-31")
+    client_mode = data.get("client_mode") or (existing.get("client_mode") if existing else "app")
     created_at = existing.get("created_at") if existing else data.get("created_at", now)
 
     with get_conn() as conn:
         conn.execute("""
-        INSERT INTO accounts (key, user_id, silk_id, nickname, avatar, token, vip_level, is_plus, phone, real_name, vip_score, vip_expired_at, silk, withdrawing, withdraw_total, completed_number, yb_point, unreceived_points, city_code, city_name, longitude, latitude, expires_at, is_active, created_at, updated_at)
-        VALUES (:key, :user_id, :silk_id, :nickname, :avatar, :token, :vip_level, :is_plus, :phone, :real_name, :vip_score, :vip_expired_at, :silk, :withdrawing, :withdraw_total, :completed_number, :yb_point, :unreceived_points, :city_code, :city_name, :longitude, :latitude, :expires_at, :is_active, :created_at, :updated_at)
+        INSERT INTO accounts (key, user_id, silk_id, nickname, avatar, token, vip_level, is_plus, phone, real_name, vip_score, vip_expired_at, silk, withdrawing, withdraw_total, completed_number, yb_point, unreceived_points, city_code, city_name, longitude, latitude, expires_at, client_mode, is_active, created_at, updated_at)
+        VALUES (:key, :user_id, :silk_id, :nickname, :avatar, :token, :vip_level, :is_plus, :phone, :real_name, :vip_score, :vip_expired_at, :silk, :withdrawing, :withdraw_total, :completed_number, :yb_point, :unreceived_points, :city_code, :city_name, :longitude, :latitude, :expires_at, :client_mode, :is_active, :created_at, :updated_at)
         ON CONFLICT(key) DO UPDATE SET
             user_id=excluded.user_id,
-            silk_id=excluded.silk_id,
+            silk_id=CASE WHEN excluded.silk_id != '' THEN excluded.silk_id ELSE accounts.silk_id END,
             nickname=excluded.nickname,
             avatar=excluded.avatar,
             token=excluded.token,
@@ -426,6 +429,7 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
             longitude=excluded.longitude,
             latitude=excluded.latitude,
             expires_at=excluded.expires_at,
+            client_mode=COALESCE(excluded.client_mode, accounts.client_mode),
             is_active=1,
             updated_at=excluded.updated_at
         """, {
@@ -452,6 +456,7 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
             "longitude": longitude,
             "latitude": latitude,
             "expires_at": final_expires_at,
+            "client_mode": client_mode,
             "is_active": 1,
             "created_at": created_at,
             "updated_at": now
@@ -475,7 +480,7 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         "silk", "withdrawing", "withdraw_total", "completed_number",
         "yb_point", "unreceived_points",
         "city_code", "city_name", "expires_at", "longitude", "latitude",
-        "notify_mode", "notify_config"
+        "notify_mode", "notify_config", "client_mode"
     ]
     updates = []
     params = {"key": key, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}

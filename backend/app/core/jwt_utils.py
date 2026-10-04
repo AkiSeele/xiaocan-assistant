@@ -105,14 +105,49 @@ def extract_city_code_from_text(raw_text: str) -> Optional[int]:
     return None
 
 
+def extract_silk_id_from_text(raw_text: str) -> Optional[str]:
+    """
+    从用户输入的文本中智能提取真实 Silk ID (小蚕用户全局唯一数字 ID):
+    - 匹配英雄联盟特征头 x-Teemo: 1234567
+    - 匹配 silk_id / silk-id / silkId: 1234567
+    - 匹配 URL query 参数 silk_id=1234567
+    - 匹配 JSON 键值 "silk_id": 1234567
+    """
+    if not raw_text or not raw_text.strip():
+        return None
+
+    text = raw_text.strip()
+
+    # 1. 匹配小蚕特征头 x-Teemo: 1234567
+    teemo_match = re.search(r'x-Teemo[\s:=]+["\']?(\d{4,12})["\']?', text, re.IGNORECASE)
+    if teemo_match:
+        return teemo_match.group(1).strip()
+
+    # 2. 匹配 silk_id / silk-id / silkId: 1234567
+    silk_match = re.search(r'\bsilk[-_]?id[\s:=]+["\']?(\d{4,12})["\']?', text, re.IGNORECASE)
+    if silk_match:
+        return silk_match.group(1).strip()
+
+    # 3. 匹配 URL query 参数 silk_id=1234567
+    query_match = re.search(r'[?&]silk[-_]?id=(\d{4,12})\b', text, re.IGNORECASE)
+    if query_match:
+        return query_match.group(1).strip()
+
+    # 4. 匹配 JSON 键值 "silk_id": 1234567
+    json_match = re.search(r'["\']silk[-_]?id["\']\s*:\s*["\']?(\d{4,12})["\']?', text, re.IGNORECASE)
+    if json_match:
+        return json_match.group(1).strip()
+
+    return None
+
+
 def extract_silk_id_from_payload(payload: Dict[str, Any]) -> str:
-    """提取小蚕真实用户 ID / Silk ID (优先读取真正的 silk_id / silkId)"""
+    """提取小蚕真实用户 ID / Silk ID (优先读取真正的 silk_id / silkId / SilkId)"""
     if not payload or not isinstance(payload, dict):
         return ""
-    if payload.get("silk_id"):
-        return str(payload.get("silk_id"))
-    if payload.get("silkId"):
-        return str(payload.get("silkId"))
+    for k in ("silk_id", "silkId", "SilkId", "silkid", "silkID"):
+        if payload.get(k):
+            return str(payload.get(k)).strip()
     return ""
 
 
@@ -129,4 +164,5 @@ def extract_user_id_from_payload(payload: Dict[str, Any]) -> str:
         or ""
     )
     return str(val) if val else ""
+
 

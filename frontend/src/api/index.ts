@@ -80,7 +80,7 @@ export const api = {
   testAccountNotify: (key: string, notify_mode: string, notify_config: AccountNotifyConfig) => client.post<{ ok: boolean; message: string; channel?: string }>(`/accounts/${key}/test-notify`, { notify_mode, notify_config }).then(r => r.data),
   
   // 账号解析与嗅探接入
-  parseToken: (rawText: string) => client.post<{ ok: boolean; token?: string; silk_id?: string; is_valid: boolean; message: string; exp_date?: string; city_code?: number; nickname?: string }>('/accounts/parse-token', { raw_text: rawText }).then(r => r.data),
+  parseToken: (rawText: string) => client.post<{ ok: boolean; token?: string; silk_id?: string; is_valid: boolean; message: string; exp_date?: string; city_code?: number; nickname?: string; client_mode?: string }>('/accounts/parse-token', { raw_text: rawText }).then(r => r.data),
   verifyToken: (token: string, cityCode?: number) => client.post<{ ok: boolean; valid: boolean; message: string }>('/accounts/verify-token', { token, city_code: cityCode }).then(r => r.data),
   startProxyCapture: (port?: number) => client.post<{ ok: boolean; message: string; status: any }>('/accounts/proxy-capture/start', { port }).then(r => r.data),
   stopProxyCapture: () => client.post<{ ok: boolean; message: string; status: any }>('/accounts/proxy-capture/stop').then(r => r.data),

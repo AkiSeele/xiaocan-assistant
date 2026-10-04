@@ -21,7 +21,7 @@ TZ_BJ = timezone(timedelta(hours=8))
 
 from ..models import database as db
 from ..core import scheduler, notifier, clawbot_client
-from ..core.jwt_utils import extract_token_from_text, decode_jwt_payload, extract_city_code_from_text, extract_silk_id_from_payload, extract_user_id_from_payload
+from ..core.jwt_utils import extract_token_from_text, decode_jwt_payload, extract_city_code_from_text, extract_silk_id_from_payload, extract_user_id_from_payload, extract_silk_id_from_text
 from ..core.proxy_sniffer import sniffer
 from ..core.wechat_scanner import scan_wechat_credentials, wechat_listener
 from ..core.tianditu import tianditu_client
@@ -99,10 +99,17 @@ TASK_PARAM_DEFS = {
 
 @router.get("/accounts")
 async def get_accounts():
-    """获取所有托管小蚕账号 (无车位上限，自动增量补齐未同步账号资产)"""
+    """获取所有托管小蚕账号 (无车位上限，自动增量补齐未同步账号资产与 Silk ID)"""
     accounts = db.get_all_accounts()
     for acc in accounts:
-        if acc.get("token") and acc.get("withdraw_total", 0) == 0 and acc.get("completed_number", 0) == 0:
+        # 自愈修复：若账号缺少 silk_id，自动直连小蚕官方拉取并补全
+        if acc.get("token") and not acc.get("silk_id"):
+            try:
+                enriched = await _enrich_and_save_account(acc)
+                acc.update(enriched)
+            except Exception:
+                pass
+        elif acc.get("token") and acc.get("withdraw_total", 0) == 0 and acc.get("completed_number", 0) == 0:
             try:
                 enriched = await _enrich_and_save_account(acc)
                 acc.update(enriched)
@@ -129,6 +136,9 @@ async def create_or_update_account(data: Dict[str, Any] = Body(...)):
                 data["expires_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp)))
             except Exception:
                 pass
+
+    if not data.get("client_mode"):
+        data["client_mode"] = "app"
 
     saved = await _enrich_and_save_account(data)
     key = saved["key"]
@@ -375,7 +385,7 @@ async def remove_account(key: str):
 
 @router.post("/accounts/parse-token")
 async def parse_token_endpoint(data: Dict[str, Any] = Body(...)):
-    """从用户粘贴的任意抓包文本、cURL 命令或请求头中智能提取真实 Token 并解码"""
+    """从用户粘贴的任意抓包文本、cURL 命令或请求头中智能提取真实 Token 并解码，自动补全真实 Silk ID"""
     raw_text = data.get("raw_text") or ""
     token = extract_token_from_text(raw_text)
     if not token:
@@ -385,23 +395,49 @@ async def parse_token_endpoint(data: Dict[str, Any] = Body(...)):
         }
 
     is_valid, payload, msg = decode_jwt_payload(token)
-    silk_id = extract_silk_id_from_payload(payload)
+    silk_id = extract_silk_id_from_text(raw_text) or extract_silk_id_from_payload(payload)
     user_id = extract_user_id_from_payload(payload)
     exp = payload.get("exp")
     exp_date = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp))) if exp else "长期有效"
     city_code = extract_city_code_from_text(raw_text) or 420100
 
+    nickname = ""
+    avatar = ""
+    vip_level = 5
+
+    # 尝试直连小蚕官方接口获取真实官方资料与精确 Silk ID (解决 Linux/手动添加缺失 silk_id 问题)
+    if is_valid and token:
+        try:
+            info_res = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+            uinfo = info_res.get("user_info") or {}
+            official_silk_id = str(
+                uinfo.get("silk_id")
+                or uinfo.get("id")
+                or info_res.get("silk_id")
+                or ""
+            ).strip()
+            if official_silk_id and official_silk_id != "0":
+                silk_id = official_silk_id
+            if uinfo.get("nickname"):
+                nickname = uinfo["nickname"]
+            if uinfo.get("avatar"):
+                avatar = uinfo["avatar"]
+            vinfo = uinfo.get("vip_level_info") or {}
+            if vinfo.get("new_level") is not None:
+                vip_level = vinfo["new_level"]
+        except Exception as e:
+            logger.info(f"解析凭证时直连小蚕查询官方资料跳过: {e}")
+
     # 优先查重匹配已有账号资料（若已存在则直接读取昵称、头像、城市）
     existing = db.find_account(silk_id=silk_id, user_id=user_id, token=token)
     if existing:
-        nickname = existing.get("nickname") or (f"小蚕用户_{silk_id[-4:]}" if silk_id else "小蚕用户")
-        avatar = existing.get("avatar") or ""
+        nickname = existing.get("nickname") or nickname or (f"小蚕用户_{silk_id[-4:]}" if silk_id else "小蚕用户")
+        avatar = existing.get("avatar") or avatar
         city_code = existing.get("city_code") or city_code
-        vip_level = existing.get("vip_level") or 5
+        vip_level = existing.get("vip_level") or vip_level
     else:
-        nickname = f"小蚕用户_{silk_id[-4:]}" if silk_id else (f"小蚕用户_{user_id[-4:]}" if user_id else "小蚕微信用户")
-        avatar = ""
-        vip_level = 5
+        if not nickname:
+            nickname = f"小蚕用户_{silk_id[-4:]}" if silk_id else (f"小蚕用户_{user_id[-4:]}" if user_id else "小蚕微信用户")
 
     return {
         "ok": True,
@@ -414,7 +450,8 @@ async def parse_token_endpoint(data: Dict[str, Any] = Body(...)):
         "city_code": city_code,
         "nickname": nickname,
         "avatar": avatar,
-        "vip_level": vip_level
+        "vip_level": vip_level,
+        "client_mode": "app"
     }
 
 
@@ -422,6 +459,7 @@ async def parse_token_endpoint(data: Dict[str, Any] = Body(...)):
 async def verify_token_endpoint(data: Dict[str, Any] = Body(...)):
     """验证 Token 真实有效性与过期状态"""
     token = (data.get("token") or "").strip()
+    raw_text = data.get("raw_text") or ""
     if not token:
         raise HTTPException(status_code=400, detail="Token 不能为空")
 
@@ -429,7 +467,18 @@ async def verify_token_endpoint(data: Dict[str, Any] = Body(...)):
     if not is_valid:
         return {"ok": False, "valid": False, "message": msg}
 
-    silk_id = extract_silk_id_from_payload(payload)
+    silk_id = extract_silk_id_from_text(raw_text) or extract_silk_id_from_payload(payload)
+    user_id = extract_user_id_from_payload(payload)
+    if not silk_id and token:
+        try:
+            info_res = await client.get_user_info(token=token, silk_id="", user_id=user_id)
+            uinfo = info_res.get("user_info") or {}
+            official_silk_id = str(uinfo.get("silk_id") or uinfo.get("id") or info_res.get("silk_id") or "").strip()
+            if official_silk_id and official_silk_id != "0":
+                silk_id = official_silk_id
+        except Exception:
+            pass
+
     exp = payload.get("exp")
     exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp))) if exp else "长期有效"
     return {
@@ -468,11 +517,25 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
     yb_point = int(cred.get("yb_point") or 0)
     unreceived_points = int(cred.get("unreceived_points") or 0)
 
-    # 尝试直连小蚕官方获取真实微信昵称、头像和官方会员档案及原生资产
+    # 尝试直连小蚕官方获取真实微信昵称、头像和官方会员档案及原生资产 (自动补全真实 Silk ID)
     if token:
         try:
             info_res = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id)
             uinfo = info_res.get("user_info") or {}
+
+            # 关键：从官方用户详情中提取真正的 Silk ID 回填入库
+            official_silk_id = str(
+                uinfo.get("silk_id")
+                or uinfo.get("id")
+                or info_res.get("silk_id")
+                or ""
+            ).strip()
+            if official_silk_id and official_silk_id != "0":
+                silk_id = official_silk_id
+                if not raw_nick or raw_nick in ("xcmap", "小蚕用户", "小蚕微信用户"):
+                    if not uinfo.get("nickname"):
+                        nickname = f"小蚕用户_{silk_id[-4:]}"
+
             if uinfo.get("nickname"):
                 nickname = uinfo["nickname"]
             if uinfo.get("avatar"):
@@ -533,6 +596,7 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
         "completed_number": completed_number,
         "yb_point": yb_point,
         "unreceived_points": unreceived_points,
+        "client_mode": cred.get("client_mode") or "app",
         "city_code": cred.get("city_code") or 440303,
         "city_name": cred.get("city_name") or "深圳",
         "longitude": cred.get("longitude") or "114.13166",

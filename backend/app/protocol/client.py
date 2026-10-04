@@ -42,18 +42,25 @@ class XiaoCanClient:
         city_code: int = 440303,
         token: Optional[str] = None,
         user_id: Optional[str] = None,
-        silk_id: Optional[str] = None
+        silk_id: Optional[str] = None,
+        platform: Optional[str] = "app"
     ) -> Dict[str, Any]:
         payload = dict(body) if body else {}
-        if "app_id" not in payload:
+        plat = (platform or "app").lower()
+        if plat == "mini":
             payload["app_id"] = 20
+        else:
+            # 全局默认采用小蚕独立移动 App 客户端 ID (10)，彻底解决 50010 端类型拦截
+            payload["app_id"] = 10
+
         headers = generate_headers(
             server_name=server_name,
             method_name=method_name,
             city_code=city_code,
             token=token,
             user_id=user_id,
-            silk_id=silk_id
+            silk_id=silk_id,
+            platform=plat
         )
 
         try:
@@ -142,7 +149,7 @@ class XiaoCanClient:
             "scene": 1,
             "is_show_mt": True,
             "page_pv_id": str(uuid.uuid4()),
-            "app_id": 20
+            "app_id": 10
         }
         try:
             res = await self.invoke_rpc(
@@ -173,7 +180,7 @@ class XiaoCanClient:
             "store_category": 0,
             "store_platform": int(store_platform),
             "store_type": 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormRec",
@@ -205,7 +212,7 @@ class XiaoCanClient:
             "keyword": keyword.strip(),
             "offset": int(offset),
             "number": min(20, max(1, int(limit))),
-            "app_id": 20
+            "app_id": 10
         }
         res = await self.invoke_rpc(
             server_name="SilkwormFusion",
@@ -255,7 +262,7 @@ class XiaoCanClient:
                 "original_price_get": 0,
                 "store_first_category": 0
             },
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormExplore",
@@ -289,7 +296,7 @@ class XiaoCanClient:
             "offset": int(offset),
             "number": int(number),
             "order_status": body_st,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="Silkworm",
@@ -321,7 +328,7 @@ class XiaoCanClient:
             "page_pv_id": page_pv_id or "",
             "sort_type": int(sort_type),
             "search_word": keyword.strip() if keyword else "",
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormRcs",
@@ -346,7 +353,7 @@ class XiaoCanClient:
             "if_need_subscribe": True,
             "if_need_notify_status": True,
             "inviter_silk_id": 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="Silkworm",
@@ -370,7 +377,7 @@ class XiaoCanClient:
         """获取元宝总览与待领取状态 (ActivityTask.ActivityTaskMobileService.UserTaskV2)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="ActivityTask",
@@ -397,7 +404,7 @@ class XiaoCanClient:
             "page": int(page),
             "page_size": int(page_size),
             "status": 1,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="ActivityTask",
@@ -419,7 +426,7 @@ class XiaoCanClient:
         """获取待领取的元宝点数统计 (ActivityTask.ActivityTaskMobileService.WaitClaimedPoints)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="ActivityTask",
@@ -441,7 +448,7 @@ class XiaoCanClient:
         """获取会员每日连续签到天数与今日签到状态 (SilkwormVip.VipRightsService.UserSignInDays)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormVip",
@@ -464,7 +471,7 @@ class XiaoCanClient:
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "need_status": True,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormVip",
@@ -489,7 +496,7 @@ class XiaoCanClient:
             "check_red_packet_guide": True,
             "check_subscribe": True,
             "check_supporter_experiment": True,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormShareSupport",
@@ -515,7 +522,7 @@ class XiaoCanClient:
             "silk_id": int(silk_id) if silk_id else 0,
             "offset": int(offset),
             "number": int(number),
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="Silkworm",
@@ -541,7 +548,7 @@ class XiaoCanClient:
             "silk_id": int(silk_id) if silk_id else 0,
             "page": 1,
             "page_size": 20,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormMessageCenter",
@@ -568,7 +575,7 @@ class XiaoCanClient:
             "silk_id": int(silk_id) if silk_id else 0,
             "page": int(page),
             "page_size": int(page_size),
-            "app_id": 20
+            "app_id": 10
         }
         if channel_id is not None and channel_id > 0:
             body["channel_id"] = int(channel_id)
@@ -595,7 +602,7 @@ class XiaoCanClient:
         """将当前账号所有消息标记为已读 (SilkwormMessageCenter.MessageCenterService.SetMessageAllRead)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormMessageCenter",
@@ -619,7 +626,7 @@ class XiaoCanClient:
         """元宝乐园每日签到 (SilkwormMobileMarketingService.UserSign)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormMarketing",
@@ -668,7 +675,7 @@ class XiaoCanClient:
         """增加每日抽奖机会 (SilkwormMobileMarketingService.UserIncrLotteryNumber)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormMarketing",
@@ -769,7 +776,8 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 440303,
+        platform: str = "app"
     ) -> Dict[str, Any]:
         """获取会员专属每日膨胀红包池与成长值 (SilkwormVipMobile.VipPrizes)"""
         body = {
@@ -782,7 +790,8 @@ class XiaoCanClient:
             city_code=city_code,
             token=token,
             silk_id=silk_id,
-            user_id=user_id
+            user_id=user_id,
+            platform=platform
         )
 
     async def get_vip_rebate_info(
@@ -995,7 +1004,8 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 440303,
+        platform: str = "app"
     ) -> Dict[str, Any]:
         """查询每日 09:30 SVIP 大牌券与膨胀奖池配置 (SilkwormVipMobile.VipPrizes)"""
         body = {
@@ -1008,7 +1018,8 @@ class XiaoCanClient:
             city_code=city_code,
             token=token,
             silk_id=silk_id,
-            user_id=user_id
+            user_id=user_id,
+            platform=platform
         )
 
     async def vip_prizes_lottery(
@@ -1017,7 +1028,8 @@ class XiaoCanClient:
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
         city_code: int = 440303,
-        vip_level: int = 0
+        vip_level: int = 0,
+        platform: str = "app"
     ) -> Dict[str, Any]:
         """执行每日 09:30 SVIP 大牌券/膨胀礼金秒杀抽奖 (SilkwormVipMobile.VipPrizesLottery)"""
         body: Dict[str, Any] = {
@@ -1032,7 +1044,8 @@ class XiaoCanClient:
             city_code=city_code,
             token=token,
             silk_id=silk_id,
-            user_id=user_id
+            user_id=user_id,
+            platform=platform
         )
 
     async def get_vip_rebate_info(
@@ -1223,7 +1236,7 @@ class XiaoCanClient:
             "promotion_id": str(promotion_id),
             "redpack_mode": int(redpack_mode),
             "redpack_id": redpack_id or "",
-            "app_id": 20,
+            "app_id": 10,
             "silk_id": int(silk_id) if silk_id else 0
         }
         return await self.invoke_rpc(
@@ -1344,7 +1357,7 @@ class XiaoCanClient:
         """一键收取账户所有待领气泡元宝与达标任务元宝 (ActivityTask.ActivityTaskMobileService.CollectPoints)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="ActivityTask",
@@ -1414,7 +1427,7 @@ class XiaoCanClient:
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "card_number_mode": 1,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="SilkwormCard",
@@ -1442,7 +1455,7 @@ class XiaoCanClient:
             "status": int(status),
             "offset": int(offset),
             "number": int(number),
-            "app_id": 20
+            "app_id": 10
         }
         try:
             return await self.invoke_rpc(
@@ -1468,7 +1481,7 @@ class XiaoCanClient:
         """获取用户可用红包总数 (RedPackService.GetUserRedPackNum)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="RedPackService",
@@ -1494,7 +1507,7 @@ class XiaoCanClient:
             "silk_id": int(silk_id) if silk_id else 0,
             "page": int(page),
             "page_size": int(page_size),
-            "app_id": 20
+            "app_id": 10
         }
         return await self.invoke_rpc(
             server_name="RedPackService",

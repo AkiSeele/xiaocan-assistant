@@ -110,6 +110,7 @@ export const Accounts: React.FC = () => {
     message: string;
     exp_date: string;
     nickname: string;
+    client_mode?: string;
   } | null>(null);
 
   // 微信极速无感直连状态
@@ -122,6 +123,7 @@ export const Accounts: React.FC = () => {
 
   // 账号表单自定义
   const [customNickname, setCustomNickname] = useState('');
+  const [customSilkId, setCustomSilkId] = useState('');
 
   // 同步状态
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
@@ -334,6 +336,8 @@ export const Accounts: React.FC = () => {
     setActiveTab('wechat');
     setRawText('');
     setParsedInfo(null);
+    setCustomNickname('');
+    setCustomSilkId('');
     hasNotifiedCaptureRef.current = false;
   };
 
@@ -388,9 +392,11 @@ export const Accounts: React.FC = () => {
             is_valid: res.is_valid,
             message: res.message,
             exp_date: res.exp_date || '长期有效',
-            nickname: res.nickname || '小蚕微信用户'
+            nickname: res.nickname || '小蚕微信用户',
+            client_mode: 'app'
           });
           setCustomNickname(res.nickname || '小蚕微信用户');
+          setCustomSilkId(res.silk_id || '');
         } else {
           setParsedInfo(null);
         }
@@ -421,12 +427,13 @@ export const Accounts: React.FC = () => {
       }
 
       const saveRes = await api.createAccount({
-        silk_id: parsedInfo.silk_id,
+        silk_id: (customSilkId || '').trim() || parsedInfo.silk_id,
         nickname: (customNickname || '').trim() || parsedInfo.nickname,
         avatar: '',
         vip_level: 5,
         token: parsedInfo.token,
-        expires_at: parsedInfo.exp_date
+        expires_at: parsedInfo.exp_date,
+        client_mode: 'app'
       });
 
       const nick = customNickname || parsedInfo.nickname || '小蚕用户';
@@ -666,7 +673,15 @@ export const Accounts: React.FC = () => {
                         )}
                       </div>
                       <div className="flex items-center gap-1.5 mt-0.5 text-xs text-semi-color-text-2">
-                        <span>Silk ID: {acc.silk_id || '—'}</span>
+                        <span>Silk ID: {acc.silk_id || '未配置'}</span>
+                        {!acc.silk_id && (
+                          <Tooltip content="该账号暂无关联 Silk ID，点击卡片底部「同步」按钮可直连官方自动补全">
+                            <Tag color="red" size="small">缺失ID</Tag>
+                          </Tooltip>
+                        )}
+                        <Tag color="teal" size="small">
+                          App模式
+                        </Tag>
                       </div>
                     </div>
                   </div>
@@ -988,21 +1003,49 @@ export const Accounts: React.FC = () => {
                   row
                   size="small"
                   data={[
-                    { key: 'Silk ID', value: parsedInfo.silk_id || '未能解析' },
-                    { key: '凭据有效期', value: parsedInfo.exp_date }
+                    { key: 'Silk ID', value: customSilkId || parsedInfo.silk_id || '未能解析（请手动输入）' },
+                    { key: '凭据有效期', value: parsedInfo.exp_date },
+                    { key: '协议运行环境', value: '官方独立App原生客户端模式' }
                   ]}
                 />
 
                 <Divider className="my-2.5" />
 
-                <div>
-                  <Text size="small" type="secondary">账号备注昵称：</Text>
-                  <input
-                    className="w-full mt-1 h-8 rounded border border-semi-color-border px-2 bg-transparent text-semi-color-text-0 focus:outline-none focus:border-semi-color-primary"
-                    value={customNickname}
-                    onChange={(e) => setCustomNickname(e.target.value)}
-                    placeholder="自定义账号备注名称"
-                  />
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <Text size="small" type="secondary">Silk ID (小蚕官方全局唯一数字 ID，用于 RPC 鉴权与识别)：</Text>
+                      {customSilkId ? (
+                        <Tag color="green" size="small">已自动捕获/解析</Tag>
+                      ) : (
+                        <Tag color="amber" size="small">需手动输入</Tag>
+                      )}
+                    </div>
+                    <input
+                      className="w-full h-8 rounded border border-semi-color-border px-2.5 bg-transparent text-semi-color-text-0 focus:outline-none focus:border-semi-color-primary text-[13px]"
+                      value={customSilkId}
+                      onChange={(e) => setCustomSilkId(e.target.value)}
+                      placeholder="例如: 1334646（已自动补全，亦可手动核对修改）"
+                    />
+                  </div>
+
+                  <div>
+                    <Text size="small" type="secondary" className="block mb-1">账号备注昵称：</Text>
+                    <input
+                      className="w-full h-8 rounded border border-semi-color-border px-2.5 bg-transparent text-semi-color-text-0 focus:outline-none focus:border-semi-color-primary text-[13px]"
+                      value={customNickname}
+                      onChange={(e) => setCustomNickname(e.target.value)}
+                      placeholder="自定义账号备注名称"
+                    />
+                  </div>
+
+                  <div className="bg-semi-color-primary-light-default/40 border border-semi-color-primary-light-active rounded-lg p-2.5 flex items-center justify-between">
+                    <div>
+                      <div className="text-[12px] font-medium text-semi-color-text-0">通信协议规范：官方独立 App 原生客户端模式</div>
+                      <div className="text-[11px] text-semi-color-text-2 mt-0.5">系统已全局默认启用独立 App 原生环境仿真，全功能支持大牌神券、影音周卡等全量特权抢领</div>
+                    </div>
+                    <Tag color="green" size="small">全功能就绪</Tag>
+                  </div>
                 </div>
               </div>
             )}
@@ -1107,11 +1150,12 @@ export const Accounts: React.FC = () => {
               <div className="border border-dashed border-semi-color-border rounded-xl p-3.5 bg-semi-color-fill-0">
                 <div className="flex items-center gap-2 mb-1.5">
                   <IconInfoCircle size="small" className="text-semi-color-primary" />
-                  <Text strong className="text-xs">凭据格式与说明</Text>
+                  <Text strong className="text-xs">凭据格式与特别说明（Linux 服务器与大牌神券）</Text>
                 </div>
                 <div className="text-xs text-semi-color-text-2 space-y-1">
                   <div>• 凭据为标准的 JWT 字符串（以 <code>eyJhbGciOi...</code> 开头），通常具有约 30 天有效期。</div>
-                  <div>• 支持直接粘贴整段 cURL 命令或 HTTP 原始报文，系统内置正则引擎将自动提取并校验。</div>
+                  <div>• <b>Linux 服务器便捷导入</b>：支持直接粘贴整段 cURL 命令或 HTTP 原始报文，系统内置引擎将自动提取 Token 并直连官方自动补齐真实 Silk ID 与账号档案。</div>
+                  <div>• <b>突破大牌券 App 端限制</b>：针对官方限制 09:30 SVIP 大牌券仅限 App 端领取的问题，系统已内置原生独立 App 协议环境（appid: 10 / X-Platform: app），默认全自动穿透风控抢领大牌券。</div>
                 </div>
               </div>
             </div>

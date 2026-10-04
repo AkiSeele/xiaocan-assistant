@@ -406,10 +406,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             if warmup_msg:
                 log_output += warmup_msg
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索今日 09:30 SVIP 大牌神券奖池配置与实时库存...\n"
+            client_mode = str(account.get("client_mode") or "app").lower()
+            mode_desc = "独立App原生协议模式" if client_mode in ("app", "android", "ios") else "小程序协议模式"
+            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索今日 09:30 SVIP 大牌神券奖池配置与实时库存 ({mode_desc})...\n"
             try:
                 now_ts = int(time.time())
-                prizes_res = await client.get_vip_prizes(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                # 大牌券官方限制仅限独立 App 领取，强制采用 App 协议仿真模式
+                prizes_res = await client.get_vip_prizes(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
                 p_data = prizes_res.get("data") or {}
                 red_pack_cfg = p_data.get("red_pack_config") or []
                 remaining_amt = p_data.get("remaining_amount", 0)
@@ -453,7 +456,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     for try_idx in range(1, 4):
                         ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                         try:
-                            lottery_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, vip_level=user_vip_lvl)
+                            # 采用 App 原生协议特征秒杀
+                            lottery_res = await client.vip_prizes_lottery(
+                                token=token,
+                                silk_id=silk_id,
+                                user_id=user_id,
+                                city_code=city_code,
+                                vip_level=user_vip_lvl,
+                                platform="app"
+                            )
                             prize = lottery_res.get("prize") or {}
                             p_name = prize.get("name") or prize.get("title") or "SVIP大牌券"
                             log_output += f"[{ts_fmt}] [抢SVIP大牌券] 第{try_idx}次请求 抢券成功！({p_name})\n"
@@ -466,9 +477,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                             )
                             break
                         except XiaoCanRPCError as e:
-                            if e.code == 50010:
-                                log_output += f"[{ts_fmt}] [抢SVIP大牌券] 第{try_idx}次请求提示: 官方限制仅限独立App端领取或本场已抢光 (代码: 50010)\n"
-                                break
                             log_output += f"[{ts_fmt}] [抢SVIP大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
                             if e.code in (40003, 40004, 40037, 40038, 40039, 40040):
                                 break
@@ -613,7 +621,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到异常: {e}\n"
 
         elif task_id == "svip_rebate":
-            # 抢SVIP专属返利券 (每日 09:00:00 准点开抢)
+            # 抢SVIP专属返利券 (每日 09:00:00 准点秒杀)
             warmup_msg = await prepare_warmup_and_wait(
                 target_hour=9, target_minute=0, token=token,
                 silk_id=silk_id, user_id=user_id, city_code=city_code,
@@ -622,9 +630,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             if warmup_msg:
                 log_output += warmup_msg
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索今日 09:00 SVIP 专属返利券库存与当月达标资格...\n"
+            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索今日 09:00 SVIP 专属返利券库存与当月达标资格 (官方独立App原生协议)...\n"
             try:
-                rebate_res = await client.get_vip_rebate_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                rebate_res = await client.get_vip_rebate_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
                 r_data = rebate_res.get("data") or {}
                 inv = r_data.get("inventory_num", 0)
                 completed = r_data.get("completed_num", 0)
@@ -633,27 +641,38 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 start_str = time.strftime('%H:%M:%S', time.localtime(start_ts)) if start_ts else "09:00:00"
                 log_output += f"[{time.strftime('%H:%M:%S')}] 返利券监测: 开抢时间 {start_str} | 今日余量 {inv} | 当月完成 {completed}/{total} 档\n"
 
-                if completed < total:
+                if total > 0 and completed < total:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 资格核验未通过: 当月需完成 {total} 单（当前仅 {completed} 单），未达到返利券门槛\n"
-                elif inv == 0:
+                elif inv == 0 and start_ts and int(time.time()) > start_ts + 60:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 余量监测: 今日返利券配额已被抢完，请明日准点开抢\n"
                 else:
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    user_vip_lvl = int(account.get("vip_level") or 1)
                     try:
-                        claim_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        p_name = (claim_res.get("prize") or {}).get("name") or "SVIP专属返利券"
-                        log_output += f"[{ts_fmt}] [抢SVIP返利券] 抢券成功！已领取: 【{p_name}】\n"
-                        from .notifier import send_system_notification
-                        await send_system_notification(
-                            title="抢SVIP返利券成功",
-                            content=f"账号【{nickname}】成功领取【{p_name}】！",
-                            account_key=account_key
-                        )
-                    except XiaoCanRPCError as ce:
-                        if ce.code == 50010:
-                            log_output += f"[{ts_fmt}] [抢SVIP返利券] 官方响应: 官方限制仅限独立App端领取或本场已抢光 (错误码: 50010)\n"
-                        else:
-                            log_output += f"[{ts_fmt}] [抢SVIP返利券] 官方响应: {ce.msg} (错误码: {ce.code})\n"
+                        u_info = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
+                        user_vip_lvl = (u_info.get("user_info") or {}).get("vip_level_info", {}).get("new_level", user_vip_lvl)
+                    except Exception:
+                        pass
+
+                    for try_idx in range(1, 4):
+                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        try:
+                            claim_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, vip_level=user_vip_lvl, platform="app")
+                            p_name = (claim_res.get("prize") or {}).get("name") or "SVIP专属返利券"
+                            log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求 抢券成功！已领取: 【{p_name}】\n"
+                            from .notifier import send_system_notification
+                            await send_system_notification(
+                                title="抢SVIP返利券成功",
+                                content=f"账号【{nickname}】成功领取【{p_name}】！",
+                                account_key=account_key
+                            )
+                            break
+                        except XiaoCanRPCError as ce:
+                            log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
+                            if ce.code in (40003, 40004, 40037, 40038, 40039, 40040):
+                                break
+                        except Exception as e:
+                            log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求异常: {e}\n"
+                        await asyncio.sleep(0.1)
             except XiaoCanRPCError as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] SVIP返利券接口响应: {e.msg} (代码: {e.code})\n"
             except Exception as e:
@@ -669,31 +688,42 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             if warmup_msg:
                 log_output += warmup_msg
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索每月免单券 14:00 专属通道状态与账户资格...\n"
+            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索每月免单券 14:00 专属通道状态与账户资格 (官方独立App原生协议)...\n"
             try:
-                cards_res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                cards_res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
                 card_list = cards_res.get("card_list") or cards_res.get("list") or []
                 existing_free = [c for c in card_list if "免单" in (c.get("name") or c.get("card_name") or "")]
                 if existing_free:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 账户监测: 账户内已持有 {len(existing_free)} 张有效免单券，每月限抢1张，无需重复抢券\n"
                 else:
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    user_vip_lvl = int(account.get("vip_level") or 1)
                     try:
-                        lottery_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        p_info = lottery_res.get("prize") or {}
-                        p_name = p_info.get("name") or "每月全额免单券"
-                        log_output += f"[{ts_fmt}] [抢每月免单券] 抢券成功！中得: 【{p_name}】\n"
-                        from .notifier import send_system_notification
-                        await send_system_notification(
-                            title="抢每月免单券成功",
-                            content=f"账号【{nickname}】成功抢到【{p_name}】！",
-                            account_key=account_key
-                        )
-                    except XiaoCanRPCError as ce:
-                        if ce.code == 50010:
-                            log_output += f"[{ts_fmt}] [抢每月免单券] 官方响应: 官方限制仅限独立App端领取或本场已发完 (代码: 50010)\n"
-                        else:
-                            log_output += f"[{ts_fmt}] [抢每月免单券] 官方响应: {ce.msg} (代码: {ce.code})\n"
+                        u_info = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
+                        user_vip_lvl = (u_info.get("user_info") or {}).get("vip_level_info", {}).get("new_level", user_vip_lvl)
+                    except Exception:
+                        pass
+
+                    for try_idx in range(1, 4):
+                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        try:
+                            lottery_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, vip_level=user_vip_lvl, platform="app")
+                            p_info = lottery_res.get("prize") or {}
+                            p_name = p_info.get("name") or "每月全额免单券"
+                            log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求 抢券成功！中得: 【{p_name}】\n"
+                            from .notifier import send_system_notification
+                            await send_system_notification(
+                                title="抢每月免单券成功",
+                                content=f"账号【{nickname}】成功抢到【{p_name}】！",
+                                account_key=account_key
+                            )
+                            break
+                        except XiaoCanRPCError as ce:
+                            log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
+                            if ce.code in (40003, 40004, 40037, 40038, 40039, 40040):
+                                break
+                        except Exception as e:
+                            log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求异常: {e}\n"
+                        await asyncio.sleep(0.1)
             except Exception as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 抢免单券处理异常: {e}\n"
 
@@ -705,7 +735,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             if goods_ids:
                 try:
                     gid = int(goods_ids.split(",")[0].strip())
-                    ex_res = await client.exchange_goods(goods_id=gid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                    ex_res = await client.exchange_goods(goods_id=gid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
                     log_output += f"[{ts_fmt}] [自动抢元宝秒杀] 第1次请求: 商品 #{gid} 兑换成功！(状态: {ex_res.get('status', {}).get('msg', 'ok')})\n"
                 except XiaoCanRPCError as e:
                     log_output += f"[{ts_fmt}] [自动抢元宝秒杀] 第1次请求提示: {e.msg} (代码: {e.code})\n"
@@ -726,31 +756,35 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             if warmup_msg:
                 log_output += warmup_msg
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索 {target_h}:00 影音会员周卡专属通道与资格...\n"
+            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索 {target_h}:00 影音会员周卡专属通道与资格 (官方独立App原生协议)...\n"
             try:
-                uinfo = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                uinfo = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, platform="app")
                 vip_info = (uinfo.get("user_info") or {}).get("vip_level_info") or {}
-                lvl = vip_info.get("new_level", 0)
+                lvl = vip_info.get("new_level", int(account.get("vip_level") or 1))
                 if lvl < 5:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 等级核验未通过: 影音周卡仅限 VIP5、VIP6 或 SVIP4-6 用户参与 (当前等级: VIP{lvl})\n"
                 else:
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    try:
-                        lottery_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        p_info = lottery_res.get("prize") or {}
-                        p_name = p_info.get("name") or "腾讯视频VIP周卡"
-                        log_output += f"[{ts_fmt}] [影音会员周卡] 抢券成功！获得: 【{p_name}】\n"
-                        from .notifier import send_system_notification
-                        await send_system_notification(
-                            title="抢影音会员周卡成功",
-                            content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{p_name}】！",
-                            account_key=account_key
-                        )
-                    except XiaoCanRPCError as ce:
-                        if ce.code == 50010:
-                            log_output += f"[{ts_fmt}] [影音会员周卡] 官方响应: 官方限制仅限独立App端领取或本场已发完 (代码: 50010)\n"
-                        else:
-                            log_output += f"[{ts_fmt}] [影音会员周卡] 官方响应: {ce.msg} (代码: {ce.code})\n"
+                    for try_idx in range(1, 4):
+                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        try:
+                            lottery_res = await client.vip_prizes_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, vip_level=lvl, platform="app")
+                            p_info = lottery_res.get("prize") or {}
+                            p_name = p_info.get("name") or "腾讯视频VIP周卡"
+                            log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求 抢券成功！获得: 【{p_name}】\n"
+                            from .notifier import send_system_notification
+                            await send_system_notification(
+                                title="抢影音会员周卡成功",
+                                content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{p_name}】！",
+                                account_key=account_key
+                            )
+                            break
+                        except XiaoCanRPCError as ce:
+                            log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
+                            if ce.code in (40003, 40004, 40037, 40038, 40039, 40040):
+                                break
+                        except Exception as e:
+                            log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求异常: {e}\n"
+                        await asyncio.sleep(0.1)
             except Exception as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 影音周卡处理异常: {e}\n"
 
