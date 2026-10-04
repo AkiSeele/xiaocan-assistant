@@ -71,5 +71,7 @@ if os.path.exists(FRONTEND_DIST):
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("启动本地 Web 服务: http://0.0.0.0:8690")
-    uvicorn.run("main:app", host="0.0.0.0", port=8690, reload=True)
+    # run.bat 设置 XIAOCAN_RELOAD=0 以生产模式运行；dev.bat 设置为 1 启用代码热重载
+    reload_enabled = os.environ.get("XIAOCAN_RELOAD", "1") != "0"
+    logger.info(f"启动本地 Web 服务: http://0.0.0.0:8690 (热重载: {'开启' if reload_enabled else '关闭'})")
+    uvicorn.run("main:app", host="0.0.0.0", port=8690, reload=reload_enabled)

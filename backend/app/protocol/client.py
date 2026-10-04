@@ -62,7 +62,19 @@ class XiaoCanClient:
                 json=payload,
                 headers=headers
             )
+            if resp.status_code == 403:
+                is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
+                hint = "已被腾讯云 WAF 防火墙拦截 [403 Forbidden]。通常原因是：开启了海外代理/VPN/TUN模式（小蚕服务端拦截境外IP），或当前IP触发了频控防护。请关闭全局代理或添加 xiaocantech.com 直连分流后重试" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
+                logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
+                raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
+
+            if resp.status_code != 200:
+                logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
+                raise XiaoCanRPCError(code=resp.status_code, msg=f"HTTP {resp.status_code} 异常", raw={"status_code": resp.status_code, "text": resp.text[:200]})
+
             data = resp.json()
+        except XiaoCanRPCError:
+            raise
         except Exception as e:
             logger.error(f"RPC {server_name}.{method_name} network failure: {e}")
             raise

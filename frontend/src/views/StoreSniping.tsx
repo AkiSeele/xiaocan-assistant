@@ -1490,7 +1490,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '返利规则',
       dataIndex: 'order_money',
-      width: 230,
+      width: 215,
       render: (_: any, row?: StoreItem) => {
         if (!row) return null;
         const currentPid = row.selected_promotion_id || row.promotion_id;
@@ -1529,7 +1529,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '剩余名额',
       dataIndex: 'left_number',
-      width: 130,
+      width: 110,
       render: (_: any, row?: StoreItem) => {
         if (!row) return null;
         const currentPid = row.selected_promotion_id || row.promotion_id;
@@ -1546,7 +1546,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '活动时段',
       dataIndex: 'start_time',
-      width: 170,
+      width: 155,
       render: (_: any, row?: StoreItem) => {
         if (!row) return null;
         const currentPid = row.selected_promotion_id || row.promotion_id;
@@ -1583,7 +1583,8 @@ export const StoreSniping: React.FC = () => {
     {
       title: '操作',
       dataIndex: 'actions',
-      width: 175,
+      width: 195,
+      className: 'store-action-cell',
       fixed: 'right',
       render: (_: any, row?: StoreItem) => {
         if (!row) return null;
@@ -1596,22 +1597,24 @@ export const StoreSniping: React.FC = () => {
         if (timeStat.status === 'before') {
           const canAdvance = timeStat.diffMinutes > 0 && timeStat.diffMinutes <= 30 && assetStats.advanceCouponCount > 0;
           return (
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-nowrap">
               {canAdvance && (
                 <Button
                   theme="solid"
                   type="warning"
                   size="small"
+                  className="!px-2"
                   loading={isGrabbing}
                   onClick={() => handleGrabNow(row, activePromo, true)}
                 >
-                  超前抢 ({assetStats.advanceCouponCount}张)
+                  超前抢 ({assetStats.advanceCouponCount})
                 </Button>
               )}
               <Button
                 theme="light"
                 type="primary"
                 size="small"
+                className="!px-2"
                 onClick={() => handleOpenAppoint(row, activePromo, 'countdown')}
               >
                 预约抢单
@@ -1627,6 +1630,7 @@ export const StoreSniping: React.FC = () => {
                 theme="solid"
                 type="primary"
                 size="small"
+                className="!px-3"
                 loading={isGrabbing}
                 onClick={() => handleGrabNow(row, activePromo)}
               >
@@ -1635,11 +1639,12 @@ export const StoreSniping: React.FC = () => {
             );
           } else {
             return (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-nowrap">
                 <Button
                   theme="light"
                   type="warning"
                   size="small"
+                  className="!px-2"
                   onClick={() => handleOpenAppoint(row, activePromo, 'monitor')}
                 >
                   名额监听
@@ -1648,6 +1653,7 @@ export const StoreSniping: React.FC = () => {
                   theme="borderless"
                   type="tertiary"
                   size="small"
+                  className="!px-2 text-semi-color-text-2 hover:text-semi-color-primary"
                   onClick={() => handleOpenNameMonitor(cleanEmoji(row.name))}
                 >
                   店名蹲守
@@ -1658,12 +1664,13 @@ export const StoreSniping: React.FC = () => {
         }
 
         return (
-          <div className="flex items-center gap-1.5">
-            <Button disabled size="small">已过时段</Button>
+          <div className="flex items-center gap-1.5 flex-nowrap">
+            <Button disabled size="small" className="!px-2">已过时段</Button>
             <Button
               theme="borderless"
               type="tertiary"
               size="small"
+              className="!px-2 text-semi-color-text-2 hover:text-semi-color-primary"
               onClick={() => handleOpenNameMonitor(cleanEmoji(row.name))}
             >
               店名蹲守
@@ -2400,6 +2407,19 @@ export const StoreSniping: React.FC = () => {
           will-change: transform;
           transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
+        }
+        /* 操作列紧凑内边距与不换行，杜绝多按钮撑开单元格导致表格产生横向滚动条 */
+        .store-table-container .store-action-cell,
+        .store-action-cell {
+          padding-left: 8px !important;
+          padding-right: 8px !important;
+          white-space: nowrap !important;
+        }
+        /* 桌面端宽度足够时，强制消除普通/大牌店铺列表的偶发微小横向滚动条 */
+        @media (min-width: 1024px) {
+          .store-table-container .semi-table-body {
+            overflow-x: hidden !important;
+          }
         }
         .store-table-footer {
           flex-shrink: 0 !important;

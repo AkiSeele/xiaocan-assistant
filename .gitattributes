@@ -1,0 +1,4 @@
+# Windows 批处理脚本必须使用 CRLF 换行，否则 cmd 解析中文与 goto 标签时会出错导致窗口闪退
+# 该规则同时作用于 git clone 与 GitHub 的 Download ZIP
+*.bat text eol=crlf
+*.cmd text eol=crlf

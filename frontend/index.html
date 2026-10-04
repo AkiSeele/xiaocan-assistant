@@ -8,6 +8,12 @@
     <link rel="apple-touch-icon" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>小蚕小帮手</title>
+    <!--
+      CSS Cascade Layer 顺序声明（必须早于所有打包 CSS 加载）
+      生产构建时 Vite 会将 Semi 样式拆分到独立 chunk 并优先加载，
+      若不在此处提前声明，semi 层会先于 base 层注册，导致 Tailwind Preflight 覆盖 Semi 组件样式
+    -->
+    <style>@layer theme, base, semi, utilities;</style>
   </head>
   <body>
     <div id="root"></div>
