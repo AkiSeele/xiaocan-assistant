@@ -98,6 +98,14 @@ async def run_dual_rebate_monitor(
 
     log_lines.append(f"[{now_str}] 启动美团同店双返利巡检: 触发方式={trigger_type}, 范围={max_stores}家, 关键词='{keyword}'")
 
+    # 0. 前置 WAF 拦截状态检查，避免封禁期间盲目发起巡检
+    from ..protocol.client import is_waf_blocked, get_waf_cooldown_seconds
+    if is_waf_blocked():
+        remain = get_waf_cooldown_seconds()
+        err_msg = f"[{now_str}] 巡检跳过: 当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中 (剩余约 {remain} 秒)，已自动暂停本次巡检以避免延长封锁。切换手机热点或重启光猫更换IP可立即恢复。"
+        log_lines.append(err_msg)
+        return "\n".join(log_lines) + "\n", False
+
     # 1. 前置强校验：必须接入并开启任意一种通知渠道
     if not is_any_notify_channel_enabled():
         err_msg = f"[{now_str}] 巡检中止: 系统未开启或未配置任何通知渠道，请前往【系统设置】配置！"

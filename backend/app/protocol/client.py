@@ -21,15 +21,57 @@ class XiaoCanRPCError(Exception):
         self.raw = raw or {}
 
 
+# 官方腾讯云 WAF 熔断状态守护 (防止被封期间盲目重发延长黑名单时间)
+_waf_blocked_until: float = 0.0
+
+
+def is_waf_blocked() -> bool:
+    import time
+    return time.time() < _waf_blocked_until
+
+
+def get_waf_cooldown_seconds() -> int:
+    import time
+    return max(0, int(_waf_blocked_until - time.time()))
+
+
+def mark_waf_blocked(duration_seconds: int = 300):
+    global _waf_blocked_until
+    import time
+    _waf_blocked_until = max(_waf_blocked_until, time.time() + duration_seconds)
+
+
+def clear_waf_block():
+    global _waf_blocked_until
+    _waf_blocked_until = 0.0
+
+
 class XiaoCanClient:
-    def __init__(self, timeout: float = 10.0):
+    def __init__(self, timeout: float = 10.0, proxy: Optional[str] = None):
         self.timeout = timeout
-        self.session = httpx.AsyncClient(
-            http2=True,
-            timeout=timeout,
-            follow_redirects=True,
-            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20)
-        )
+        # 支持上游代理 (仅在显式传入或数据库明确配置了 network_proxy 时启用，避免宿主机全局梯子误代理国内请求导致 WAF 拦截)
+        proxy_url = proxy
+        if not proxy_url:
+            try:
+                from ..models import database as db
+                custom_proxy = db.get_setting("network_proxy")
+                if custom_proxy and isinstance(custom_proxy, str) and custom_proxy.strip():
+                    proxy_url = custom_proxy.strip()
+            except Exception:
+                pass
+
+        client_kwargs: Dict[str, Any] = {
+            "http2": True,
+            "timeout": timeout,
+            "follow_redirects": True,
+            "limits": httpx.Limits(max_connections=50, max_keepalive_connections=20)
+        }
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+        else:
+            client_kwargs["trust_env"] = False
+
+        self.session = httpx.AsyncClient(**client_kwargs)
 
     async def close(self):
         await self.session.aclose()
@@ -45,6 +87,14 @@ class XiaoCanClient:
         silk_id: Optional[str] = None,
         platform: Optional[str] = "app"
     ) -> Dict[str, Any]:
+        # 1. 前置熔断保护：若当前网络 IP 处于腾讯云 WAF 冷却期，阻止盲发以防重置封锁计时
+        if is_waf_blocked():
+            remain_sec = get_waf_cooldown_seconds()
+            raise XiaoCanRPCError(
+                code=403,
+                msg=f"当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中（剩余约 {remain_sec} 秒），系统已自动熔断休眠以避免延长封禁。如需立即恢复，请切换手机热点或重启光猫/路由器更换IP。"
+            )
+
         payload = dict(body) if body else {}
         plat = (platform or "app").lower()
         if plat == "mini":
@@ -71,7 +121,9 @@ class XiaoCanClient:
             )
             if resp.status_code == 403:
                 is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
-                hint = "已被腾讯云 WAF 防火墙拦截 [403 Forbidden]。通常原因是：开启了海外代理/VPN/TUN模式（小蚕服务端拦截境外IP），或当前IP触发了频控防护。请关闭全局代理或添加 xiaocantech.com 直连分流后重试" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
+                if is_waf:
+                    mark_waf_blocked(duration_seconds=300)
+                hint = "已被腾讯云 WAF 防火墙拦截 [403 Forbidden]，系统已激活 5 分钟熔断休眠保护。通常原因是：开启了海外代理/VPN/TUN模式，或当前IP触发了频控防护。请切换手机热点、重启光猫更换IP或等待冷却后重试" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
                 logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
                 raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
 
@@ -345,7 +397,9 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 440303,
+        platform: Optional[str] = None,
+        **kwargs: Any
     ) -> Dict[str, Any]:
         """获取小蚕官方真实个人资料 (Silkworm.SilkwormService.GetClientUserInfo)"""
         body = {
@@ -476,6 +530,28 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormVip",
             method_name="VipRightsService.SignInNode",
+            body=body,
+            city_code=city_code,
+            token=token,
+            user_id=user_id,
+            silk_id=silk_id
+        )
+
+    async def sign_in_lottery(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """会员专属每日签到抽奖 (SilkwormVip.VipRightsService.SignInLottery)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "app_id": 10
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.SignInLottery",
             body=body,
             city_code=city_code,
             token=token,
@@ -846,7 +922,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """领取免费任务赠送的抽奖机会 (SilkwormLotteryMobile.AddLotteryTimes: 2=分享, 8=饿了么, 9=美团, 10=到店, 11=福利)"""
+        """领取免费任务赠送的开红包机会 (SilkwormLotteryMobile.AddLotteryTimes: 1=签到, 2=分享, 4=沾一沾, 8=饿了么, 9=美团, 10=到店, 11=福利)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "type": int(lottery_type)
@@ -999,21 +1075,387 @@ class XiaoCanClient:
             user_id=user_id
         )
 
-    async def get_vip_prizes(
+
+    # ---------------- 官方独立 App 原生 VIP 特权与秒杀微服务 (VipRightsService) ---------------- #
+
+    # 1. 每月保底大牌券通道 (每月固定保底张数，如 SVIP6 每月 8 张保底，严禁在每日日常抢券定时任务中调用)
+    async def get_brand_card_info(
         self,
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
         city_code: int = 440303,
-        platform: str = "app"
+        card_type: int = 1
     ) -> Dict[str, Any]:
-        """查询每日 09:30 SVIP 大牌券与膨胀奖池配置 (SilkwormVipMobile.VipPrizes)"""
+        """查询每月保底 SVIP 大牌神券总额度与剩余保底配额 (SilkwormVip.VipRightsService.BrandCardInfo)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "type": int(card_type)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.BrandCardInfo",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def grab_brand_card(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303,
+        card_type: int = 1
+    ) -> Dict[str, Any]:
+        """手动领取每月保底 SVIP 大牌神券 (SilkwormVip.VipRightsService.GrabBrandCard - 注意：此接口直接扣减当月保底张数，日常定时任务绝不可调用！)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "type": int(card_type)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.GrabBrandCard",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    # 2. 每日 09:30 抢大牌券专属通道 (官方额外放量大牌券，独立库存，不扣减每月保底张数)
+    async def get_extra_brand_card_pool(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """查询每日 09:30 SVIP 额外大牌放量券配置与实时库存 (SilkwormVip.VipRightsService.ExtraBrandCardPool)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0
         }
         return await self.invoke_rpc(
             server_name="SilkwormVip",
-            method_name="SilkwormVipMobile.VipPrizes",
+            method_name="VipRightsService.ExtraBrandCardPool",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def grab_extra_brand_card(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303,
+        card_type: int = 99
+    ) -> Dict[str, Any]:
+        """秒杀抢占每日 09:30 SVIP 额外大牌放量券 (SilkwormVip.VipRightsService.GrabExtraBrandCard - 默认 card_type=99)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "type": int(card_type)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.GrabExtraBrandCard",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    # 3. 影音会员周卡 (腾讯视频/网易云等) 特权通道
+    async def get_user_tencent_vip_info(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """查询每月影音周卡(网易云音乐/腾讯视频等)用户状态与余量 (SilkwormVip.VipRightsService.UserTencentVipInfo)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.UserTencentVipInfo",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def get_user_tencent_vip_list(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303,
+        page: int = 1,
+        page_size: int = 10
+    ) -> Dict[str, Any]:
+        """查询历史影音会员周卡领取记录与CDK券码明细 (SilkwormVip.VipRightsService.UserTencentVipList)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "page": int(page),
+            "page_size": int(page_size)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.UserTencentVipList",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def grab_tencent_vip_quota(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """秒杀抢占影音会员周卡(网易云音乐/腾讯视频等)配额 (SilkwormVip.VipRightsService.GrabTencentVipQuota)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.GrabTencentVipQuota",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def get_user_free_order_info(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """查询每月外卖免单券持有与核销状态 (SilkwormVip.VipRightsService.UserFreeOrderInfo)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.UserFreeOrderInfo",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def grab_free_order_quota(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """秒杀抢占 14:00 每月外卖霸王餐免单神券配额 (SilkwormVip.VipRightsService.GrabFreeOrderQuota)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.GrabFreeOrderQuota",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def use_free_order_card(
+        self,
+        order_no: str,
+        order_business: int,
+        user_free_card_id: int,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """对指定外卖订单核销使用免单券 (SilkwormVip.VipRightsService.UseFreeOrderCard)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "order_no": str(order_no),
+            "order_business": int(order_business),
+            "user_free_card_id": int(user_free_card_id)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.UseFreeOrderCard",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def get_plus_vip_rebate_card_infos(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """查询 SVIP 专属返利券档位列表 (SilkwormVip.VipRightsService.PlusVipRebateCardInfos)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.PlusVipRebateCardInfos",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def grab_rebate_card_quota(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """秒杀抢占今日 09:00 SVIP 专属大额返利券 (SilkwormVip.VipRightsService.GrabRebateCardQuota)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.GrabRebateCardQuota",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def get_user_sign_in_days(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """查询会员打卡签到天数与今日签到状态 (SilkwormVip.VipRightsService.UserSignInDays)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormVip",
+            method_name="VipRightsService.UserSignInDays",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def list_flash_sale_exchanges(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303,
+        new_level: int = 5,
+        is_plus: bool = True
+    ) -> Dict[str, Any]:
+        """查询元宝商城限量秒杀兑换商品列表 (SilkwormCommunity.SilkwormMobileCommunityService.ListFlashSaleExchanges)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "new_level": int(new_level),
+            "is_plus": bool(is_plus)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormCommunity",
+            method_name="SilkwormMobileCommunityService.ListFlashSaleExchanges",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def today_exchange(
+        self,
+        exchange_id: int,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """秒杀兑换今日元宝商品 (SilkwormCommunity.SilkwormMobileCommunityService.TodayExchange)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "exchange_id": int(exchange_id)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormCommunity",
+            method_name="SilkwormMobileCommunityService.TodayExchange",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            platform="app"
+        )
+
+    async def complete_task_event(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303,
+        promotion_order_id: Optional[int] = None,
+        task_type: int = 4,
+        platform: str = "app"
+    ) -> Dict[str, Any]:
+        """完成领红包延时或营销任务 (SilkwormMarketing.SilkwormMobileMarketingService.CompleteTaskEvent)
+        task_type: 4 (美团订单延时 2 小时 - user_receive_meituan_task), 3 (饿了么订单延时 2 小时 - user_receive_elem_task)
+        """
+        body: Dict[str, Any] = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "task_type": int(task_type)
+        }
+        if promotion_order_id is not None:
+            body["promotion_order_id"] = int(promotion_order_id)
+
+        return await self.invoke_rpc(
+            server_name="SilkwormMarketing",
+            method_name="SilkwormMobileMarketingService.CompleteTaskEvent",
             body=body,
             city_code=city_code,
             token=token,
@@ -1031,22 +1473,25 @@ class XiaoCanClient:
         vip_level: int = 0,
         platform: str = "app"
     ) -> Dict[str, Any]:
-        """执行每日 09:30 SVIP 大牌券/膨胀礼金秒杀抽奖 (SilkwormVipMobile.VipPrizesLottery)"""
-        body: Dict[str, Any] = {
-            "silk_id": int(silk_id) if silk_id else 0
-        }
-        if vip_level:
-            body["level"] = int(vip_level)
-        return await self.invoke_rpc(
-            server_name="SilkwormVip",
-            method_name="SilkwormVipMobile.VipPrizesLottery",
-            body=body,
-            city_code=city_code,
-            token=token,
-            silk_id=silk_id,
-            user_id=user_id,
-            platform=platform
-        )
+        """执行每日 09:30 SVIP 额外大牌券秒杀 (严禁调用 GrabBrandCard 消耗每月保底)"""
+        try:
+            return await self.grab_extra_brand_card(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, card_type=99)
+        except Exception:
+            body: Dict[str, Any] = {
+                "silk_id": int(silk_id) if silk_id else 0
+            }
+            if vip_level:
+                body["level"] = int(vip_level)
+            return await self.invoke_rpc(
+                server_name="SilkwormVip",
+                method_name="SilkwormVipMobile.VipPrizesLottery",
+                body=body,
+                city_code=city_code,
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                platform=platform
+            )
 
     async def get_vip_rebate_info(
         self,
@@ -1105,21 +1550,21 @@ class XiaoCanClient:
         latitude: float = 0.0,
         longitude: float = 0.0,
         redpack_id: Optional[Any] = None,
-        vip_extra_silk_card_id: Optional[Any] = None
+        vip_extra_silk_card_id: Optional[Any] = None,
+        vip_promotion_card_id: Optional[Any] = None
     ) -> Dict[str, Any]:
-        """抢占霸王餐秒杀名额配额 (SilkwormService.GrabPromotionQuota)"""
+        """抢占霸王餐秒杀名额配额 (双模智能路由: 官方直连微服务 Silkworm.SilkwormService.GrabPromotionQuota / 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota)"""
         try:
             pid_int = int(promotion_id)
         except Exception:
             pid_int = 0
 
-        # 对齐微信小程序与小蚕官方 Go struct：仅在有效时传递 int64 类型字段，严禁传空字符串
+        # 对齐移动 App 原生协议参数 (PromotionDetailViewModel$order$1)
         body: Dict[str, Any] = {
             "silk_id": int(silk_id) if silk_id else 0,
             "promotion_id": pid_int,
             "store_platform": int(store_platform or 1),
             "if_advance_order": bool(if_advance_order),
-            "if_pre_order": False,
             "latitude": float(latitude or 0.0),
             "longitude": float(longitude or 0.0),
             "city_code": int(city_code or 440303)
@@ -1131,6 +1576,13 @@ class XiaoCanClient:
                     body["redpack_id"] = r_int
             except (ValueError, TypeError):
                 pass
+        if vip_promotion_card_id is not None:
+            try:
+                vp_int = int(vip_promotion_card_id)
+                if vp_int > 0:
+                    body["vip_promotion_card_id"] = vp_int
+            except (ValueError, TypeError):
+                pass
         if vip_extra_silk_card_id is not None:
             try:
                 v_int = int(vip_extra_silk_card_id)
@@ -1139,15 +1591,44 @@ class XiaoCanClient:
             except (ValueError, TypeError):
                 pass
 
-        return await self.invoke_rpc(
-            server_name="Silkworm",
-            method_name="SilkwormService.GrabPromotionQuota",
-            body=body,
-            city_code=city_code,
-            token=token,
-            silk_id=silk_id,
-            user_id=user_id
-        )
+        # 智能判定活动微服务路由：
+        # 1. 19位雪花算法ID (pid_int >= 10_000_000_000): 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota
+        # 2. 8~9位标准活动ID (pid_int < 10_000_000_000): 官方直连微服务 Silkworm.SilkwormService.GrabPromotionQuota
+        is_fusion_pid = pid_int >= 10_000_000_000
+
+        primary_server = "SilkwormFusion" if is_fusion_pid else "Silkworm"
+        primary_method = "FusionService.FusionGrabPromotionQuota" if is_fusion_pid else "SilkwormService.GrabPromotionQuota"
+        fallback_server = "Silkworm" if is_fusion_pid else "SilkwormFusion"
+        fallback_method = "SilkwormService.GrabPromotionQuota" if is_fusion_pid else "FusionService.FusionGrabPromotionQuota"
+
+        try:
+            return await self.invoke_rpc(
+                server_name=primary_server,
+                method_name=primary_method,
+                body=body,
+                city_code=city_code,
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                platform="app"
+            )
+        except XiaoCanRPCError as rpc_err:
+            # 当返回错误码为 2 (参数错误) 或 3 (活动已过期 / 服务端不认该ID)，自动尝试备用微服务进行自愈
+            if rpc_err.code in (2, 3):
+                logger.info(
+                    f"主路由 {primary_server}.{primary_method} 返回兼容性响应码 {rpc_err.code} ({rpc_err.msg})，启动自愈备用路由 {fallback_server}.{fallback_method}..."
+                )
+                return await self.invoke_rpc(
+                    server_name=fallback_server,
+                    method_name=fallback_method,
+                    body=body,
+                    city_code=city_code,
+                    token=token,
+                    silk_id=silk_id,
+                    user_id=user_id,
+                    platform="app"
+                )
+            raise rpc_err
 
     async def get_user_max_redpack(
         self,

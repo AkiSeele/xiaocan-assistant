@@ -44,8 +44,11 @@ const TASK_LABELS: Record<string, string> = {
   store_search: '商户定向搜索捡漏',
   store_cancel: '霸王餐名额取消',
   // 日常自动化任务
-  daily: '元宝乐园每日任务',
-  group_lottery: '社群幸运转盘',
+  yb_task: '领天天赚元宝',
+  yb_sign: '天天赚元宝签到',
+  collect_points: '收取未收元宝',
+  daily: '元宝乐园综合打卡',
+  group_lottery: '免费开红包与抽奖',
   redpack_rain: '整点红包雨',
   flash_sale: '元宝秒杀抢券',
   vip_expand: '会员每日签到',
@@ -286,9 +289,6 @@ export const LogsView: React.FC = () => {
                   {isStore ? '抢单预约' : '日常调度'}
                 </Tag>
               </div>
-              <span className="text-[10px] text-semi-color-text-3 font-mono block truncate">
-                {tid}
-              </span>
             </div>
           </div>
         );
@@ -635,7 +635,7 @@ export const LogsView: React.FC = () => {
         title={
           <div className="flex items-center gap-2">
             {activeLog && <TaskIcon taskId={activeLog.task_id} className="w-6 h-6" />}
-            <span>日志详情 - [{TASK_LABELS[activeLog?.task_id || ''] || activeLog?.task_id}]</span>
+            <span>日志详情 - [{TASK_LABELS[activeLog?.task_id || ''] || '调度任务'}]</span>
           </div>
         }
         visible={detailModalVisible}
@@ -681,10 +681,6 @@ export const LogsView: React.FC = () => {
                 >
                   {activeLog.status === 'running' ? '正在执行中' : (activeLog.status === 'success' ? '执行成功' : '执行失败')}
                 </Tag>
-              </Space>
-              <Space>
-                <Text type="secondary">任务标识：</Text>
-                <span className="font-mono text-semi-color-text-2">{activeLog.task_id}</span>
               </Space>
             </div>
 

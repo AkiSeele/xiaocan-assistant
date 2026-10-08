@@ -62,6 +62,9 @@ test_*.py
 
 # Reverse engineering and package dumps
 *.wxapkg
+*.apk
+dex_extracted/
+scratch/
 unpacked_app/
 
 # IDE & OS

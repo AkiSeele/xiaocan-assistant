@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 from ..models import database as db
-from ..protocol.client import XiaoCanClient, XiaoCanRPCError
+from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds
 from .notifier import send_system_notification
 
 logger = logging.getLogger("xiaocan.appointment_worker")
@@ -106,9 +106,19 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
     task_id = action_source if action_source in ("store_grab", "store_appoint", "store_monitor", "store_search", "store_cancel") else "store_grab"
     job_id = f"job_store_{int(time.time())}_{uuid.uuid4().hex[:6]}"
 
+    source_labels = {
+        "store_grab": "即时抢单",
+        "store_appoint": "定时预约",
+        "store_monitor": "名额监听",
+        "store_keyword": "店名嗅探",
+        "store_search": "定向搜索",
+        "store_cancel": "取消名额",
+    }
+    source_label = source_labels.get(action_source, "自动抢单")
+
     log_steps = []
     t_start = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    log_steps.append(f"[{t_start}] 启动抢单流水: 店铺【{store_name}】(活动ID: {promotion_id}, 平台: {platform_name}, 来源: {task_id})")
+    log_steps.append(f"[{t_start}] 启动抢单流水: 店铺【{store_name}】(活动ID: {promotion_id}, 平台: {platform_name}, 触发方式: {source_label})")
 
     try:
         lat = float(account.get("latitude") or 0.0)
@@ -121,45 +131,6 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
 
     t_step1 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     log_steps.append(f"[{t_step1}] 步骤 1/4: 账号鉴权及定位核验 - 账号【{nickname}】，定位经纬度 ({lat:.5f}, {lon:.5f})，城市代码 {city_code}")
-
-    # 饭票资产前置强核验：抢单必须有饭票
-    has_meal_ticket = False
-    try:
-        cards_res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, status=0, offset=0, number=100)
-        raw_cards = cards_res.get("list") or []
-        for c in raw_cards:
-            cd = c.get("card") or {}
-            cname = cd.get("name") or ""
-            ctype = cd.get("card_type")
-            if "饭票" in cname or (ctype is None and cd.get("id") == 1):
-                has_meal_ticket = True
-                break
-    except Exception as ce:
-        logger.warning(f"核验饭票卡券异常: {ce}")
-        has_meal_ticket = True
-
-    if not has_meal_ticket:
-        t_fail = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_steps.append(f"[{t_fail}] 饭票核验拦截: 当前账号【{nickname}】可用饭票数量为 0，无法发起抢单")
-        log_steps.append(f"[{t_fail}] 流程终止 - 安全拦截已生效，防止官方风控封禁")
-        logger.warning(f"抢单拦截: 账号【{nickname}】无可用饭票")
-        grab_text = "\n".join(log_steps)
-        linked_log_id = int(apt.get("log_id") or 0)
-        if linked_log_id > 0:
-            _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
-        else:
-            try:
-                db.add_job_log(job_id, account_key, task_id, "error", grab_text)
-            except Exception:
-                pass
-        if aid > 0:
-            db.update_appointment(aid, {
-                "status": "failed",
-                "outcome": "抢单前检测到可用饭票不足"
-            })
-            invalidate_worker_cache()
-        return {"ok": False, "code": 61, "message": "当前账号暂无可用饭票，无法发起抢单"}
-
     # 红包使用策略解析与防失效自愈降级 (优先使用提前 25 秒预加载并锁定的红包，消除开抢时的网络延时)
     redpack_id = apt.get("cached_redpack_id")
     redpack_mode = apt.get("redpack_mode", 0)
@@ -275,9 +246,31 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                     pass
             return {"ok": False, "code": -1, "message": err_msg}
 
-        success_msg = f"官方抢单成功！名额已锁定 (订单ID: {order_id})"
         t_step4 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         log_steps.append(f"[{t_step4}] 步骤 4/4: 抢单成功锁定 - 官方系统订单 #{order_id} 生成完毕！")
+        success_msg = f"抢单成功锁定！官方系统订单 #{order_id} 生成完毕，请前往外卖平台下单"
+
+        # 自动触发 App 原生「领红包延时 2 小时」任务特权 (延长活动订单凭证上传有效期 2 小时)
+        try:
+            delay_task_type = 4 if int(platform_code) == 1 else 3
+            delay_res = await client.complete_task_event(
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                city_code=city_code,
+                promotion_order_id=order_id,
+                task_type=delay_task_type
+            )
+            is_delayed = bool(delay_res.get("if_delay") or delay_res.get("if_delay_success") or delay_res.get("ifDelay") or delay_res.get("ifDelaySuccess"))
+            d_time = delay_res.get("delay_time") or delay_res.get("delayTime") or 7200
+            if is_delayed or d_time > 0:
+                log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
+            else:
+                log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 已提交领红包延时申请")
+        except Exception as de:
+            logger.info(f"领红包延时触发提示: {de}")
+            log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 领红包延时提示: {de}")
+
         log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程完成 - 订单状态已置为待下单，已投递抢单成功系统通知")
         logger.info(f"预约/监听任务 #{aid} 抢单成功: {success_msg}")
 
@@ -355,7 +348,8 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
 async def process_active_appointments() -> bool:
     """单轮调度处理所有活跃的预约和监听任务，返回是否有临近 35 秒内的秒杀任务"""
     global _cached_active_appointments, _last_fetch_active_ts, _cached_accounts
-    now_ts = time.time()
+    from . import time_service
+    now_ts = time_service.now_ts()
 
     # 高频自旋保护：每秒最多向磁盘发起 1 次活跃任务检索
     if now_ts - _last_fetch_active_ts >= 1.0 or not _cached_active_appointments:
@@ -367,7 +361,7 @@ async def process_active_appointments() -> bool:
     if not active_list:
         return False
 
-    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
     has_primed = False
 
     for apt in active_list:
@@ -414,6 +408,14 @@ async def process_active_appointments() -> bool:
             interval = max(3, int(apt.get("check_interval") or 5))
             last_checked = _parse_time_today(apt.get("last_checked_at"))
             if last_checked and (now_ts - last_checked) < interval:
+                continue
+
+            # 如果当前网络处于 WAF 熔断冷却期，主动跳过嗅探，避免延长封锁
+            if is_waf_blocked():
+                remain = get_waf_cooldown_seconds()
+                if (int(now_ts) % 30) < 2 and linked_log_id > 0:
+                    t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] 当前网络IP处于官方腾讯云WAF临时拦截冷却中 (剩余约 {remain} 秒)，已自动暂停嗅探以避免延长封锁。切换手机热点或重启光猫更换IP可立即恢复。", sync_db=True, status="running")
                 continue
 
             apt["last_checked_at"] = now_str
@@ -611,9 +613,18 @@ async def process_active_appointments() -> bool:
 
             except Exception as se:
                 logger.warning(f"店名监听 #{aid} 执行异常: {se}")
-                if linked_log_id > 0:
-                    t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    _append_apt_log(aid, linked_log_id, f"[{t_err}] 嗅探执行异常: {se}，将在下次周期重试", sync_db=False, status="running")
+                is_waf = is_waf_blocked() or (getattr(se, "code", None) == 403) or ("WAF" in str(se))
+                if is_waf:
+                    cooldown = get_waf_cooldown_seconds() or 180
+                    future_time = datetime.fromtimestamp(now_ts + cooldown).strftime("%Y-%m-%d %H:%M:%S")
+                    db.update_appointment(aid, {"last_checked_at": future_time})
+                    if linked_log_id > 0:
+                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] 当前网络IP触发官方腾讯云WAF临时频次拦截，系统已自动休眠熔断保护 (剩余冷却约 {cooldown} 秒)。建议切换手机热点或重启光猫更换IP立即恢复。", sync_db=True, status="running")
+                else:
+                    if linked_log_id > 0:
+                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        _append_apt_log(aid, linked_log_id, f"[{t_err}] 嗅探执行异常: {se}，将在下次周期重试", sync_db=False, status="running")
 
         # ---------------- 分支二：单店名额监听捡漏任务 (task_type == "monitor" or status == "monitoring") ---------------- #
         elif task_type == "monitor" or status == "monitoring":
@@ -636,6 +647,14 @@ async def process_active_appointments() -> bool:
             interval = max(3, int(apt.get("check_interval") or 5))
             last_checked = _parse_time_today(apt.get("last_checked_at"))
             if last_checked and (now_ts - last_checked) < interval:
+                continue
+
+            # 如果当前网络处于 WAF 熔断冷却期，主动跳过库存查询，避免延长封锁
+            if is_waf_blocked():
+                remain = get_waf_cooldown_seconds()
+                if (int(now_ts) % 30) < 2 and linked_log_id > 0:
+                    t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] 当前网络IP处于官方腾讯云WAF临时拦截冷却中 (剩余约 {remain} 秒)，已自动暂停库存轮询以避免延长封锁。", sync_db=True, status="running")
                 continue
 
             # 更新最后检查时间戳
@@ -687,6 +706,14 @@ async def process_active_appointments() -> bool:
                         logger.warning(f"监听捕获后抢单失败: {res['message']}，继续保持监听")
             except Exception as e:
                 logger.debug(f"轮询活动实时库存异常 (非致命): {e}")
+                is_waf = is_waf_blocked() or (getattr(e, "code", None) == 403) or ("WAF" in str(e))
+                if is_waf:
+                    cooldown = get_waf_cooldown_seconds() or 180
+                    future_time = datetime.fromtimestamp(now_ts + cooldown).strftime("%Y-%m-%d %H:%M:%S")
+                    db.update_appointment(aid, {"last_checked_at": future_time})
+                    if linked_log_id > 0:
+                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] 当前网络IP触发官方腾讯云WAF临时频次拦截，系统已自动休眠熔断保护 (剩余冷却约 {cooldown} 秒)", sync_db=True, status="running")
 
         # ---------------- 分支三：倒计时预约任务 (status in 'scheduled', 'primed', 'pending') ---------------- #
         elif status in ("scheduled", "primed", "pending"):

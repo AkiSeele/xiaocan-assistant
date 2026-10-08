@@ -679,9 +679,6 @@ export const Accounts: React.FC = () => {
                             <Tag color="red" size="small">缺失ID</Tag>
                           </Tooltip>
                         )}
-                        <Tag color="teal" size="small">
-                          App模式
-                        </Tag>
                       </div>
                     </div>
                   </div>
@@ -1004,8 +1001,7 @@ export const Accounts: React.FC = () => {
                   size="small"
                   data={[
                     { key: 'Silk ID', value: customSilkId || parsedInfo.silk_id || '未能解析（请手动输入）' },
-                    { key: '凭据有效期', value: parsedInfo.exp_date },
-                    { key: '协议运行环境', value: '官方独立App原生客户端模式' }
+                    { key: '凭据有效期', value: parsedInfo.exp_date }
                   ]}
                 />
 
@@ -1037,14 +1033,6 @@ export const Accounts: React.FC = () => {
                       onChange={(e) => setCustomNickname(e.target.value)}
                       placeholder="自定义账号备注名称"
                     />
-                  </div>
-
-                  <div className="bg-semi-color-primary-light-default/40 border border-semi-color-primary-light-active rounded-lg p-2.5 flex items-center justify-between">
-                    <div>
-                      <div className="text-[12px] font-medium text-semi-color-text-0">通信协议规范：官方独立 App 原生客户端模式</div>
-                      <div className="text-[11px] text-semi-color-text-2 mt-0.5">系统已全局默认启用独立 App 原生环境仿真，全功能支持大牌神券、影音周卡等全量特权抢领</div>
-                    </div>
-                    <Tag color="green" size="small">全功能就绪</Tag>
                   </div>
                 </div>
               </div>
@@ -1552,7 +1540,7 @@ export const Accounts: React.FC = () => {
                             ),
                           },
                           {
-                            key: '系统识别 Key',
+                            key: '本地账号标识',
                             value: (
                               <Text code className="text-xs">{detailAccount.key}</Text>
                             ),

@@ -157,6 +157,10 @@ export const api = {
     client.put<{ ok: boolean; order: Order; message: string }>(`/orders/${id}`, data).then(r => r.data),
   submitPlatformOrderId: (id: number, platformOrderId: string, receiptImg?: string) => 
     client.post<{ ok: boolean; order: Order; message: string }>(`/orders/${id}/submit-platform-id`, { platform_order_id: platformOrderId, receipt_img: receiptImg }).then(r => r.data),
+  delayOrderVoucher: (id: number) =>
+    client.post<{ ok: boolean; is_delayed: boolean; delay_time: number; message: string }>(`/orders/${id}/delay-voucher`).then(r => r.data),
+  useOrderFreeCard: (id: number, data?: { platform_order_id?: string; user_free_card_id?: number }) =>
+    client.post<{ ok: boolean; message: string }>(`/orders/${id}/use-free-card`, data || {}).then(r => r.data),
   deleteOrder: (id: number) => 
     client.delete<{ ok: boolean; message: string }>(`/orders/${id}`).then(r => r.data),
 

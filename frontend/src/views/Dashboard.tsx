@@ -90,8 +90,11 @@ const TASK_LABELS: Record<string, string> = {
   store_search: '商户定向搜索捡漏',
   store_cancel: '霸王餐名额取消',
   // 日常自动化任务
-  daily: '元宝乐园每日任务',
-  group_lottery: '社群幸运转盘',
+  yb_task: '领天天赚元宝',
+  yb_sign: '天天赚元宝签到',
+  collect_points: '收取未收元宝',
+  daily: '元宝乐园综合打卡',
+  group_lottery: '免费开红包与抽奖',
   redpack_rain: '整点红包雨',
   flash_sale: '元宝秒杀抢券',
   vip_expand: '会员每日签到',
@@ -710,9 +713,6 @@ export const Dashboard: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-3 text-xs text-semi-color-text-2 mt-1 flex-wrap">
-              <span>
-                密钥: <span className="font-mono text-semi-color-text-1">{currentAccount?.key ? `${currentAccount.key.slice(0, 10)}...` : '无'}</span>
-              </span>
               <span>
                 最后同步: <span className="font-mono text-semi-color-text-1">{currentAccount?.updated_at?.split(' ')[1] || currentAccount?.updated_at || '刚刚'}</span>
               </span>
@@ -1788,7 +1788,7 @@ export const Dashboard: React.FC = () => {
           <div className="flex items-center gap-2">
             {activeLogModal?.task_id && <TaskIcon taskId={activeLogModal.task_id} className="w-5 h-5 shrink-0" />}
             <span className="truncate">
-              任务执行详情 [{TASK_LABELS[activeLogModal?.task_id || ''] || activeLogModal?.task_id}]
+              任务执行详情 [{TASK_LABELS[activeLogModal?.task_id || ''] || '系统调度任务'}]
             </span>
           </div>
         }

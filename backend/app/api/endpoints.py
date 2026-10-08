@@ -20,12 +20,12 @@ logger = logging.getLogger("xiaocan.api")
 TZ_BJ = timezone(timedelta(hours=8))
 
 from ..models import database as db
-from ..core import scheduler, notifier, clawbot_client
+from ..core import scheduler, notifier, clawbot_client, time_service
 from ..core.jwt_utils import extract_token_from_text, decode_jwt_payload, extract_city_code_from_text, extract_silk_id_from_payload, extract_user_id_from_payload, extract_silk_id_from_text
 from ..core.proxy_sniffer import sniffer
 from ..core.wechat_scanner import scan_wechat_credentials, wechat_listener
 from ..core.tianditu import tianditu_client
-from ..protocol.client import XiaoCanClient
+from ..protocol.client import XiaoCanClient, is_waf_blocked, get_waf_cooldown_seconds
 
 router = APIRouter(prefix="/api")
 client = XiaoCanClient()
@@ -33,20 +33,20 @@ client = XiaoCanClient()
 # 任务元数据定义 (涵盖日常、秒杀与资产守护共 15 项全量对齐)
 TASK_META = {
     # --- 日常打卡与元宝任务 (daily) ---
-    "yb_task": {"id": "yb_task", "label": "领 500 元宝", "tip": "一键完成抖音电商浏览30s任务领500元宝", "category": "daily", "default_time": "08:05"},
+    "yb_task": {"id": "yb_task", "label": "领天天赚元宝", "tip": "自动完成社群打卡、电商浏览及天天打卡，一键聚拢元宝", "category": "daily", "default_time": "08:05"},
     "yb_sign": {"id": "yb_sign", "label": "天天赚元宝签到", "tip": "每日天天赚元宝独立签到打卡", "category": "daily", "default_time": "08:10"},
     "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
     "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "daily", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
-    "daily": {"id": "daily", "label": "元宝乐园综合打卡", "tip": "签到打卡 / 领券推送 / 抽奖机会累加 (综合)", "category": "daily", "default_time": "08:10"},
-    "group_lottery": {"id": "group_lottery", "label": "社群幸运转盘", "tip": "小蚕社群抽奖幸运转盘，支持防风控间隔", "category": "daily", "default_time": "07:40"},
+    "daily": {"id": "daily", "label": "元宝乐园综合打卡", "tip": "签到打卡 / 领券推送 / 零门槛打卡 / 一键收取 (综合)", "category": "daily", "default_time": "08:10"},
+    "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
     "flash_sale": {"id": "flash_sale", "label": "元宝秒杀抢券", "tip": "元宝商城限量秒杀抢券，支持自定义商品ID", "category": "daily", "default_time": "10:00"},
 
     # --- 会员秒杀与特权抢券 (member) ---
     "svip_rebate": {"id": "svip_rebate", "label": "抢SVIP专属返利券", "tip": "SVIP专属大额返利券每日 09:00:00 准点秒杀", "category": "member", "vip": "SVIP2-6", "default_time": "09:00", "fixed_time": True, "time_label": "09:00 固定"},
-    "brand_flash": {"id": "brand_flash", "label": "抢SVIP大牌券", "tip": "大牌外卖满减神券每日 09:30:00 准点秒杀", "category": "member", "vip": "SVIP2-6 / VIP5+", "default_time": "09:30", "fixed_time": True, "time_label": "09:30 固定"},
-    "media_vip": {"id": "media_vip", "label": "抢每月影音VIP", "tip": "腾讯视频/爱奇艺会员周卡每日三场 (10/17/20点)", "category": "member", "vip": "SVIP4-6 / VIP5-6", "default_time": "10:00", "fixed_time": True, "time_label": "三场 10/17/20点"},
+    "brand_flash": {"id": "brand_flash", "label": "抢SVIP大牌券", "tip": "每日 09:30:00 准点抢额外放量大牌神券（独立通道，绝不消耗每月保底张数）", "category": "member", "vip": "SVIP2-6 / VIP5+", "default_time": "09:30", "fixed_time": True, "time_label": "09:30 固定"},
+    "media_vip": {"id": "media_vip", "label": "抢每月影音VIP", "tip": "影音会员VIP周卡(网易云音乐/腾讯视频等)每日三场 (10/17/20点)，智能检测本月余量与历史记录", "category": "member", "vip": "SVIP4-6 / VIP5-6", "default_time": "10:00", "fixed_time": True, "time_label": "三场 10/17/20点"},
     "free_order": {"id": "free_order", "label": "抢每月免单券", "tip": "外卖霸王餐全额免单券每日 14:00:00 准点秒杀", "category": "member", "vip": "SVIP5-6 / VIP6", "default_time": "14:00", "fixed_time": True, "time_label": "14:00 固定"},
-    "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "成长值签到 + 成长礼包 + 膨胀金互助", "category": "member", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
+    "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "会员每日打卡 + VIP专属签到抽奖 + 里程碑核验 + 专属成长礼包", "category": "member", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
 
     # --- 资产守护与双返利监控 (custom) ---
     "expire_remind": {"id": "expire_remind", "label": "凭据/JWT到期预警", "tip": "监控小蚕凭据与JWT有效期，提前推送防掉线", "category": "custom", "default_time": "08:00"},
@@ -2157,6 +2157,18 @@ async def scan_dual_rebate_stores(
     # 强制限定为美团外卖
     platform = "meituan"
 
+    # 0. 前置 WAF 拦截状态检查，避免在冷却期盲目发起大规模扫描
+    if is_waf_blocked():
+        remain_sec = get_waf_cooldown_seconds()
+        return {
+            "ok": False,
+            "total_scanned_promotions": 0,
+            "total_scanned_stores": 0,
+            "dual_rebate_count": 0,
+            "stores": [],
+            "message": f"当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中（剩余约 {remain_sec} 秒），系统已自动拦截批量扫描以避免延长封锁。如需立即恢复，请切换手机热点或重启光猫更换IP。"
+        }
+
     accounts = db.get_all_accounts()
     if not accounts and not account_key:
         return {
@@ -2294,11 +2306,16 @@ async def scan_dual_rebate_stores(
     max_pages = max(80, int(target_limit // 10) + 15)
     
     round_idx = 0
-    batch_size = 3  # 每次微批次并行拉取 3 页触底数据 (105 条)
+    batch_size = 2  # 每次微批次并行拉取 2 页触底数据 (70 条)，降低并发以防止触发腾讯云 WAF 频次拦截
     shangjin_pv = ""
     should_stop = False
 
     while (round_idx * batch_size) < max_pages:
+        if is_waf_blocked():
+            logger.warning("附近店铺流式触底加载：检测到 WAF 风控熔断，立即终止扫描")
+            should_stop = True
+            break
+
         if target_limit > 0 and len(seen_store_keys) >= target_limit:
             logger.info(f"附近店铺流式触底加载：已获取商户数 {len(seen_store_keys)} 达到目标范围 {target_limit}，停止继续加载")
             break
@@ -2332,6 +2349,10 @@ async def scan_dual_rebate_stores(
         )
 
         all_batch = await asyncio.gather(*(feed_tasks + [sj_task]), return_exceptions=True)
+        if is_waf_blocked():
+            logger.warning("附近店铺触底批次拉取检测到 WAF 风控熔断，立即终止后续扫描")
+            should_stop = True
+            break
         batch_results = all_batch[:len(feed_tasks)]
         sj_res = all_batch[len(feed_tasks)]
         empty_in_batch = 0
@@ -2450,15 +2471,22 @@ async def scan_dual_rebate_stores(
 
         offset += batch_size * page_size
         round_idx += 1
+        # 防 WAF 频次风控：微批次之间增加平滑随机延时 (350ms ~ 650ms)
+        import random
+        await asyncio.sleep(random.uniform(0.35, 0.65))
 
     # 赏金按比例返现池深度保障：
     # 若在流式循环中获取到的比例方案偏少 (< 20条) 或接口发生抖动，执行独立赏金池补全
     existing_percent_promos = [p for p in all_raw_promotions if p.get("rebate_type") == "percent"]
-    if len(existing_percent_promos) < 20:
+    if len(existing_percent_promos) < 20 and not is_waf_blocked():
         logger.info(f"赏金比例返现活动数量较少 ({len(existing_percent_promos)}条)，执行独立赏金池补偿拉取...")
         shangjin_extra_pv = ""
         for _ in range(4):
+            if is_waf_blocked():
+                break
             try:
+                import random
+                await asyncio.sleep(random.uniform(0.3, 0.5))
                 sj_extra = await client.search_shangjin_stores(
                     keyword="",
                     latitude=lat,
@@ -3361,65 +3389,51 @@ async def get_dashboard_chart_data_endpoint(account_key: Optional[str] = Query(N
     return {"ok": True, "data": chart_data}
 
 
-# 阿里云 NTP 时间同步缓存 (避免高频请求 socket 阻塞)
-_ntp_cache = {
-    "last_sync": 0.0,
-    "offset": 0.0,
-    "server": "ntp.aliyun.com",
-    "synced": False
-}
-
-
-def sync_aliyun_ntp(force: bool = False, timeout: float = 2.0) -> float:
-    """向 ntp.aliyun.com 查询高精度北京时间 (SNTP 客户端)"""
-    global _ntp_cache
-    import socket
-    import struct
-    now = time.time()
-    # 缓存 60 秒内复用时钟偏差 (除非要求强制校准)
-    if not force and _ntp_cache["synced"] and (now - _ntp_cache["last_sync"] < 60.0):
-        return now + _ntp_cache["offset"]
-
-    try:
-        host = "ntp.aliyun.com"
-        client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        client_sock.settimeout(timeout)
-        data = b'\x1b' + 47 * b'\0'
-        t0 = time.time()
-        client_sock.sendto(data, (host, 123))
-        resp, _ = client_sock.recvfrom(1024)
-        t1 = time.time()
-        client_sock.close()
-        if resp:
-            unpacked = struct.unpack("!12I", resp[0:48])
-            # NTP 纪元 1900 到 Unix 纪元 1970 秒数差: 2208988800
-            ntp_time = unpacked[10] + float(unpacked[11]) / (2**32) - 2208988800
-            adjusted_ntp = ntp_time + (t1 - t0) / 2
-            _ntp_cache["offset"] = adjusted_ntp - t1
-            _ntp_cache["last_sync"] = t1
-            _ntp_cache["synced"] = True
-            return adjusted_ntp
-    except Exception as e:
-        logger.warning(f"ntp.aliyun.com 同步异常: {e}，将自动降级使用系统时间")
-    
-    return now + _ntp_cache.get("offset", 0.0)
-
-
 @router.get("/time")
 async def get_beijing_time_endpoint(force: bool = False):
     """获取经由 ntp.aliyun.com 授时中心校准的高精度北京时间"""
-    ntp_ts = sync_aliyun_ntp(force=force)
-    # 计算精确的北京时间 (UTC+8)
-    bj_time_tuple = time.gmtime(ntp_ts + 8 * 3600)
-    bj_iso = time.strftime("%Y-%m-%d %H:%M:%S", bj_time_tuple)
-    return {
-        "ok": True,
-        "timestamp": ntp_ts,
-        "beijing_time": bj_iso,
-        "server": "ntp.aliyun.com",
-        "synced": _ntp_cache["synced"],
-        "offset": _ntp_cache["offset"]
-    }
+    try:
+        if force:
+            await time_service.async_sync_ntp(force=True)
+        return time_service.get_ntp_status()
+    except Exception as e:
+        logger.error(f"NTP授时异常: {e}")
+        now_ts = time.time()
+        bj_time_tuple = time.gmtime(now_ts + 8 * 3600)
+        return {
+            "ok": True,
+            "timestamp": now_ts,
+            "beijing_time": time.strftime("%Y-%m-%d %H:%M:%S", bj_time_tuple),
+            "server": "ntp.aliyun.com",
+            "synced": False,
+            "offset": 0.0,
+            "offset_ms": 0.0,
+            "round_trip_ms": 0.0,
+            "last_sync": now_ts
+        }
+
+
+@router.get("/scheduler/jobs")
+async def get_live_scheduler_jobs():
+    """获取当前调度中心实时注册的任务与下次触发时间"""
+    from ..core.scheduler import scheduler
+    jobs = []
+    for j in scheduler.get_jobs():
+        jobs.append({
+            "id": j.id,
+            "name": j.name,
+            "next_run_time": str(j.next_run_time) if hasattr(j, "next_run_time") and j.next_run_time else None,
+            "trigger": str(j.trigger)
+        })
+    return {"ok": True, "total": len(jobs), "jobs": jobs}
+
+
+@router.post("/scheduler/reload")
+async def reload_scheduler_jobs_endpoint():
+    """动态重新装载调度中心任务"""
+    from ..core.scheduler import reload_schedules
+    reload_schedules()
+    return {"ok": True, "message": "调度中心任务已重新装载"}
 
 
 
@@ -3520,6 +3534,132 @@ async def remove_order(order_id: int):
     """删除订单记录"""
     db.delete_order(order_id)
     return {"ok": True, "message": "订单记录已删除"}
+
+
+@router.post("/orders/{order_id}/delay-voucher")
+async def delay_order_voucher(order_id: int):
+    """
+    触发小蚕移动端原生「领红包延时2小时」特权 (延长活动订单凭证上传有效期 2 小时)
+    对齐官方微服务: SilkwormMarketing.SilkwormMobileMarketingService.CompleteTaskEvent
+    """
+    target_order = db.get_order_by_id(order_id)
+    if not target_order:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    account_key = target_order.get("account_key")
+    acc = db.get_account_by_key(account_key) if account_key else None
+    if not acc or not acc.get("token"):
+        raise HTTPException(status_code=400, detail="对应小蚕账号凭据已失效或未登录")
+
+    promo_order_id = target_order.get("promotion_order_id") or 0
+    if not promo_order_id:
+        order_sn = target_order.get("order_sn", "")
+        m = re.search(r'(\d{8,10})$', order_sn)
+        if m:
+            promo_order_id = int(m.group(1))
+
+    if not promo_order_id:
+        raise HTTPException(status_code=400, detail="该订单缺少官方活动订单号 promotion_order_id，无法申请延时")
+
+    # 根据平台确定任务类型: 4 为美团 (user_receive_meituan_task), 3 为饿了么 (user_receive_elem_task)
+    plat = (target_order.get("platform") or "meituan").lower()
+    task_type = 3 if "ele" in plat else 4
+
+    try:
+        res = await client.complete_task_event(
+            token=acc["token"],
+            silk_id=acc.get("silk_id"),
+            user_id=acc.get("user_id"),
+            city_code=acc.get("city_code") or 440303,
+            promotion_order_id=promo_order_id,
+            task_type=task_type
+        )
+        is_delayed = bool(res.get("if_delay") or res.get("if_delay_success"))
+        delay_time = res.get("delay_time", 7200)
+        delay_hours = round(delay_time / 3600.0, 1) if delay_time else 2.0
+        msg = f"官方领红包延时特权已成功激活！凭据上传有效期已顺延 {delay_hours} 小时" if (is_delayed or delay_time > 0) else "已成功向官方提交延时请求"
+        return {
+            "ok": True,
+            "is_delayed": is_delayed,
+            "delay_time": delay_time,
+            "message": msg,
+            "raw": res
+        }
+    except XiaoCanRPCError as e:
+        logger.warning(f"领红包延时接口返回异常: {e}")
+        raise HTTPException(status_code=400, detail=f"官方接口响应: {e.msg} (错误码: {e.code})")
+    except Exception as e:
+        logger.error(f"领红包延时请求失败: {e}")
+        raise HTTPException(status_code=500, detail=f"领红包延时网络或服务异常: {str(e)}")
+
+
+@router.post("/orders/{order_id}/use-free-card")
+async def use_order_free_card(order_id: int, data: Dict[str, Any] = Body(default={})):
+    """
+    对指定订单核销使用每月霸王餐全额免单神券
+    对齐官方微服务: SilkwormVip.VipRightsService.UseFreeOrderCard
+    """
+    target_order = db.get_order_by_id(order_id)
+    if not target_order:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    account_key = target_order.get("account_key")
+    acc = db.get_account_by_key(account_key) if account_key else None
+    if not acc or not acc.get("token"):
+        raise HTTPException(status_code=400, detail="对应小蚕账号凭据已失效或未登录")
+
+    platform_order_id = (data.get("platform_order_id") or target_order.get("platform_order_id") or "").strip()
+    if not platform_order_id:
+        raise HTTPException(status_code=400, detail="请先填写并绑定外卖平台订单号方可使用免单券")
+
+    plat = (target_order.get("platform") or "meituan").lower()
+    order_business = 2 if "ele" in plat else 1
+
+    # 获取用户免单券 ID
+    user_free_card_id = data.get("user_free_card_id")
+    if not user_free_card_id:
+        try:
+            f_info_res = await client.get_user_free_order_info(
+                token=acc["token"],
+                silk_id=acc.get("silk_id"),
+                user_id=acc.get("user_id"),
+                city_code=acc.get("city_code") or 440303
+            )
+            info_data = f_info_res.get("info") or {}
+            if not info_data.get("had"):
+                raise HTTPException(status_code=400, detail="当前账号本月尚未抢得外卖全额免单神券，请先在每日 14:00 参与秒杀")
+            if info_data.get("used"):
+                raise HTTPException(status_code=400, detail="当前账号本月免单券已使用，每月限使用 1 次")
+            user_free_card_id = info_data.get("user_free_card_id") or info_data.get("id")
+        except HTTPException:
+            raise
+        except Exception as ex:
+            logger.warning(f"自动查询免单券信息失败: {ex}")
+
+    if not user_free_card_id:
+        user_free_card_id = 0
+
+    try:
+        res = await client.use_free_order_card(
+            order_no=str(platform_order_id),
+            order_business=int(order_business),
+            user_free_card_id=int(user_free_card_id),
+            token=acc["token"],
+            silk_id=acc.get("silk_id"),
+            user_id=acc.get("user_id"),
+            city_code=acc.get("city_code") or 440303
+        )
+        return {
+            "ok": True,
+            "message": "免单券核销使用成功！该笔订单已享全额免单返现",
+            "raw": res
+        }
+    except XiaoCanRPCError as e:
+        logger.warning(f"使用免单券官方接口返回异常: {e}")
+        raise HTTPException(status_code=400, detail=f"官方接口响应: {e.msg} (错误码: {e.code})")
+    except Exception as e:
+        logger.error(f"使用免单券请求失败: {e}")
+        raise HTTPException(status_code=500, detail=f"核销免单券网络或服务异常: {str(e)}")
 
 
 

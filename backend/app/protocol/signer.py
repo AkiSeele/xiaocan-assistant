@@ -85,13 +85,15 @@ def generate_headers(
         )
     else:
         # 全局默认采用移动独立 App 原生协议特征 (彻底突破大牌券、影音周卡等 50010 限制)
-        headers["X-Platform"] = "app"
+        headers["X-Platform"] = "Android"
         headers["appid"] = "10"
         headers["X-App-Sr"] = "10"
-        headers["version"] = "3.20.0"
-        headers["X-Version"] = "3.20.0"
+        headers["version"] = "3.21.1"
+        headers["X-Version"] = "3.21.1"
+        headers["x-channel"] = "xiaocan"
+        headers["X-CityCode"] = str(city_code)
         headers["X-Model"] = "Android Phone"
-        headers["User-Agent"] = "XiaoCan/3.20.0 (Linux; U; Android 14; zh-cn; Mobile) okhttp/4.12.0"
+        headers["User-Agent"] = "XiaoCan/3.21.1 (Linux; U; Android 14; zh-cn; Mobile) okhttp/4.12.0"
 
     if user_id:
         headers["x-Vayne"] = str(user_id)

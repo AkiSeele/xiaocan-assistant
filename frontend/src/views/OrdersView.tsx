@@ -14,7 +14,8 @@ import {
   RadioGroup,
   Radio,
   Empty,
-  Modal
+  Modal,
+  Popconfirm
 } from '@douyinfe/semi-ui';
 import { gsap, useGSAP } from '../utils/animations';
 
@@ -82,6 +83,8 @@ export const OrdersView: React.FC = () => {
   const [uploadModalOrder, setUploadModalOrder] = useState<Order | null>(null);
   const [platformOrderIdInput, setPlatformOrderIdInput] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [delayingOrderId, setDelayingOrderId] = useState<number | null>(null);
+  const [usingCardOrderId, setUsingCardOrderId] = useState<number | null>(null);
 
   // 纯净视口高度自适应：监听表格卡片容器，杜绝 DOM querySelector 与强制同步重排
   useEffect(() => {
@@ -219,6 +222,42 @@ export const OrdersView: React.FC = () => {
       Toast.error(`提交异常: ${e.message || e}`);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDelayVoucher = async (order: Order) => {
+    setDelayingOrderId(order.id);
+    try {
+      const res = await api.delayOrderVoucher(order.id);
+      if (res.ok) {
+        Toast.success(res.message || '领红包延时特权已激活！凭证有效期已延长');
+        fetchOrders(undefined, true);
+      } else {
+        Toast.error(res.message || '延时申请失败');
+      }
+    } catch (e: any) {
+      Toast.error(`延时操作异常: ${e.response?.data?.detail || e.message || e}`);
+    } finally {
+      setDelayingOrderId(null);
+    }
+  };
+
+  const handleUseFreeCard = async (order: Order) => {
+    setUsingCardOrderId(order.id);
+    try {
+      const res = await api.useOrderFreeCard(order.id, {
+        platform_order_id: order.platform_order_id
+      });
+      if (res.ok) {
+        Toast.success(res.message || '免单券使用成功！该订单已享全额免单');
+        fetchOrders(undefined, true);
+      } else {
+        Toast.error(res.message || '免单券使用失败');
+      }
+    } catch (e: any) {
+      Toast.error(`免单操作异常: ${e.response?.data?.detail || e.message || e}`);
+    } finally {
+      setUsingCardOrderId(null);
     }
   };
 
@@ -362,31 +401,78 @@ export const OrdersView: React.FC = () => {
             </Space>
             <div className="mt-1.5 text-xs font-mono">
               {hasExtId ? (
-                <div className="flex items-center gap-1 text-semi-color-text-1">
-                  <span className="truncate max-w-[170px]" title={row?.platform_order_id}>
-                    单号: {row?.platform_order_id}
-                  </span>
-                  <Button
-                    theme="borderless"
-                    icon={<IconCopy size="small" />}
-                    size="small"
-                    className="p-0.5 ml-0.5 h-5 flex-shrink-0"
-                    onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
-                  />
+                <div>
+                  <div className="flex items-center gap-1 text-semi-color-text-1">
+                    <span className="truncate max-w-[170px]" title={row?.platform_order_id}>
+                      单号: {row?.platform_order_id}
+                    </span>
+                    <Button
+                      theme="borderless"
+                      icon={<IconCopy size="small" />}
+                      size="small"
+                      className="p-0.5 ml-0.5 h-5 flex-shrink-0"
+                      onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
+                    />
+                  </div>
+                  {status === 'pending' && (
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <Button
+                        theme="light"
+                        type="warning"
+                        size="small"
+                        loading={delayingOrderId === row?.id}
+                        className="!py-0.5 !px-1.5 text-xs h-5"
+                        onClick={() => row && handleDelayVoucher(row)}
+                        title="激活官方领红包延时2小时特权"
+                      >
+                        延时2h
+                      </Button>
+                      <Popconfirm
+                        title="确认使用外卖全额免单神券？"
+                        content="将对该订单核销本月外卖全额免单神券，享受全额返现。"
+                        okText="确认核销"
+                        cancelText="取消"
+                        onConfirm={() => row && handleUseFreeCard(row)}
+                      >
+                        <Button
+                          theme="light"
+                          type="secondary"
+                          size="small"
+                          loading={usingCardOrderId === row?.id}
+                          className="!py-0.5 !px-1.5 text-xs h-5"
+                        >
+                          免单核销
+                        </Button>
+                      </Popconfirm>
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-semi-color-text-3">未绑定外卖单号</span>
                   {status === 'pending' && (
-                    <Button
-                      theme="light"
-                      type="primary"
-                      size="small"
-                      className="!py-0.5 !px-1.5 text-xs h-5"
-                      onClick={() => row && handleOpenUploadModal(row)}
-                    >
-                      回填单号
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        theme="light"
+                        type="primary"
+                        size="small"
+                        className="!py-0.5 !px-1.5 text-xs h-5"
+                        onClick={() => row && handleOpenUploadModal(row)}
+                      >
+                        回填单号
+                      </Button>
+                      <Button
+                        theme="light"
+                        type="warning"
+                        size="small"
+                        loading={delayingOrderId === row?.id}
+                        className="!py-0.5 !px-1.5 text-xs h-5"
+                        onClick={() => row && handleDelayVoucher(row)}
+                        title="激活官方领红包延时2小时特权"
+                      >
+                        延时2h
+                      </Button>
+                    </div>
                   )}
                 </div>
               )}
