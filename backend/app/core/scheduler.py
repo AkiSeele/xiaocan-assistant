@@ -287,7 +287,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             except XiaoCanRPCError as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 获取开红包状态: {e.msg} (提示码: {e.code})\n"
 
-            # 2. 依次领取全量 7 类免费机会 (带微平滑抖动防频控)
+            # 2. 依次领取全量免费机会 (带微平滑抖动防频控)
             # 1: 每日签到(+2次), 2: 每日分享(+1次), 4: 沾一沾(+1次), 8: 饿了么红包(+1次), 9: 美团红包(+1次), 10: 浏览福利中心(+1次), 11: 浏览霸王餐页(+1次)
             lottery_types = [
                 (1, "每日签到(+2次)"),
@@ -311,6 +311,25 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 except Exception:
                     pass
 
+            # 额外广告与活动加赠机会 (看视频/看商城优惠/自动送红包)
+            ad_tasks = [
+                (2, "视频激励广告(+1次)"),
+                (4, "商城优惠浏览(+1次)")
+            ]
+            for b_type, b_label in ad_tasks:
+                try:
+                    await asyncio.sleep(random.uniform(0.3, 0.6))
+                    ad_res = await client.claim_ad_lottery_chance(bus_type=b_type, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                    if ad_res:
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 额外机会 [{b_label}]: 领取成功\n"
+                except Exception:
+                    pass
+
+            try:
+                await client.lottery_send_redpack(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+            except Exception:
+                pass
+
             # 3. 重新同步服务端权威剩余次数
             try:
                 sync_res = await client.get_lottery_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
@@ -322,7 +341,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 pass
 
             # 4. 连续自动开启红包 (严格遵循防风控休眠抖动)
-            # 官方 App 客户端界面显示的“剩余红包次数”在不同版本中可能对应 day_num 或 lucky_times，两者取有效次数执行
             effective_draw_times = lucky_times if lucky_times > 0 else day_num
             draw_gap = float(params.get("draw_sec", 3.5))
             if effective_draw_times > 0:
@@ -332,19 +350,24 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     if spin_i > 0:
                         await asyncio.sleep(sleep_t)
                     try:
-                        spin_res = await client.do_lottery_spin(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                        spin_res = await client.do_lottery_spin(token=token, prize_type=1, silk_id=silk_id, user_id=user_id, city_code=city_code)
                         opened_count += 1
                         prize_desc = "红包奖励已入账"
-                        pdata = spin_res.get("lottery_prize") or spin_res.get("prize") or spin_res.get("data") or {}
+                        pdata = spin_res.get("prize") or spin_res.get("lottery_prize") or spin_res.get("data") or {}
                         if isinstance(pdata, dict):
                             p_name = pdata.get("name") or pdata.get("prize_name") or pdata.get("title") or ""
                             p_amt = pdata.get("amount") or pdata.get("money") or ""
+                            r_group = pdata.get("red_pack_group") or []
+                            if r_group and isinstance(r_group, list):
+                                total_m = sum(float(x.get("money", 0)) for x in r_group if isinstance(x, dict))
+                                if total_m > 0:
+                                    p_amt = f"{round(total_m, 2)} 元"
                             if p_name and p_amt:
                                 prize_desc = f"{p_name} ({p_amt})"
                             elif p_name:
                                 prize_desc = p_name
                             elif p_amt:
-                                prize_desc = f"{p_amt} 元红包"
+                                prize_desc = f"{p_amt} 红包"
                         gap_desc = f" (间隔 {round(sleep_t, 1)}s)" if spin_i > 0 else ""
                         log_output += f"[{time.strftime('%H:%M:%S')}] 第 {opened_count}/{effective_draw_times} 次开红包成功: {prize_desc}{gap_desc}\n"
                     except XiaoCanRPCError as e:
@@ -356,17 +379,40 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             else:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 当前暂无待开启的红包次数 (今日免费次数均已消耗完毕)\n"
 
-            # 5. 阶梯累计抽奖进度展示与核算
+            # 5. 阶梯累计抽奖进度展示与自动领取
             try:
                 prog_res = await client.get_lottery_progress(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 prog = prog_res.get("lottery_progress") or {}
-                lottery_cnt = prog.get("lottery_count", 0)
-                step1_cnt = prog.get("first_step_count", 3)
-                step2_cnt = prog.get("second_step_count", 9)
-                has_got1 = prog.get("has_got_first_step_prize", False)
-                has_got2 = prog.get("has_got_second_step_prize", False)
-                step1_tag = "[已达成/已领取]" if has_got1 else ("[已达成]" if lottery_cnt >= step1_cnt else f"[进行中 {lottery_cnt}/{step1_cnt}]")
-                step2_tag = "[已达成/已领取]" if has_got2 else ("[已达成]" if lottery_cnt >= step2_cnt else f"[进行中 {lottery_cnt}/{step2_cnt}]")
+                lottery_cnt = int(prog.get("lottery_count", 0))
+                step1_cnt = int(prog.get("first_step_count", 3))
+                step2_cnt = int(prog.get("second_step_count", 9))
+                has_got1 = bool(prog.get("has_got_first_step_prize", False))
+                has_got2 = bool(prog.get("has_got_second_step_prize", False))
+
+                # 自动领取第一阶段奖励 (3次满额未领)
+                if lottery_cnt >= step1_cnt and not has_got1:
+                    try:
+                        await asyncio.sleep(random.uniform(1.0, 1.8))
+                        claim_res1 = await client.receive_extra_lottery(step=1, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                        has_got1 = True
+                        p1_name = (claim_res1.get("prize") or {}).get("name") or "饭票奖励"
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段一阶梯奖励自动领取成功: {p1_name}\n"
+                    except Exception as e:
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段一阶梯奖励领取异常: {e}\n"
+
+                # 自动领取第二阶段奖励 (9次满额未领)
+                if lottery_cnt >= step2_cnt and not has_got2:
+                    try:
+                        await asyncio.sleep(random.uniform(1.0, 1.8))
+                        claim_res2 = await client.receive_extra_lottery(step=2, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                        has_got2 = True
+                        p2_name = (claim_res2.get("prize") or {}).get("name") or "现金红包奖励"
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段二阶梯奖励自动领取成功: {p2_name}\n"
+                    except Exception as e:
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段二阶梯奖励领取异常: {e}\n"
+
+                step1_tag = "[已达成/已领取]" if has_got1 else f"[进行中 {lottery_cnt}/{step1_cnt}]"
+                step2_tag = "[已达成/已领取]" if has_got2 else f"[进行中 {lottery_cnt}/{step2_cnt}]"
                 log_output += f"[{time.strftime('%H:%M:%S')}] 阶梯累计进度: 今日累计完成 {lottery_cnt} 次开红包\n"
                 log_output += f"[{time.strftime('%H:%M:%S')}]   - 第一阶段({step1_cnt}次): {step1_tag}\n"
                 log_output += f"[{time.strftime('%H:%M:%S')}]   - 第二阶段({step2_cnt}次): {step2_tag}\n"

@@ -940,17 +940,103 @@ class XiaoCanClient:
     async def do_lottery_spin(
         self,
         token: str,
+        prize_type: int = 1,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """执行幸运转盘抽奖 (SilkwormLotteryMobile.Lottery)"""
+        """执行幸运转盘抽奖/免费开红包 (SilkwormLotteryMobile.Lottery)"""
         body = {
-            "silk_id": int(silk_id) if silk_id else 0
+            "silk_id": int(silk_id) if silk_id else 0,
+            "prize_type": int(prize_type)
         }
         return await self.invoke_rpc(
             server_name="SilkwormLottery",
             method_name="SilkwormLotteryMobile.Lottery",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
+    async def receive_extra_lottery(
+        self,
+        step: int,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """领取阶梯累计开红包奖励 (SilkwormLotteryMobile.ReceiveExtraLottery: step 1=第一阶段/3次, step 2=第二阶段/9次)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "step": int(step)
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormLottery",
+            method_name="SilkwormLotteryMobile.ReceiveExtraLottery",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
+    async def claim_ad_lottery_chance(
+        self,
+        bus_type: int,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """激励视频/商城广告浏览完成获取额外抽奖 (SilkwormLotteryMobile.OnAdViewed: bus_type 2=视频广告, 4=抖音商城)"""
+        import hmac
+        import hashlib
+        import base64
+        import string
+        import random
+        import time
+
+        nonce = "".join(random.choice(string.ascii_lowercase) for _ in range(6))
+        ts = int(time.time())
+        sid = int(silk_id) if silk_id else 0
+        raw_str = f"silk_id={sid}&timestamp={ts}&nonce={nonce}&bus_type={bus_type}"
+        key = b"lcjkbqadfrzsewxy"
+        sign = base64.b64encode(hmac.new(key, raw_str.encode("utf-8"), hashlib.sha256).digest()).decode("utf-8")
+
+        body = {
+            "silk_id": sid,
+            "timestamp": ts,
+            "nonce": nonce,
+            "bus_type": int(bus_type),
+            "sign": sign
+        }
+        return await self.invoke_rpc(
+            server_name="SilkwormLottery",
+            method_name="SilkwormLotteryMobile.OnAdViewed",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
+    async def lottery_send_redpack(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """免费开红包页面自动赠送红包机制 (PartnerPromotionService.LotterySendRedPack)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0
+        }
+        return await self.invoke_rpc(
+            server_name="lottery",
+            method_name="PartnerPromotionService.LotterySendRedPack",
             body=body,
             city_code=city_code,
             token=token,
