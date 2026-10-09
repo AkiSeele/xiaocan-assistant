@@ -558,9 +558,14 @@ export const Accounts: React.FC = () => {
     try {
       await api.deleteAccount(key);
       Toast.success('账号已移除');
+      if (detailVisible && detailAccount?.key === key) {
+        setDetailVisible(false);
+      }
       await loadAccounts();
-    } catch (e) {
-      Toast.error('移除账号失败');
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { message?: string } }; message?: string };
+      const msg = err?.response?.data?.message || err?.message || '移除账号失败';
+      Toast.error(`移除账号失败: ${msg}`);
     }
   };
 
@@ -792,23 +797,23 @@ export const Accounts: React.FC = () => {
                         </Tooltip>
                       )}
 
-                      <Popconfirm
-                        title="确定移除此账号？"
-                        content="移除后将停止该账号名下的全部定时秒杀与店铺预约，且本地凭证将被清除。"
-                        okType="danger"
-                        okText="确定移除"
-                        cancelText="取消"
-                        onConfirm={() => handleDeleteAccount(acc.key)}
-                      >
-                        <Tooltip content="删除账号">
+                      <Tooltip content="删除账号">
+                        <Popconfirm
+                          title="确定移除此账号？"
+                          content="移除后将停止该账号名下的全部定时秒杀与店铺预约，且本地凭证将被清除。"
+                          okType="danger"
+                          okText="确定移除"
+                          cancelText="取消"
+                          onConfirm={() => handleDeleteAccount(acc.key)}
+                        >
                           <Button
                             theme="borderless"
                             type="danger"
                             size="small"
                             icon={<IconDelete />}
                           />
-                        </Tooltip>
-                      </Popconfirm>
+                        </Popconfirm>
+                      </Tooltip>
                     </Space>
                   </div>
                 </Card>
@@ -1164,15 +1169,36 @@ export const Accounts: React.FC = () => {
                 </Tag>
               )}
             </div>
-            <Button
-              theme="light"
-              size="small"
-              icon={<IconRefresh spin={detailLoading} />}
-              loading={detailLoading}
-              onClick={() => detailAccount && fetchAccountDetail(detailAccount.key)}
-            >
-              刷新数据
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                theme="light"
+                size="small"
+                icon={<IconRefresh spin={detailLoading} />}
+                loading={detailLoading}
+                onClick={() => detailAccount && fetchAccountDetail(detailAccount.key)}
+              >
+                刷新数据
+              </Button>
+              {detailAccount && (
+                <Popconfirm
+                  title="确定移除此账号？"
+                  content="移除后将停止该账号名下的全部定时秒杀与店铺预约，且本地凭证将被清除。"
+                  okType="danger"
+                  okText="确定移除"
+                  cancelText="取消"
+                  onConfirm={() => handleDeleteAccount(detailAccount.key)}
+                >
+                  <Button
+                    theme="light"
+                    type="danger"
+                    size="small"
+                    icon={<IconDelete />}
+                  >
+                    移除账号
+                  </Button>
+                </Popconfirm>
+              )}
+            </div>
           </div>
         }
         visible={detailVisible}
