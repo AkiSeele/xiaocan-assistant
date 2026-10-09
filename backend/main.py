@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="小蚕小帮手",
     description="自动化挂机、秒杀与抢单小帮手",
-    version="2.0.0",
+    version="1.0.0",
     lifespan=lifespan
 )
 
