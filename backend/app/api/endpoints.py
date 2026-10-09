@@ -77,7 +77,7 @@ TASK_PARAM_DEFS = {
         {"key": "game_wait_sec", "label": "雨落拟真等待时长（秒）", "def": 28, "type": "number", "step": "1", "min": 10, "max": 45, "hint": "成功接入场次后模拟红包下落和交互等待的时间（实测约 28~35 秒）后再上报结算"}
     ],
     "group_lottery": [
-        {"key": "draw_sec", "label": "转盘抽奖间隔秒数", "def": 3.5, "type": "number", "step": "0.5", "min": 0.5, "hint": "每次抽奖间隔时间，防风控触发"}
+        {"key": "draw_sec", "label": "转盘抽奖间隔秒数", "def": 0.35, "type": "number", "step": "0.05", "min": 0.1, "max": 5.0, "hint": "每次抽奖间隔时间（建议 0.2~0.5 秒），兼顾极速执行与拟真防风控"}
     ],
     "vip_expand": [
         {"key": "receive_help", "label": "膨胀助力（可被助力）", "def": True, "type": "check", "hint": "开启后允许参与会员膨胀金互助助力"}

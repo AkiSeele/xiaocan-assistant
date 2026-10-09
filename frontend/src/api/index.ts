@@ -102,8 +102,8 @@ export const api = {
   // 任务自动化
   getTasks: (accountKey: string) => client.get<{ ok: boolean; tasks: TaskItem[] }>(`/tasks?account_key=${accountKey}`).then(r => r.data),
   toggleTask: (data: { account_key: string; task_id: string; enabled: boolean; cron_time?: string; params?: Record<string, any> }) => client.post<{ ok: boolean; message: string }>('/tasks/toggle', data).then(r => r.data),
-  runTaskNow: (accountKey: string, taskId: string) => client.post<{ ok: boolean; job_id?: string; output: string }>('/tasks/run', { account_key: accountKey, task_id: taskId }).then(r => r.data),
-  batchRunDaily: (accountKey: string) => client.post<BatchDailyResult>('/tasks/batch-run-daily', { account_key: accountKey }).then(r => r.data),
+  runTaskNow: (accountKey: string, taskId: string) => client.post<{ ok: boolean; job_id?: string; output: string }>('/tasks/run', { account_key: accountKey, task_id: taskId }, { timeout: 60000 }).then(r => r.data),
+  batchRunDaily: (accountKey: string) => client.post<BatchDailyResult>('/tasks/batch-run-daily', { account_key: accountKey }, { timeout: 60000 }).then(r => r.data),
 
   // 店铺与附近霸王餐 (支持经纬度、平台、搜索过滤、触底流式分页)
   getStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; keyword?: string; platform?: string; condition?: string; rebate_type?: string; sort_by?: string; limit?: number; offset?: number; page_pv_id?: string }, signal?: AbortSignal) => 
