@@ -108,7 +108,7 @@ class TiandituClient:
             headers = {"User-Agent": DESKTOP_UA}
             # 使用武汉核心坐标测试逆地理编码服务
             post_str = json.dumps({"lon": 114.305393, "lat": 30.593099, "ver": 1})
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
                 resp = await client.get(
                     TIANDITU_GEOCODER_URL,
                     params={"postStr": post_str, "type": "geocode", "tk": tk},
@@ -148,7 +148,7 @@ class TiandituClient:
         try:
             headers = {"User-Agent": DESKTOP_UA}
             post_str = json.dumps({"lon": lon, "lat": lat, "ver": 1})
-            async with httpx.AsyncClient(timeout=6.0) as client:
+            async with httpx.AsyncClient(timeout=6.0, trust_env=False) as client:
                 resp = await client.get(
                     TIANDITU_GEOCODER_URL,
                     params={"postStr": post_str, "type": "geocode", "tk": tk},
@@ -225,7 +225,7 @@ class TiandituClient:
                 "start": 0,
                 "count": count
             }
-            async with httpx.AsyncClient(timeout=7.0) as client:
+            async with httpx.AsyncClient(timeout=7.0, trust_env=False) as client:
                 resp = await client.get(
                     TIANDITU_SEARCH_URL,
                     params={"postStr": json.dumps(post_data), "type": "query", "tk": tk},

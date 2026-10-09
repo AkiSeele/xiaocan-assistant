@@ -24,16 +24,15 @@ client = XiaoCanClient()
 
 # 任务默认触发时间定义
 TASK_DEFAULT_TIME = {
-    "yb_task": "08:05",         # 领 500 元宝 (浏览电商30s)
-    "yb_sign": "08:10",         # 天天赚元宝签到
+    "yb_task": "08:05",         # 领天天赚元宝中心任务 (社群/电商/领券加赠/聚拢元宝)
+    "yb_sign": "08:10",         # 天天赚元宝独立签到
     "svip_rebate": "09:00",     # 抢SVIP专属返利券
     "brand_flash": "09:30",     # 抢SVIP大牌券
     "media_vip": "10:00",       # 抢每月影音VIP (10:00/17:00/20:00)
     "free_order": "14:00",      # 抢每月免单券
-    "collect_points": "23:59",  # 收取未收元宝 (避免气泡过期)
+    "collect_points": "23:59",  # 收取未收元宝 (晚间睡前避免气泡过期)
     "redpack_rain": "10:00",    # 公共整点红包雨 (六场: 10/11/12/14/16/19)
     "flash_sale": "10:00",      # 元宝秒杀
-    "daily": "08:10",           # 元宝乐园综合打卡 (兼容旧版)
     "group_lottery": "07:40",   # 免费开红包与抽奖
     "vip_expand": "08:30",      # 会员成长膨胀礼包
     "expire_remind": "08:00",   # 登录凭据到期巡检
@@ -163,62 +162,24 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
     try:
         if task_id == "daily":
-            # 1. 元宝乐园每日签到打卡
+            # 兼容历史 daily 任务标识：依次执行独立原子任务 yb_sign 与 yb_task，彻底消除冗余与重复执行
+            log_output += f"[{time.strftime('%H:%M:%S')}] 兼容旧版调用模式: 正在分派原子任务【天天赚元宝签到】与【天天赚元宝任务】...\n"
             try:
                 sign_res = await client.do_user_sign(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: 打卡成功 (状态: {sign_res.get('status', {}).get('msg', 'ok')})\n"
+                msg = sign_res.get("status", {}).get("msg", "打卡成功")
+                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {msg}\n"
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {e.msg} (提示码: {e.code})\n"
-
-            # 2. 完成任务领奖励 (饿了么: 3, 美团: 4, 官方社群: 6)
-            task_events = [
-                (3, "饿了么领券"),
-                (4, "美团领券"),
-                (6, "小蚕专属社群")
-            ]
-            for tid, tname in task_events:
-                try:
-                    await client.complete_task_event(task_type=tid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 奖励领取成功\n"
-                except XiaoCanRPCError as e:
-                    if e.code == 3:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 今日已完成\n"
-                    else:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: {e.msg} (提示码: {e.code})\n"
-
-            # 3. 天天赚元宝零门槛活动打卡 (官方任务5加入社群500元宝、任务57电商浏览500元宝、任务59天天打卡1000元宝)
-            act_tasks = [
-                (5, "加入官方社群", 500),
-                (57, "抖音电商浏览30s", 500),
-                (59, "天天赚元宝打卡", 1000)
-            ]
-            for at_id, at_name, at_pts in act_tasks:
-                try:
-                    await asyncio.sleep(random.uniform(0.2, 0.45))
-                    await client.complete_activity_task(task_id=at_id, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 活动打卡 [{at_name}]: 提交成功 (+{at_pts}元宝)\n"
-                except XiaoCanRPCError as ce:
-                    if ce.code in (10001, 20006) or "重复" in ce.msg or "完成" in ce.msg:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 活动打卡 [{at_name}]: 今日已完成\n"
-                    else:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 活动打卡 [{at_name}]: {ce.msg} (代码: {ce.code})\n"
-                except Exception:
-                    pass
-
-            # 4. 一键收取所有待领气泡元宝与达标任务元宝
-            try:
-                col_res = await client.collect_points(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                got_pt = col_res.get("point") or col_res.get("points") or 0
-                log_output += f"[{time.strftime('%H:%M:%S')}] 元宝一键收取: 自动聚拢已成熟气泡元宝 (入账: {got_pt} 元宝)\n"
-            except Exception:
-                pass
-
-            # 5. 增加每日抽奖次数
-            try:
-                await client.incr_lottery_number(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 抽奖机会: 每日抽奖次数已同步累加\n"
+                if e.code == 3 or "已签" in e.msg:
+                    log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: 今日已完成签到打卡\n"
+                else:
+                    log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (提示码: {e.code})\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 抽奖机会累加: {e}\n"
+                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到异常: {e}\n"
+
+            # 顺延执行已整合全量事件的 yb_task
+            yb_job_res = await execute_task_job(account_key, "yb_task", trigger_type=trigger_type)
+            if yb_job_res.get("output"):
+                log_output += yb_job_res.get("output", "")
 
         elif task_id == "vip_expand":
             # 1. 会员打卡与连续签到天数同步 (SilkwormVip.VipRightsService.UserSignInDays)
@@ -693,7 +654,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 log_output += f"[{time.strftime('%H:%M:%S')}] SVIP大牌券秒杀异常: {e}\n"
 
         elif task_id == "yb_task":
-            # 领天天赚元宝中心任务 (官方任务5加入社群500元宝、任务57电商浏览500元宝、任务59打卡1000元宝)
+            # 领天天赚元宝中心任务 (含官方任务5/57/59打卡、领券加赠、抽奖机会累加与气泡元宝聚拢)
             log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索天天赚元宝中心每日任务状态...\n"
             act_tasks = [
                 (5, "加入官方社群", 500),
@@ -703,7 +664,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             for tid, t_title, pts in act_tasks:
                 ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                 try:
-                    await asyncio.sleep(random.uniform(0.2, 0.45))
+                    await asyncio.sleep(random.uniform(0.1, 0.25))
                     comp_res = await client.complete_activity_task(task_id=tid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                     detail = comp_res.get("detail") or {}
                     new_bal = detail.get("balance")
@@ -720,6 +681,32 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 任务 [{t_title}] 响应: {ce.msg} (代码: {ce.code})\n"
                 except Exception as e:
                     log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 任务 [{t_title}] 执行异常: {e}\n"
+
+            # 补充领券与专属社群事件打卡 (饿了么: 3, 美团: 4, 官方社群: 6)
+            task_events = [
+                (3, "饿了么领券"),
+                (4, "美团领券"),
+                (6, "小蚕专属社群")
+            ]
+            for tid, tname in task_events:
+                try:
+                    await asyncio.sleep(random.uniform(0.08, 0.15))
+                    await client.complete_task_event(task_type=tid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 奖励领取成功\n"
+                except XiaoCanRPCError as e:
+                    if e.code == 3 or "已" in e.msg:
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 今日已完成\n"
+                    else:
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: {e.msg} (提示码: {e.code})\n"
+                except Exception:
+                    pass
+
+            # 补充累加每日营销抽奖机会
+            try:
+                await client.incr_lottery_number(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                log_output += f"[{time.strftime('%H:%M:%S')}] 抽奖机会: 每日抽奖次数已同步累加\n"
+            except Exception:
+                pass
 
             # 汇总收取成熟气泡元宝
             try:

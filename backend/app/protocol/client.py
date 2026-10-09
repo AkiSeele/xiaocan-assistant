@@ -37,7 +37,7 @@ def get_waf_cooldown_seconds() -> int:
     return max(0, int(_waf_blocked_until - time.time()))
 
 
-def mark_waf_blocked(duration_seconds: int = 300):
+def mark_waf_blocked(duration_seconds: int = 15):
     global _waf_blocked_until
     _waf_blocked_until = max(_waf_blocked_until, time.time() + duration_seconds)
 
@@ -47,143 +47,20 @@ def clear_waf_block():
     _waf_blocked_until = 0.0
 
 
-# 动态国内代理池管理 (支持青果网络等国内动态短效/长效 HTTP 提取 API)
-_dynamic_proxy_url: Optional[str] = None
-_dynamic_proxy_deadline: float = 0.0
-_dynamic_proxy_lock: asyncio.Lock = asyncio.Lock()
-
-
-async def get_effective_proxy_url(explicit_proxy: Optional[str] = None) -> Optional[str]:
-    """获取当前生效的代理地址（支持普通代理及国内动态短效代理 API 自动滚动续期）"""
-    global _dynamic_proxy_url, _dynamic_proxy_deadline
-    if explicit_proxy and explicit_proxy.strip():
-        return explicit_proxy.strip()
-
-    try:
-        from ..models import database as db
-        custom_setting = db.get_setting("network_proxy")
-    except Exception:
-        custom_setting = None
-
-    if not custom_setting or not isinstance(custom_setting, str) or not custom_setting.strip():
-        return None
-
-    custom_setting = custom_setting.strip()
-    # 如果是普通静态代理 (如 http://127.0.0.1:7890 或 socks5://...)
-    is_api = "http" in custom_setting and ("get?key=" in custom_setting or "share.proxy.qg.net" in custom_setting or "format=" in custom_setting)
-    if not is_api:
-        return custom_setting
-
-    # 动态代理 API 缓存有效性核验
-    now = time.time()
-    if _dynamic_proxy_url and now < _dynamic_proxy_deadline:
-        return _dynamic_proxy_url
-
-    async with _dynamic_proxy_lock:
-        now = time.time()
-        if _dynamic_proxy_url and now < _dynamic_proxy_deadline:
-            return _dynamic_proxy_url
-
-        try:
-            api_url = custom_setting
-            # 优先采用 json 格式以便精准提取 deadline 到期时间与 server 地址
-            if "format=txt" in api_url:
-                api_url = api_url.replace("format=txt", "format=json")
-            elif "format=json" not in api_url:
-                api_url += "&format=json"
-
-            async with httpx.AsyncClient(trust_env=False, timeout=6.0) as temp_client:
-                resp = await temp_client.get(api_url)
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                        if data.get("code") == "SUCCESS" and data.get("data"):
-                            item = data["data"][0]
-                            srv = item.get("server")
-                            if srv:
-                                _dynamic_proxy_url = f"http://{srv}"
-                                _dynamic_proxy_deadline = now + 45.0
-                                deadline_str = item.get("deadline")
-                                if deadline_str:
-                                    try:
-                                        dl_ts = time.mktime(time.strptime(deadline_str, "%Y-%m-%d %H:%M:%S"))
-                                        _dynamic_proxy_deadline = max(now + 10.0, dl_ts - 5.0)
-                                    except Exception:
-                                        pass
-                                clear_waf_block()
-                                logger.info(f"动态国内代理获取成功: {_dynamic_proxy_url} (可用至: {int(_dynamic_proxy_deadline - now)}秒后)")
-                                return _dynamic_proxy_url
-                    except Exception:
-                        text_line = resp.text.strip().splitlines()[0].strip() if resp.text.strip() else ""
-                        if text_line and ":" in text_line:
-                            _dynamic_proxy_url = f"http://{text_line}"
-                            _dynamic_proxy_deadline = now + 45.0
-                            clear_waf_block()
-                            logger.info(f"动态国内代理(文本模式)获取成功: {_dynamic_proxy_url}")
-                            return _dynamic_proxy_url
-        except Exception as e:
-            logger.warning(f"从代理服务商动态提取国内代理异常: {e}")
-
-    return _dynamic_proxy_url
-
-
-def invalidate_dynamic_proxy():
-    """使当前动态代理立即失效，促使下次请求获取全新国内 IP"""
-    global _dynamic_proxy_url, _dynamic_proxy_deadline
-    _dynamic_proxy_url = None
-    _dynamic_proxy_deadline = 0.0
-
-
 class XiaoCanClient:
-    def __init__(self, timeout: float = 10.0, proxy: Optional[str] = None):
+    def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
-        self.explicit_proxy = proxy
-        self.current_proxy: Optional[str] = None
-        self._session: Optional[httpx.AsyncClient] = None
-
-    async def _get_session(self) -> httpx.AsyncClient:
-        proxy_url = await get_effective_proxy_url(self.explicit_proxy)
-        if self._session is not None and self.current_proxy == proxy_url:
-            return self._session
-
-        if self._session is not None:
-            try:
-                await self._session.aclose()
-            except Exception:
-                pass
-
-        self.current_proxy = proxy_url
         client_kwargs: Dict[str, Any] = {
             "http2": True,
-            "timeout": self.timeout,
+            "timeout": timeout,
             "follow_redirects": True,
-            "limits": httpx.Limits(max_connections=50, max_keepalive_connections=20)
+            "limits": httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            "trust_env": False
         }
-        if proxy_url:
-            client_kwargs["proxy"] = proxy_url
-        else:
-            client_kwargs["trust_env"] = False
-
-        self._session = httpx.AsyncClient(**client_kwargs)
-        return self._session
-
-    @property
-    def session(self) -> httpx.AsyncClient:
-        if self._session is None:
-            client_kwargs: Dict[str, Any] = {
-                "http2": True,
-                "timeout": self.timeout,
-                "follow_redirects": True,
-                "limits": httpx.Limits(max_connections=50, max_keepalive_connections=20),
-                "trust_env": False
-            }
-            self._session = httpx.AsyncClient(**client_kwargs)
-        return self._session
+        self.session = httpx.AsyncClient(**client_kwargs)
 
     async def close(self):
-        if self._session is not None:
-            await self._session.aclose()
-            self._session = None
+        await self.session.aclose()
 
     async def __aenter__(self):
         return self
@@ -202,12 +79,12 @@ class XiaoCanClient:
         silk_id: Optional[str] = None,
         platform: Optional[str] = "app"
     ) -> Dict[str, Any]:
-        # 1. 前置熔断保护：若当前网络处于腾讯云 WAF 冷却期（且未使用代理），阻止盲发
+        # 1. 前置熔断保护：若当前网络处于腾讯云 WAF 冷却期，阻止盲发以防重置封锁计时
         if is_waf_blocked():
             remain_sec = get_waf_cooldown_seconds()
             raise XiaoCanRPCError(
                 code=403,
-                msg=f"当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中（剩余约 {remain_sec} 秒），系统已自动熔断休眠以避免延长封禁。如需立即恢复，请切换手机热点、配置国内代理或等待冷却。"
+                msg=f"当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中（剩余约 {remain_sec} 秒），系统已自动熔断休眠以避免延长封禁。如需立即恢复，请切换手机热点、重启光猫更换IP或等待冷却。"
             )
 
         payload = dict(body) if body else {}
@@ -227,47 +104,30 @@ class XiaoCanClient:
             platform=plat
         )
 
-        session = await self._get_session()
-        for attempt in range(2):
-            try:
-                resp = await session.post(
-                    GW_BASE_URL,
-                    json=payload,
-                    headers=headers
-                )
-                if resp.status_code == 403:
-                    is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
-                    if is_waf:
-                        if self.current_proxy:
-                            logger.warning(f"代理节点 {self.current_proxy} 触发 WAF 403，正在自动轮换新国内代理...")
-                            invalidate_dynamic_proxy()
-                            if attempt == 0:
-                                session = await self._get_session()
-                                continue
-                        else:
-                            mark_waf_blocked(duration_seconds=300)
-                    hint = "已被腾讯云 WAF 防火墙拦截 [403 Forbidden]，系统已激活 5 分钟熔断休眠保护。通常原因是：开启了海外代理/VPN/TUN模式，或当前IP触发了频控防护。请切换手机热点、重启光猫更换IP或等待冷却后重试" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
-                    logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
-                    raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
+        try:
+            resp = await self.session.post(
+                GW_BASE_URL,
+                json=payload,
+                headers=headers
+            )
+            if resp.status_code == 403:
+                is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
+                if is_waf:
+                    mark_waf_blocked(duration_seconds=15)
+                hint = "已被腾讯云 WAF 防火墙拦截 [403 Forbidden]，系统已进入 15 秒频次缓冲。通常原因是：开启了海外代理/VPN/TUN模式，或当前IP触发了频控防护。请关闭全局代理、切换手机热点或稍后重试" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
+                logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
+                raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
 
-                if resp.status_code != 200:
-                    logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
-                    raise XiaoCanRPCError(code=resp.status_code, msg=f"HTTP {resp.status_code} 异常", raw={"status_code": resp.status_code, "text": resp.text[:200]})
+            if resp.status_code != 200:
+                logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
+                raise XiaoCanRPCError(code=resp.status_code, msg=f"HTTP {resp.status_code} 异常", raw={"status_code": resp.status_code, "text": resp.text[:200]})
 
-                data = resp.json()
-                break
-            except (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout) as pe:
-                if self.current_proxy and attempt == 0:
-                    logger.warning(f"代理连接异常 ({pe})，正在自动轮换下一国内代理重试...")
-                    invalidate_dynamic_proxy()
-                    session = await self._get_session()
-                    continue
-                raise
-            except XiaoCanRPCError:
-                raise
-            except Exception as e:
-                logger.error(f"RPC {server_name}.{method_name} network failure: {e}")
-                raise
+            data = resp.json()
+        except XiaoCanRPCError:
+            raise
+        except Exception as e:
+            logger.error(f"RPC {server_name}.{method_name} network failure: {e}")
+            raise
 
         # 1. 检查网关返回的顶层 error (例如 Go micro 500/400 异常)
         if "error" in data:

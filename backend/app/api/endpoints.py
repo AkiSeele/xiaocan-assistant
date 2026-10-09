@@ -33,11 +33,10 @@ client = XiaoCanClient()
 # 任务元数据定义 (涵盖日常、秒杀与资产守护共 15 项全量对齐)
 TASK_META = {
     # --- 日常打卡与元宝任务 (daily) ---
-    "yb_task": {"id": "yb_task", "label": "领天天赚元宝", "tip": "自动完成社群打卡、电商浏览及天天打卡，一键聚拢元宝", "category": "daily", "default_time": "08:05"},
+    "yb_task": {"id": "yb_task", "label": "领天天赚元宝", "tip": "自动完成社群打卡、电商浏览、领券加赠及天天打卡，一键聚拢元宝", "category": "daily", "default_time": "08:05"},
     "yb_sign": {"id": "yb_sign", "label": "天天赚元宝签到", "tip": "每日天天赚元宝独立签到打卡", "category": "daily", "default_time": "08:10"},
-    "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
+    "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "晚间睡前自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
     "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "daily", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
-    "daily": {"id": "daily", "label": "元宝乐园综合打卡", "tip": "签到打卡 / 领券推送 / 零门槛打卡 / 一键收取 (综合)", "category": "daily", "default_time": "08:10"},
     "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
     "flash_sale": {"id": "flash_sale", "label": "元宝秒杀抢券", "tip": "元宝商城限量秒杀抢券，支持自定义商品ID", "category": "daily", "default_time": "10:00"},
 
@@ -147,7 +146,7 @@ async def create_or_update_account(data: Dict[str, Any] = Body(...)):
     configs = db.get_task_configs(key)
     if not configs:
         for tid, meta in TASK_META.items():
-            default_on = tid in ("daily", "vip_expand", "brand_flash")
+            default_on = tid in ("yb_sign", "yb_task", "vip_expand", "brand_flash")
             db.save_task_config(key, tid, enabled=default_on, cron_time=meta["default_time"])
 
     scheduler.reload_schedules()
@@ -609,7 +608,7 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
     configs = db.get_task_configs(key)
     if not configs:
         for tid, meta in TASK_META.items():
-            default_on = tid in ("daily", "vip_expand", "brand_flash")
+            default_on = tid in ("yb_sign", "yb_task", "vip_expand", "brand_flash")
             db.save_task_config(key, tid, enabled=default_on, cron_time=meta["default_time"])
     scheduler.reload_schedules()
     return saved
@@ -873,7 +872,7 @@ async def run_task_immediately(data: Dict[str, Any] = Body(...)):
 
 @router.post("/tasks/batch-run-daily")
 async def batch_run_daily_tasks(data: Dict[str, Any] = Body(...)):
-    """一键执行当前账号的高频日常任务 (签到 + 膨胀金 + 转盘 + 抽奖 + 免费红包)"""
+    """一键执行当前账号的高频日常任务 (元宝签到 + 领天天赚元宝 + 会员打卡 + 极速抽奖开红包)"""
     account_key = data.get("account_key")
     if not account_key:
         return {"ok": False, "message": "未指定执行账号"}
@@ -882,7 +881,7 @@ async def batch_run_daily_tasks(data: Dict[str, Any] = Body(...)):
     if not account:
         return {"ok": False, "message": "账号不存在或未托管"}
 
-    daily_task_ids = ["yb_sign", "yb_task", "collect_points", "vip_expand", "group_lottery"]
+    daily_task_ids = ["yb_sign", "yb_task", "vip_expand", "group_lottery"]
     results = []
     
     for tid in daily_task_ids:

@@ -256,6 +256,26 @@ def init_db():
     except Exception:
         pass
 
+    # 历史 daily 综合任务平滑迁移：自动迁移至独立原子的 yb_sign 与 yb_task，彻底消除重复调用
+    try:
+        daily_enabled_keys = [
+            r[0] for r in c.execute("SELECT account_key FROM task_configs WHERE task_id = 'daily' AND enabled = 1").fetchall()
+        ]
+        for a_key in daily_enabled_keys:
+            c.execute("""
+                INSERT INTO task_configs (account_key, task_id, enabled, cron_time, params)
+                VALUES (?, 'yb_sign', 1, '08:10', '{}')
+                ON CONFLICT(account_key, task_id) DO UPDATE SET enabled = 1
+            """, (a_key,))
+            c.execute("""
+                INSERT INTO task_configs (account_key, task_id, enabled, cron_time, params)
+                VALUES (?, 'yb_task', 1, '08:05', '{}')
+                ON CONFLICT(account_key, task_id) DO UPDATE SET enabled = 1
+            """, (a_key,))
+        c.execute("UPDATE task_configs SET enabled = 0 WHERE task_id = 'daily'")
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 

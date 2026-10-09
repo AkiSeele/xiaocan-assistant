@@ -524,7 +524,7 @@ export const SettingsView: React.FC = () => {
   ];
 
   return (
-    <div ref={containerRef} className="w-full max-w-[1240px] space-y-6 pb-12">
+    <div ref={containerRef} className="w-full space-y-6 pb-12">
       {/* 顶部标题栏与全局快捷操作 */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-2 border-b border-semi-color-border">
         <div>
@@ -1118,9 +1118,9 @@ export const SettingsView: React.FC = () => {
                         <Button
                           theme="light"
                           icon={<IconExternalOpen />}
-                          onClick={() => window.open('https://console.tianditu.gov.cn/api/key', '_blank')}
+                          onClick={() => window.open('https://www.tianditu.gov.cn/', '_blank')}
                         >
-                          前往天地图控制台申请密钥
+                          前往国家地理信息公共服务平台 (天地图)
                         </Button>
                         <Button
                           type="primary"

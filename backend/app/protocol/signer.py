@@ -60,11 +60,8 @@ def generate_headers(
         "X-Ashe": ashe,
         "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip",
         "Accept-Language": "zh-CN,zh;q=0.9",
-        "Sec-Fetch-Site": "cross-site",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty"
     }
 
     if is_mini:
@@ -76,6 +73,9 @@ def generate_headers(
         headers["X-Version"] = "3.20.6.67"
         headers["X-Model"] = "microsoft microsoft"
         headers["xweb_xhr"] = "1"
+        headers["Sec-Fetch-Site"] = "cross-site"
+        headers["Sec-Fetch-Mode"] = "cors"
+        headers["Sec-Fetch-Dest"] = "empty"
         headers["Referer"] = "https://servicewechat.com/wx52ae177248081591/798/page-frame.html"
         headers["User-Agent"] = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "

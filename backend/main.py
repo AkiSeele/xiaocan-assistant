@@ -4,6 +4,12 @@
 """
 import os
 import sys
+
+# 排除宿主机或外部代理工具注入的 SOCKS 代理环境变量污染，保证本地服务与国内接口纯净直连
+for proxy_k in ["ALL_PROXY", "all_proxy"]:
+    if proxy_k in os.environ and "socks" in os.environ[proxy_k].lower():
+        os.environ.pop(proxy_k, None)
+
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
