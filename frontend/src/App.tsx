@@ -82,7 +82,7 @@ export const App: React.FC = () => {
     });
   }, [activeTab]);
 
-  // 遵循 Semi Design 官方中后台设计规范：纯净、轻柔的高性能 GPU 合成淡入转场 (Dissolve Fade-In)
+  // 遵循 Semi Design 官方中后台设计规范与 GSAP 最佳实践：纯净、轻柔的高性能 GPU 合成淡入就位转场
   useGSAP(
     () => {
       if (!pageContainerRef.current) return;
@@ -94,16 +94,18 @@ export const App: React.FC = () => {
         gsap.fromTo(
           targetEl,
           {
-            opacity: 0,
-            y: 4,
+            autoAlpha: 0.65,
+            y: 8,
+            scale: 0.996,
           },
           {
-            opacity: 1,
+            autoAlpha: 1,
             y: 0,
-            duration: 0.18,
-            ease: 'power1.out',
+            scale: 1,
+            duration: 0.26,
+            ease: 'power2.out',
             overwrite: 'auto',
-            clearProps: 'transform,opacity',
+            clearProps: 'transform,opacity,visibility',
           }
         );
       }

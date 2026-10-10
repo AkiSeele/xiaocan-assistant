@@ -670,20 +670,42 @@ export const StoreSniping: React.FC = () => {
     };
   }, []);
 
-  // GSAP: 遵循 gsap-skills 规范，Tab 切换纯透明度平滑淡入，完全走 GPU 合成通道无回流开销
+  // GSAP: 遵循 gsap-skills 规范，Tab 切换平滑位移微浮入，走 GPU 合成通道无回流开销
   useGSAP(() => {
     gsap.killTweensOf('.tab-content-anim');
     gsap.fromTo(
       '.tab-content-anim',
-      { opacity: 0.7 },
+      { autoAlpha: 0.65, y: 8 },
       {
-        opacity: 1,
-        duration: 0.15,
-        ease: 'power1.out',
-        clearProps: 'opacity',
+        autoAlpha: 1,
+        y: 0,
+        duration: 0.24,
+        ease: 'power2.out',
+        overwrite: 'auto',
+        clearProps: 'transform,opacity,visibility',
       }
     );
   }, { scope: mainContainerRef, dependencies: [activeTabKey] });
+
+  // 筛选条件变化时的顺滑就位动效
+  useGSAP(() => {
+    const tableEl = mainContainerRef.current?.querySelector('.store-table-container');
+    if (tableEl && activeTabKey === 'stores') {
+      gsap.killTweensOf(tableEl);
+      gsap.fromTo(
+        tableEl,
+        { autoAlpha: 0.75, y: 5 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          duration: 0.2,
+          ease: 'power2.out',
+          overwrite: 'auto',
+          clearProps: 'transform,opacity,visibility',
+        }
+      );
+    }
+  }, { scope: mainContainerRef, dependencies: [platformFilter, rebateTypeFilter, conditionFilter, sortBy] });
 
   const handleTriggerDualScan = async (customMax?: number, customKw?: string) => {
     if (accounts.length === 0) {

@@ -29,6 +29,7 @@ import { api } from '../api';
 import { TaskIcon } from '../components/TaskIcons';
 import { LogDetailModal } from '../components/LogDetailModal';
 import { useOnActivated } from '../utils/useOnActivated';
+import { useGSAP, gsap } from '../utils/animations';
 import type { JobLog } from '../types';
 
 const { Title, Text } = Typography;
@@ -171,6 +172,29 @@ export const LogsView: React.FC = () => {
   useOnActivated('logs', () => {
     fetchLogs(logs.length > 0, true);
   }, { throttleMs: 2500 });
+
+  // 筛选与数据更新时的轻量平滑微过渡 (遵循 Semi Design 高性能 GPU 合成通道)
+  useGSAP(
+    () => {
+      const tableEl = containerRef.current?.querySelector('.logs-table-container');
+      if (tableEl) {
+        gsap.killTweensOf(tableEl);
+        gsap.fromTo(
+          tableEl,
+          { autoAlpha: 0.7, y: 6 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 0.22,
+            ease: 'power2.out',
+            overwrite: 'auto',
+            clearProps: 'transform,opacity,visibility',
+          }
+        );
+      }
+    },
+    { scope: containerRef, dependencies: [filterCategory, filterStatus, filterAccount] }
+  );
 
   // 当存在「执行中」任务时，自动每 3 秒静默轮询更新日志流（后台非活跃时自动挂起）
   const hasRunning = logs.some(l => l.status === 'running');

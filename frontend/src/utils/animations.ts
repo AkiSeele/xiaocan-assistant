@@ -6,7 +6,8 @@ gsap.registerPlugin(useGSAP);
 export { gsap, useGSAP };
 
 /**
- * 仪表盘卡片与组件交错进入动效
+ * 仪表盘卡片与组件交错进入动效 (遵循 gsap-performance & gsap-skills)
+ * 采用 transform (y/scale) 与 autoAlpha 走 GPU 合成加速通道，杜绝重排
  */
 export const animateStaggerEnter = (
   container: HTMLElement | null,
@@ -20,17 +21,69 @@ export const animateStaggerEnter = (
   gsap.killTweensOf(elements);
   gsap.fromTo(
     elements,
-    { opacity: 0, y: 14 },
+    { autoAlpha: 0, y: 12, scale: 0.99 },
     {
-      opacity: 1,
+      autoAlpha: 1,
       y: 0,
-      duration: 0.32,
-      stagger: 0.03,
+      scale: 1,
+      duration: 0.35,
+      stagger: 0.04,
       delay,
       ease: 'power2.out',
-      clearProps: 'transform,opacity',
+      overwrite: 'auto',
+      clearProps: 'transform,opacity,visibility',
     }
   );
+};
+
+/**
+ * Tab 切换或筛选视图切换时的平滑微过渡
+ * 起始保留适度不透明度，消除白屏/黑屏闪烁，带来温润就位感
+ */
+export const animateSmoothSwitch = (
+  target: Element | Element[] | NodeListOf<Element> | string,
+  yOffset: number = 8,
+  duration: number = 0.24
+) => {
+  gsap.killTweensOf(target);
+  gsap.fromTo(
+    target,
+    { autoAlpha: 0.65, y: yOffset },
+    {
+      autoAlpha: 1,
+      y: 0,
+      duration,
+      ease: 'power2.out',
+      overwrite: 'auto',
+      clearProps: 'transform,opacity,visibility',
+    }
+  );
+};
+
+/**
+ * 卡片悬浮鼠标移入微交互
+ */
+export const animateCardHoverEnter = (element: HTMLElement | null, offset: number = -2) => {
+  if (!element) return;
+  gsap.to(element, {
+    y: offset,
+    duration: 0.2,
+    ease: 'power1.out',
+    overwrite: 'auto',
+  });
+};
+
+/**
+ * 卡片悬浮鼠标移出复位微交互
+ */
+export const animateCardHoverLeave = (element: HTMLElement | null) => {
+  if (!element) return;
+  gsap.to(element, {
+    y: 0,
+    duration: 0.18,
+    ease: 'power1.out',
+    overwrite: 'auto',
+  });
 };
 
 /**
@@ -41,12 +94,12 @@ export const animateTap = (element: HTMLElement | null) => {
   gsap.fromTo(
     element,
     { scale: 0.96 },
-    { scale: 1, duration: 0.35, ease: 'back.out(2)' }
+    { scale: 1, duration: 0.32, ease: 'back.out(2)' }
   );
 };
 
 /**
- * 数字递增动画
+ * 数字平滑递增翻牌器动效
  */
 export const animateNumberCounter = (
   element: HTMLElement | null,
@@ -57,7 +110,7 @@ export const animateNumberCounter = (
   const obj = { val: 0 };
   gsap.to(obj, {
     val: targetValue,
-    duration: 1.0,
+    duration: 0.8,
     ease: 'power2.out',
     onUpdate: () => {
       if (element) {

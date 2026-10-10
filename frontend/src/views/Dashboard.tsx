@@ -472,7 +472,7 @@ export const Dashboard: React.FC = () => {
     return () => clearInterval(timer);
   }, [hasRunningLogs, logFilterAccount, fetchRecentLogs]);
 
-  // GSAP 进场交错动画 (只在组件挂载时平滑执行一次，避免数据刷新与账号切换时的闪烁)
+  // GSAP 进场交错动画 (只在组件挂载时平滑执行一次，避免数据刷新时的闪烁)
   useGSAP(
     () => {
       if (dashboardRef.current) {
@@ -480,6 +480,31 @@ export const Dashboard: React.FC = () => {
       }
     },
     { scope: dashboardRef }
+  );
+
+  // 切换主控账号时，Bento 核心资产卡片与待办任务区域平滑微过渡
+  useGSAP(
+    () => {
+      if (!dashboardRef.current) return;
+      const targets = dashboardRef.current.querySelectorAll('.gsap-bento-card, .gsap-pending-section');
+      if (targets.length) {
+        gsap.killTweensOf(targets);
+        gsap.fromTo(
+          targets,
+          { autoAlpha: 0.72, y: 5 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 0.22,
+            stagger: 0.02,
+            ease: 'power2.out',
+            overwrite: 'auto',
+            clearProps: 'transform,opacity,visibility',
+          }
+        );
+      }
+    },
+    { scope: dashboardRef, dependencies: [currentAccountKey] }
   );
 
   // 4 大核心资产 Bento 卡片鼠标移入/移出 GSAP 动效 (遵循 Semi Design 克制、严谨、轻量微动效原则)
@@ -802,7 +827,7 @@ export const Dashboard: React.FC = () => {
             onMouseEnter={handleBentoEnter}
             onMouseLeave={handleBentoLeave}
             onClick={() => setActiveTab('orders')}
-            className="h-full cursor-pointer will-change-transform"
+            className="gsap-bento-card h-full cursor-pointer will-change-transform"
           >
             <Card
               shadows="hover"
@@ -839,7 +864,7 @@ export const Dashboard: React.FC = () => {
             onMouseEnter={handleBentoEnter}
             onMouseLeave={handleBentoLeave}
             onClick={() => setActiveTab('orders')}
-            className="h-full cursor-pointer will-change-transform"
+            className="gsap-bento-card h-full cursor-pointer will-change-transform"
           >
             <Card
               shadows="hover"
@@ -876,7 +901,7 @@ export const Dashboard: React.FC = () => {
             onMouseEnter={handleBentoEnter}
             onMouseLeave={handleBentoLeave}
             onClick={() => setActiveTab('orders')}
-            className="h-full cursor-pointer will-change-transform"
+            className="gsap-bento-card h-full cursor-pointer will-change-transform"
           >
             <Card
               shadows="hover"
@@ -916,7 +941,7 @@ export const Dashboard: React.FC = () => {
             onMouseEnter={handleBentoEnter}
             onMouseLeave={handleBentoLeave}
             onClick={() => setActiveTab('automation')}
-            className="h-full cursor-pointer will-change-transform"
+            className="gsap-bento-card h-full cursor-pointer will-change-transform"
           >
             <Card
               shadows="hover"

@@ -83,21 +83,46 @@ export const Accounts: React.FC = () => {
   useGSAP(
     () => {
       if (accountsRef.current && accounts.length > 0) {
+        gsap.killTweensOf('.gsap-account-card');
         gsap.fromTo(
           '.gsap-account-card',
-          { opacity: 0 },
+          { autoAlpha: 0, y: 14, scale: 0.985 },
           {
-            opacity: 1,
-            duration: 0.16,
-            stagger: 0.02,
-            ease: 'power1.out',
-            clearProps: 'all'
+            autoAlpha: 1,
+            y: 0,
+            scale: 1,
+            duration: 0.35,
+            stagger: 0.04,
+            ease: 'power2.out',
+            overwrite: 'auto',
+            clearProps: 'transform,opacity,visibility'
           }
         );
       }
     },
     { scope: accountsRef, dependencies: [accounts.length] }
   );
+
+  // 账号卡片鼠标移入/移出微交互
+  const { contextSafe } = useGSAP({ scope: accountsRef });
+
+  const handleCardHover = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
+    gsap.to(e.currentTarget, {
+      y: -3,
+      duration: 0.22,
+      ease: 'power1.out',
+      overwrite: 'auto',
+    });
+  });
+
+  const handleCardLeave = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
+    gsap.to(e.currentTarget, {
+      y: 0,
+      duration: 0.18,
+      ease: 'power1.out',
+      overwrite: 'auto',
+    });
+  });
 
   // Token 智能解析状态
   const [rawText, setRawText] = useState('');
@@ -610,7 +635,12 @@ export const Accounts: React.FC = () => {
             const isSelected = acc.key === currentAccountKey;
             return (
               <Col xs={24} sm={12} lg={8} key={acc.key}>
-                <div onClick={() => handleOpenDetail(acc)} className="h-full">
+                <div
+                  onClick={() => handleOpenDetail(acc)}
+                  onMouseEnter={handleCardHover}
+                  onMouseLeave={handleCardLeave}
+                  className="h-full"
+                >
                   <Card
                     shadows="hover"
                     className={`gsap-account-card rounded-xl transition-colors duration-150 relative overflow-hidden border cursor-pointer ${
