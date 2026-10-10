@@ -5,7 +5,11 @@ import {
   Tag,
   Button,
   Dropdown,
-  Toast
+  Toast,
+  Card,
+  Typography,
+  Space,
+  Divider
 } from '@douyinfe/semi-ui';
 import {
   IconDesktop,
@@ -275,31 +279,38 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     >
       <div className="space-y-3.5 py-1">
         {/* 1. 当前位置展示与一键获取本机定位 (重点核心卡片) */}
-        <div className="p-3.5 rounded-xl bg-semi-color-fill-0 border border-semi-color-border space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-semi-color-text-0">当前位置</span>
-              <Tag size="small" color="blue" className="shrink-0 font-normal">{formatCityTag(resolvedCityName)}</Tag>
+        <Card
+          bordered
+          header={
+            <div className="flex items-center justify-between w-full">
+              <Space align="center" spacing="tight">
+                <Typography.Text strong size="small">当前位置</Typography.Text>
+                <Tag size="small" color="blue">{formatCityTag(resolvedCityName)}</Tag>
+              </Space>
+              <Button
+                theme="solid"
+                type="primary"
+                icon={<IconDesktop />}
+                loading={locating}
+                onClick={handleGetDeviceLocation}
+                onMouseDown={(e) => e.preventDefault()}
+                size="small"
+              >
+                获取本机定位
+              </Button>
             </div>
-            <Button
-              theme="solid"
-              type="primary"
-              icon={<IconDesktop />}
-              loading={locating}
-              onClick={handleGetDeviceLocation}
-              onMouseDown={(e) => e.preventDefault()}
-              size="small"
-            >
-              获取本机定位
-            </Button>
-          </div>
-          <div className="text-sm font-semibold text-semi-color-text-0 leading-relaxed truncate" title={resolvedAddress}>
+          }
+          headerStyle={{ padding: '10px 14px 6px', borderBottom: 'none' }}
+          bodyStyle={{ padding: '0 14px 10px' }}
+          style={{ backgroundColor: 'var(--semi-color-fill-0)', borderRadius: 'var(--semi-border-radius-medium)' }}
+        >
+          <Typography.Title heading={6} ellipsis={{ showTooltip: true }} style={{ margin: '0 0 4px' }}>
             {resolvedAddress || '未解析地址'}
-          </div>
-          <div className="text-[11px] text-semi-color-text-2 font-mono">
+          </Typography.Title>
+          <Typography.Text code size="small" type="secondary">
             坐标: {editLng || '0.000000'}, {editLat || '0.000000'}
-          </div>
-        </div>
+          </Typography.Text>
+        </Card>
 
         {/* 2. 搜索其他地址 (采用 Dropdown 浮层下拉，与搜索栏 100% 等宽对齐，弹窗高度全程不改变) */}
         <Dropdown
@@ -379,24 +390,25 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
         </Dropdown>
 
         {/* 3. 辅助微调区：经纬度弱化微调 (单行紧凑，视觉弱化) */}
-        <div className="pt-2 border-t border-semi-color-border/60 flex items-center justify-between gap-2 text-xs text-semi-color-text-2">
-          <div className="flex items-center gap-1.5 flex-1">
-            <span className="text-semi-color-text-2 shrink-0 text-[11px]">坐标微调:</span>
+        <Divider margin="8px" />
+        <div className="flex items-center justify-between gap-2 text-xs text-semi-color-text-2">
+          <Space align="center" spacing="tight" style={{ flex: 1 }}>
+            <Typography.Text type="secondary" size="small" style={{ whiteSpace: 'nowrap' }}>坐标微调:</Typography.Text>
             <Input
               value={editLng}
               placeholder="经度"
               size="small"
-              className="w-28 text-[11px] font-mono"
+              style={{ width: 110, fontFamily: 'monospace' }}
               onChange={(val) => setEditLng(val)}
             />
             <Input
               value={editLat}
               placeholder="纬度"
               size="small"
-              className="w-28 text-[11px] font-mono"
+              style={{ width: 110, fontFamily: 'monospace' }}
               onChange={(val) => setEditLat(val)}
             />
-          </div>
+          </Space>
           <Button
             size="small"
             theme="borderless"
@@ -405,7 +417,6 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
             loading={resolving}
             onClick={() => handleResolveCoords(editLat, editLng, true)}
             onMouseDown={(e) => e.preventDefault()}
-            className="shrink-0 text-[11px]"
           >
             反查地址
           </Button>

@@ -196,7 +196,7 @@ export const Accounts: React.FC = () => {
       };
       const res = await api.saveAccountNotifyConfig(notifyAccount.key, notifyMode, fullConfig);
       if (res.ok) {
-        Toast.success(res.message || '账号专属推送配置保存成功！');
+        Toast.success(res.message || '账号专属推送配置保存成功');
         setNotifyModalVisible(false);
         await loadAccounts();
       } else {
@@ -219,7 +219,7 @@ export const Accounts: React.FC = () => {
       };
       const res = await api.testAccountNotify(notifyAccount.key, notifyMode, fullConfig);
       if (res.ok) {
-        Toast.success(res.message || '测试消息发送成功，请前往对应客户端查收！');
+        Toast.success(res.message || '测试消息发送成功，请前往对应客户端查收');
       } else {
         Toast.error(res.message || '测试推送失败，请检查配置参数');
       }
@@ -249,7 +249,7 @@ export const Accounts: React.FC = () => {
     try {
       const res = await api.syncAccount(key);
       if (res.ok) {
-        Toast.success(res.message || '账号资产与官方档案已成功同步！');
+        Toast.success(res.message || '账号资产与官方档案已成功同步');
         await loadAccounts();
         if (detailAccount && detailAccount.key === key) {
           await fetchAccountDetail(key);
@@ -486,7 +486,7 @@ export const Accounts: React.FC = () => {
       if (res.ok) {
         setWechatListening(true);
         setListenCountdown(120);
-        Toast.info('自动感知已开启！请在电脑微信中点击进入【小蚕霸王餐】小程序');
+        Toast.info('自动感知已开启，请在电脑微信中点击进入【小蚕霸王餐】小程序');
 
         listenCountdownTimerRef.current = setInterval(() => {
           setListenCountdown((prev) => {
@@ -1161,7 +1161,6 @@ export const Accounts: React.FC = () => {
         title={
           <div className="flex items-center justify-between w-full pr-8">
             <div className="flex items-center gap-2">
-              <IconTicketCode className="text-semi-color-primary" />
               <span>账号详情与资产中心</span>
               {detailAccount && (
                 <Tag color="blue" size="small" type="light">
@@ -1712,12 +1711,7 @@ export const Accounts: React.FC = () => {
 
       {/* 账号专属消息推送配置模态对话框 */}
       <Modal
-        title={
-          <div className="flex items-center gap-2">
-            <IconBell className="text-semi-color-primary" />
-            <span>账号专属推送配置 - 【{notifyAccount?.nickname || '未命名账号'}】</span>
-          </div>
-        }
+        title={`账号专属推送配置 - 【${notifyAccount?.nickname || '未命名账号'}】`}
         visible={notifyModalVisible}
         onCancel={() => setNotifyModalVisible(false)}
         width={660}
@@ -1784,25 +1778,30 @@ export const Accounts: React.FC = () => {
             </div>
 
             {notifyMode === 'custom' && (
-              <div className="p-4 rounded-lg bg-semi-color-fill-0 border border-semi-color-border space-y-4">
-                <div className="flex items-center justify-between">
-                  <Text strong className="text-sm text-semi-color-text-0">专属通道类型</Text>
-                  <Select
-                    value={notifyChannel}
-                    onChange={(val) => setNotifyChannel(val as string)}
-                    style={{ width: 240 }}
-                  >
-                    <Select.Option value="clawbot">微信官方 ClawBot (iLink) (首选·推荐)</Select.Option>
-                    <Select.Option value="wecom">企业微信群机器人</Select.Option>
-                    <Select.Option value="dingtalk">钉钉群机器人</Select.Option>
-                    <Select.Option value="feishu">飞书群机器人</Select.Option>
-                    <Select.Option value="bark">iOS Bark 推送</Select.Option>
-                    <Select.Option value="qq_bot">QQ 机器人 (私聊/群聊)</Select.Option>
-                    <Select.Option value="telegram">Telegram Bot</Select.Option>
-                  </Select>
-                </div>
-
-                <Divider />
+              <Card
+                bordered
+                header={
+                  <div className="flex items-center justify-between w-full">
+                    <Text strong className="text-sm text-semi-color-text-0">专属通道类型</Text>
+                    <Select
+                      value={notifyChannel}
+                      onChange={(val) => setNotifyChannel(val as string)}
+                      style={{ width: 240 }}
+                    >
+                      <Select.Option value="clawbot">微信官方 ClawBot (iLink) (首选·推荐)</Select.Option>
+                      <Select.Option value="wecom">企业微信群机器人</Select.Option>
+                      <Select.Option value="dingtalk">钉钉群机器人</Select.Option>
+                      <Select.Option value="feishu">飞书群机器人</Select.Option>
+                      <Select.Option value="bark">iOS Bark 推送</Select.Option>
+                      <Select.Option value="qq_bot">QQ 机器人 (私聊/群聊)</Select.Option>
+                      <Select.Option value="telegram">Telegram Bot</Select.Option>
+                    </Select>
+                  </div>
+                }
+                headerStyle={{ padding: '12px 16px', borderBottom: 'none' }}
+                bodyStyle={{ padding: '0 16px 16px' }}
+                style={{ backgroundColor: 'var(--semi-color-fill-0)', borderRadius: 'var(--semi-border-radius-medium)' }}
+              >
 
                 {/* 1. 微信官方 ClawBot (首选·最高权重) */}
                 {notifyChannel === 'clawbot' && (
@@ -1985,7 +1984,7 @@ export const Accounts: React.FC = () => {
                       />
                     </div>
                     <Text type="tertiary" size="small">
-                      可向 @userinfobot 发送消息获取您的个人数字 Chat ID。
+                      可向 @userinfobot 发送消息获取你的个人数字 Chat ID
                     </Text>
                   </div>
                 )}
@@ -2000,7 +1999,7 @@ export const Accounts: React.FC = () => {
                     测试此通道连通性
                   </Button>
                 </div>
-              </div>
+              </Card>
             )}
           </div>
         )}

@@ -21,7 +21,10 @@ import {
   Spin,
   Tooltip,
   Banner,
-  Badge
+  Badge,
+  Row,
+  Col,
+  Descriptions
 } from '@douyinfe/semi-ui';
 import type { ColumnProps } from '@douyinfe/semi-ui/lib/es/table';
 import {
@@ -35,9 +38,7 @@ import {
   IconFastForward,
   IconChevronRight,
   IconPlus,
-  IconCopy,
-  IconBolt,
-  IconFilter
+  IconCopy
 } from '@douyinfe/semi-icons';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -138,6 +139,11 @@ export const getConditionShortText = (cond?: string): string => {
   if (cond.includes('随心')) return '随心';
   if (cond.includes('图文') || cond.includes('好评')) return '图文';
   return cond.slice(0, 2);
+};
+
+export const formatPromoDescForTier = (desc?: string): string => {
+  if (!desc) return '';
+  return cleanEmoji(desc).replace(/[(（]\s*最高[^)）]*[)）]/gi, '').trim();
 };
 
 const normalizeStorePlatform = (s?: { platform?: string; store_platform?: number } | string): string => {
@@ -1397,6 +1403,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '店铺信息',
       dataIndex: 'name',
+      width: 380,
       render: (name: string, row?: StoreItem) => {
         if (!row) return name;
         const sPlat = normalizeStorePlatform(row);
@@ -1460,28 +1467,33 @@ export const StoreSniping: React.FC = () => {
 
               {hasMulti && (
                 <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-                  <RadioGroup
-                    type="button"
-                    buttonSize="small"
-                    value={currentPid}
-                    onChange={(e) => {
-                      handleSelectPromo(storeKey, String(e.target.value));
-                    }}
-                  >
-                    {row.promotions!.map((p, idx) => {
-                      const isOutOfStock = p.left_number <= 0;
-                      return (
-                        <Radio key={p.promotion_id} value={p.promotion_id}>
-                          <span>档位{idx + 1}: {cleanEmoji(p.rebate_desc)}</span>
-                          {isOutOfStock ? (
-                            <span style={{ fontSize: 11, marginLeft: 4, color: 'var(--semi-color-text-3)' }}>(无票)</span>
-                          ) : (
-                            <span style={{ fontSize: 11, marginLeft: 4, color: 'var(--semi-color-success)' }}>(余{p.left_number})</span>
-                          )}
-                        </Radio>
-                      );
-                    })}
-                  </RadioGroup>
+                  <span className="text-[11px] text-semi-color-text-3 font-medium shrink-0">档位:</span>
+                  {row.promotions!.map((p, idx) => {
+                    const isSelected = p.promotion_id === currentPid;
+                    const isOutOfStock = p.left_number <= 0;
+                    const cleanDesc = formatPromoDescForTier(p.rebate_desc).replace(/元$/, '');
+                    return (
+                      <button
+                        key={p.promotion_id}
+                        type="button"
+                        onClick={() => handleSelectPromo(storeKey, String(p.promotion_id))}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-all cursor-pointer border ${
+                          isSelected
+                            ? 'bg-semi-color-primary-light-default border-semi-color-primary text-semi-color-primary font-medium shadow-xs'
+                            : 'bg-semi-color-fill-0 border-semi-color-border-subtle text-semi-color-text-1 hover:bg-semi-color-fill-1'
+                        }`}
+                      >
+                        <span>档{idx + 1}: {cleanDesc}</span>
+                        {isOutOfStock ? (
+                          <span className="text-[11px] text-semi-color-text-3">(无票)</span>
+                        ) : (
+                          <span className={`text-[11px] ${isSelected ? 'text-semi-color-primary' : 'text-semi-color-success'}`}>
+                            (余{p.left_number})
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1585,7 +1597,7 @@ export const StoreSniping: React.FC = () => {
     {
       title: '操作',
       dataIndex: 'actions',
-      width: 195,
+      width: 135,
       className: 'store-action-cell',
       fixed: 'right',
       render: (_: any, row?: StoreItem) => {
@@ -3091,16 +3103,7 @@ export const StoreSniping: React.FC = () => {
 
       {/* 预约与监听配置弹窗 */}
       <Modal
-        title={
-          <div className="flex items-center gap-2">
-            {appointModalMode === 'countdown' ? (
-              <Tag color="blue" prefixIcon={<IconClock />}>定时预约</Tag>
-            ) : (
-              <Tag color="amber" prefixIcon={<IconSearch />}>名额监听</Tag>
-            )}
-            <span>{appointModalMode === 'countdown' ? '预约抢单配置' : '名额监听配置'}</span>
-          </div>
-        }
+        title={appointModalMode === 'countdown' ? '预约抢单配置' : '名额监听配置'}
         visible={appointModalVisible}
         onCancel={() => setAppointModalVisible(false)}
         footer={null}
@@ -3127,40 +3130,57 @@ export const StoreSniping: React.FC = () => {
           />
         )}
 
-        {/* 商户店铺与活动档位信息：2列紧凑栅格布局 */}
-        <div className="p-2.5 px-3 bg-semi-color-fill-0 rounded-lg mb-3 border border-semi-color-border text-xs">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
-            <div className="flex items-center justify-between min-w-0">
-              <span className="text-semi-color-text-2 shrink-0">商户店铺：</span>
-              <span className="font-semibold text-semi-color-text-0 truncate max-w-[190px]" title={selectedStore?.name}>
-                {selectedStore?.name} ({getPlatformBadge(selectedStore?.platform).label})
-              </span>
-            </div>
-            <div className="flex items-center justify-between min-w-0">
-              <span className="text-semi-color-text-2 shrink-0">活动档位：</span>
-              <div className="flex items-center gap-1.5 truncate">
-                <Tag color={selectedPromo?.rebate_type === 'percent' ? 'purple' : 'blue'} size="small" shape="square">
-                  {selectedPromo?.rebate_type === 'percent' ? '比例返现' : '实付满返'}
-                </Tag>
-                <span className="font-bold text-semi-color-danger truncate">
-                  {selectedPromo?.rebate_desc || `满${selectedPromo?.order_money}返${selectedPromo?.rebate_price}元`}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between min-w-0">
-              <span className="text-semi-color-text-2 shrink-0">活动时段：</span>
-              <span className="font-mono text-semi-color-text-1 truncate">
-                {selectedPromo?.start_time || '全天'} ~ {selectedPromo?.end_time || '23:59'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between min-w-0">
-              <span className="text-semi-color-text-2 shrink-0">门槛要求：</span>
-              <span className="text-semi-color-text-2 font-medium truncate">
-                {selectedPromo?.need_brand_coupon ? '自动匹配优惠券' : '无特殊门槛'}
-              </span>
-            </div>
-          </div>
-        </div>
+        {/* 商户店铺与活动档位信息：采用官方 Descriptions 组件展示 */}
+        <Descriptions
+          size="small"
+          row={false}
+          style={{
+            padding: '10px 14px',
+            backgroundColor: 'var(--semi-color-fill-0)',
+            borderRadius: 'var(--semi-border-radius-medium)',
+            border: '1px solid var(--semi-color-border)',
+            marginBottom: 12
+          }}
+          data={[
+            {
+              key: '商户店铺',
+              value: (
+                <Text strong ellipsis={{ showTooltip: true }} style={{ maxWidth: 200 }}>
+                  {selectedStore?.name} ({getPlatformBadge(selectedStore?.platform).label})
+                </Text>
+              )
+            },
+            {
+              key: '活动档位',
+              value: (
+                <Space spacing="tight">
+                  <Tag color={selectedPromo?.rebate_type === 'percent' ? 'purple' : 'blue'} size="small" shape="square">
+                    {selectedPromo?.rebate_type === 'percent' ? '比例返现' : '实付满返'}
+                  </Tag>
+                  <Text type="danger" strong>
+                    {selectedPromo?.rebate_desc || `满${selectedPromo?.order_money}返${selectedPromo?.rebate_price}元`}
+                  </Text>
+                </Space>
+              )
+            },
+            {
+              key: '活动时段',
+              value: (
+                <Text code size="small">
+                  {selectedPromo?.start_time || '全天'} ~ {selectedPromo?.end_time || '23:59'}
+                </Text>
+              )
+            },
+            {
+              key: '门槛要求',
+              value: (
+                <Text type="secondary" size="small">
+                  {selectedPromo?.need_brand_coupon ? '自动匹配优惠券' : '无特殊门槛'}
+                </Text>
+              )
+            }
+          ]}
+        />
 
         <Form
           key={`${appointModalMode}_${selectedPromo?.promotion_id || '0'}`}
@@ -3170,111 +3190,130 @@ export const StoreSniping: React.FC = () => {
             <>
               {appointModalMode === 'countdown' ? (
                 <>
-                  <div className="mb-3 p-2.5 px-3 rounded-lg border border-semi-color-border bg-semi-color-fill-0">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-semibold text-semi-color-text-0 text-sm flex items-center gap-1.5">
-                          <span>超前抢单券加速</span>
-                          <Tag color={assetStats.advanceCouponCount > 0 ? 'purple' : 'grey'} size="small">
-                            剩余 {assetStats.advanceCouponCount} 张
-                          </Tag>
+                  <Card
+                    bordered
+                    header={
+                      <div className="flex items-center justify-between w-full">
+                        <div>
+                          <Space spacing="tight">
+                            <Text strong size="small">超前抢单券加速</Text>
+                            <Tag color={assetStats.advanceCouponCount > 0 ? 'purple' : 'grey'} size="small">
+                              剩余 {assetStats.advanceCouponCount} 张
+                            </Tag>
+                          </Space>
+                          <div className="text-xs text-semi-color-text-2 mt-0.5">
+                            {assetStats.advanceCouponCount > 0
+                              ? `开启后将在 ${calcAdvanceTime(selectedPromo?.start_time)} 提前 30 分钟自动开抢`
+                              : '当前账号暂无可用超前抢单券'}
+                          </div>
                         </div>
-                        <div className="text-xs text-semi-color-text-2 mt-0.5">
-                          {assetStats.advanceCouponCount > 0
-                            ? `开启后将在 ${calcAdvanceTime(selectedPromo?.start_time)} 提前 30 分钟自动开抢`
-                            : '当前账号暂无可用超前抢单券'}
-                        </div>
+                        <Form.Switch
+                          field="use_advance_card"
+                          noLabel
+                          disabled={assetStats.advanceCouponCount <= 0}
+                          initValue={assetStats.advanceCouponCount > 0}
+                        />
                       </div>
-                      <Form.Switch
-                        field="use_advance_card"
-                        noLabel
-                        disabled={assetStats.advanceCouponCount <= 0}
-                        initValue={assetStats.advanceCouponCount > 0}
-                      />
-                    </div>
+                    }
+                    headerStyle={{ padding: '10px 14px 6px', borderBottom: 'none' }}
+                    bodyStyle={{ padding: values?.use_advance_card ? '0 14px 10px' : '0' }}
+                    style={{ backgroundColor: 'var(--semi-color-fill-0)', borderRadius: 'var(--semi-border-radius-medium)', marginBottom: 12 }}
+                  >
                     {values?.use_advance_card && (
-                      <div className="mt-2 pt-1.5 border-t border-semi-color-border-subtle flex items-center justify-between text-xs">
+                      <div className="pt-1.5 border-t border-semi-color-border-subtle flex items-center justify-between text-xs">
                         <span className="text-semi-color-text-2">实际开火时刻：</span>
                         <span className="font-bold font-mono text-purple-600 dark:text-purple-400">
                           {calcAdvanceTime(selectedPromo?.start_time)} (原时段 {selectedPromo?.start_time})
                         </span>
                       </div>
                     )}
-                  </div>
+                  </Card>
 
                   {/* 2列栅格排列表单字段 */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
-                    <Form.InputNumber
-                      field="early_ms"
-                      label="提前抢单时间 (ms)"
-                      initValue={500}
-                      min={0}
-                      max={5000}
-                      step={50}
-                      helpText="抵消网络延迟，默认 500ms"
-                    />
-
+                  <Row gutter={[12, 0]}>
+                    <Col xs={24} sm={12}>
+                      <Form.InputNumber
+                        field="early_ms"
+                        label="提前抢单时间 (ms)"
+                        initValue={500}
+                        min={0}
+                        max={5000}
+                        step={50}
+                        helpText="抵消网络延迟，默认 500ms"
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                    <Col xs={24} sm={12}>
+                      <Form.Input
+                        field="until_time"
+                        label="自动监听截止时间 (HH:MM)"
+                        initValue={selectedPromo?.end_time || '15:00'}
+                        placeholder="例如 14:00 或 15:30"
+                        helpText="首轮名额若满，持续监听至此时间"
+                      />
+                    </Col>
+                    <Col xs={24} sm={12}>
+                      <Form.InputNumber
+                        field="check_interval"
+                        label="监听轮询间隔 (秒)"
+                        initValue={5}
+                        min={3}
+                        max={60}
+                        helpText="补仓轮询频率，建议 3~5 秒"
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                    <Col xs={24} sm={12}>
+                      <Form.Select
+                        field="redpack_mode"
+                        label="红包使用策略"
+                        initValue={0}
+                        helpText="若指定红包在端外已用将平滑自愈替换"
+                        style={{ width: '100%' }}
+                      >
+                        <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
+                        <Select.Option value={1}>指定具体可用红包</Select.Option>
+                        <Select.Option value={2}>不使用红包</Select.Option>
+                      </Form.Select>
+                    </Col>
+                  </Row>
+                </>
+              ) : (
+                <Row gutter={[12, 0]}>
+                  <Col xs={24} sm={12}>
                     <Form.Input
                       field="until_time"
-                      label="自动监听截止时间 (HH:MM)"
+                      label="监听截止时间 (HH:MM)"
                       initValue={selectedPromo?.end_time || '15:00'}
                       placeholder="例如 14:00 或 15:30"
-                      helpText="首轮名额若满，持续监听至此时间"
+                      helpText="到达此时间后将自动停止监听"
                     />
-
+                  </Col>
+                  <Col xs={24} sm={12}>
                     <Form.InputNumber
                       field="check_interval"
-                      label="监听轮询间隔 (秒)"
+                      label="轮询刷新频率 (秒)"
                       initValue={5}
                       min={3}
                       max={60}
-                      helpText="补仓轮询频率，建议 3~5 秒"
+                      helpText="商户补仓刷新频率，建议 3~5 秒"
+                      style={{ width: '100%' }}
                     />
-
-                    <Form.Select
-                      field="redpack_mode"
-                      label="红包使用策略"
-                      initValue={0}
-                      helpText="若指定红包在端外已用将平滑自愈替换"
-                    >
-                      <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
-                      <Select.Option value={1}>指定具体可用红包</Select.Option>
-                      <Select.Option value={2}>不使用红包</Select.Option>
-                    </Form.Select>
-                  </div>
-                </>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
-                  <Form.Input
-                    field="until_time"
-                    label="监听截止时间 (HH:MM)"
-                    initValue={selectedPromo?.end_time || '15:00'}
-                    placeholder="例如 14:00 或 15:30"
-                    helpText="到达此时间后将自动停止监听"
-                  />
-
-                  <Form.InputNumber
-                    field="check_interval"
-                    label="轮询刷新频率 (秒)"
-                    initValue={5}
-                    min={3}
-                    max={60}
-                    helpText="商户补仓刷新频率，建议 3~5 秒"
-                  />
-
-                  <div className="sm:col-span-2">
+                  </Col>
+                  <Col xs={24}>
                     <Form.Select
                       field="redpack_mode"
                       label="红包使用策略"
                       initValue={0}
                       helpText="捡漏抢单时使用的红包策略"
+                      style={{ width: '100%' }}
                     >
                       <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
                       <Select.Option value={1}>指定具体可用红包</Select.Option>
                       <Select.Option value={2}>不使用红包</Select.Option>
                     </Form.Select>
-                  </div>
-                </div>
+                  </Col>
+                </Row>
               )}
 
               {values?.redpack_mode === 1 && (
@@ -3333,7 +3372,6 @@ export const StoreSniping: React.FC = () => {
         title={
           <div className="flex items-center justify-between w-full pr-8">
             <div className="flex items-center gap-2">
-              <IconTicketCode style={{ color: 'var(--semi-color-primary)' }} />
               <span className="font-semibold text-base">卡券与红包资产明细</span>
               {currentAccount?.nickname && (
                 <Tag color="blue" size="small" type="light">
@@ -3568,32 +3606,18 @@ export const StoreSniping: React.FC = () => {
       </Modal>
 
       {/* 店名抢单监听配置弹窗 */}
-      {/* 店名抢单监听配置弹窗 */}
       <Modal
-        title={
-          <div className="flex items-center gap-2">
-            <Tag color="cyan" prefixIcon={<IconSearch />}>智能嗅探</Tag>
-            <span className="font-semibold text-base">店名抢单监听配置</span>
-          </div>
-        }
+        title="店名抢单监听配置"
         visible={nameMonitorVisible}
         onCancel={() => setNameMonitorVisible(false)}
         footer={null}
         width={640}
+        style={{ maxWidth: '94vw' }}
         centered
         bodyStyle={{
-          padding: '16px 20px 20px',
+          padding: '20px 24px',
         }}
       >
-        {/* 顶部准点放单智能对齐特性横幅 */}
-        <Banner
-          type="info"
-          icon={<IconBolt />}
-          closeIcon={null}
-          className="rounded-lg mb-3"
-          description="已内置整分准点放单智能对齐：无论设置何种轮询频率，系统均会在每 1 分钟的 00 秒整点（xx:xx:00）精准执行一次嗅探，不错过商家整点放单"
-        />
-
         <Form
           key={nameMonitorInitialKeyword}
           initValues={{
@@ -3611,98 +3635,88 @@ export const StoreSniping: React.FC = () => {
           onSubmit={handleSubmitNameMonitor}
         >
           {() => (
-            <div className="space-y-3.5">
-              {/* 分组一：目标商户与平台规则 */}
-              <div className="p-3 bg-[var(--semi-color-fill-0)] rounded-lg border border-[var(--semi-color-border)] space-y-3">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-semi-color-text-1">
-                  <IconSearch />
-                  <span>商户检索与平台</span>
-                </div>
+            <div className="flex flex-col gap-3">
+              {/* 关键词输入 */}
+              <Form.Input
+                field="keyword"
+                label="商户名称 / 关键词"
+                size="default"
+                placeholder="请输入店铺名称，例如：霸王茶姬"
+                rules={[{ required: true, message: '请输入要监听的店铺关键词' }]}
+                showClear
+              />
 
-                <Form.Input
-                  field="keyword"
-                  label="目标商户名称 / 搜索关键词"
-                  prefix={<IconSearch className="text-semi-color-text-2" />}
-                  placeholder="例如：霸王茶姬 / 肯德基 / 蜜雪冰城 / 活鱼馆"
-                  rules={[{ required: true, message: '请输入要监听的店铺关键词' }]}
-                  showClear
-                />
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  <Form.RadioGroup
-                    field="match_mode"
-                    label="店名匹配模式"
-                    type="button"
-                    buttonSize="middle"
-                    className="w-full flex *:flex-1 text-center"
-                  >
-                    <Radio value="contains">包含匹配 (推荐)</Radio>
-                    <Radio value="exact">完全匹配</Radio>
-                  </Form.RadioGroup>
-
+              {/* 平台与匹配模式：一行两个 */}
+              <Row gutter={16}>
+                <Col xs={24} sm={12}>
                   <Form.RadioGroup
                     field="platform"
                     label="目标外卖平台"
                     type="button"
                     buttonSize="middle"
-                    className="w-full flex *:flex-1 text-center"
+                    className="whitespace-nowrap"
                   >
-                    <Radio value="all">全平台</Radio>
+                    <Radio value="all">全部平台</Radio>
                     <Radio value="meituan">美团外卖</Radio>
                     <Radio value="eleme">饿了么</Radio>
                   </Form.RadioGroup>
-                </div>
-              </div>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.RadioGroup
+                    field="match_mode"
+                    label="店名匹配模式"
+                    type="button"
+                    buttonSize="middle"
+                    className="whitespace-nowrap"
+                  >
+                    <Radio value="contains">包含匹配</Radio>
+                    <Radio value="exact">完全匹配</Radio>
+                  </Form.RadioGroup>
+                </Col>
+              </Row>
 
-              {/* 分组二：活动方案与返利门槛 */}
-              <div className="p-3 bg-[var(--semi-color-fill-0)] rounded-lg border border-[var(--semi-color-border)] space-y-3">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-semi-color-text-1">
-                  <IconFilter />
-                  <span>方案筛选与返利门槛</span>
-                </div>
+              {/* 活动方案偏好 */}
+              <Form.RadioGroup
+                field="rebate_mode_filter"
+                label="活动方案偏好"
+                type="button"
+                buttonSize="middle"
+              >
+                <Radio value="all">全部方案</Radio>
+                <Radio value="fixed">仅实付满返</Radio>
+                <Radio value="percent">仅按比例返</Radio>
+              </Form.RadioGroup>
 
-                <Form.RadioGroup
-                  field="rebate_mode_filter"
-                  label="活动方案偏好"
-                  type="button"
-                  buttonSize="middle"
-                  className="w-full flex *:flex-1 text-center"
-                >
-                  <Radio value="all">全部方案</Radio>
-                  <Radio value="fixed">仅实付满返</Radio>
-                  <Radio value="percent">仅按比例返</Radio>
-                </Form.RadioGroup>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              {/* 返利门槛：一行两个 */}
+              <Row gutter={16}>
+                <Col xs={24} sm={12}>
                   <Form.InputNumber
                     field="min_rebate_price"
-                    label="最低返利金额 (元)"
+                    label="最低返利金额门槛 (元)"
                     prefix="¥"
                     min={0}
                     step={1}
                     placeholder="0 (不设门槛)"
+                    style={{ width: '100%' }}
                   />
-
+                </Col>
+                <Col xs={24} sm={12}>
                   <Form.InputNumber
                     field="min_rebate_rate"
-                    label="最低返利比例 (%)"
+                    label="最低返利比例门槛 (%)"
                     suffix="%"
                     min={0}
                     max={100}
                     step={5}
                     placeholder="0 (不设门槛)"
+                    style={{ width: '100%' }}
                   />
-                </div>
-              </div>
+                </Col>
+              </Row>
 
-              {/* 分组三：调度策略与时长 */}
-              <div className="p-3 bg-[var(--semi-color-fill-0)] rounded-lg border border-[var(--semi-color-border)] space-y-3">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-semi-color-text-1">
-                  <IconClock />
-                  <span>监听时长与轮询频率</span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* 持续时长与轮询频率：一行两个 */}
+              <Row gutter={16}>
+                <Col xs={24} sm={12}>
                   <Form.Select
                     field="timeout_sec"
                     label="监听持续时长"
@@ -3710,47 +3724,45 @@ export const StoreSniping: React.FC = () => {
                   >
                     <Select.Option value={1800}>30 分钟</Select.Option>
                     <Select.Option value={3600}>1 小时</Select.Option>
-                    <Select.Option value={7200}>2 小时 (推荐)</Select.Option>
+                    <Select.Option value={7200}>2 小时</Select.Option>
                     <Select.Option value={14400}>4 小时</Select.Option>
-                    <Select.Option value={0}>今日结束 (23:59)</Select.Option>
+                    <Select.Option value={0}>今日结束</Select.Option>
                   </Form.Select>
-
+                </Col>
+                <Col xs={24} sm={12}>
                   <Form.Select
                     field="check_interval"
-                    label="嗅探轮询频率 (每分钟 00 秒整点必嗅探)"
+                    label="嗅探轮询频率"
                     style={{ width: '100%' }}
                   >
-                    <Select.Option value={5}>5 秒 (极速秒抢模式)</Select.Option>
-                    <Select.Option value={10}>10 秒 (均衡推荐模式)</Select.Option>
-                    <Select.Option value={15}>15 秒 (轻量防封模式)</Select.Option>
-                    <Select.Option value={30}>30 秒 (长效挂机模式)</Select.Option>
+                    <Select.Option value={5}>每 5 秒</Select.Option>
+                    <Select.Option value={10}>每 10 秒</Select.Option>
+                    <Select.Option value={15}>每 15 秒</Select.Option>
+                    <Select.Option value={30}>每 30 秒</Select.Option>
                   </Form.Select>
-                </div>
-              </div>
+                </Col>
+              </Row>
 
-              {/* 底部操作栏：左侧开关，右侧操作按钮 */}
-              <div className="flex items-center justify-between gap-3 pt-2 border-t border-[var(--semi-color-border)]">
-                <div className="flex items-center gap-2">
-                  <Form.Switch field="auto_stop_on_success" noLabel />
-                  <span className="text-xs text-semi-color-text-0 font-medium select-none">
-                    抢单成功后自动停止监听
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Button theme="light" type="tertiary" onClick={() => setNameMonitorVisible(false)}>
-                    取消
-                  </Button>
-                  <Button
-                    theme="solid"
-                    type="warning"
-                    htmlType="submit"
-                    loading={nameMonitorSubmitting}
-                    icon={<IconBolt />}
-                  >
-                    启动店名抢单监听
-                  </Button>
-                </div>
+              {/* 底部操作栏 */}
+              <div className="flex items-center justify-end gap-3 pt-3 mt-1 border-t border-semi-color-border-subtle">
+                <Button
+                  size="default"
+                  theme="light"
+                  type="tertiary"
+                  onClick={() => setNameMonitorVisible(false)}
+                >
+                  取消
+                </Button>
+                <Button
+                  size="default"
+                  theme="solid"
+                  type="primary"
+                  htmlType="submit"
+                  loading={nameMonitorSubmitting}
+                  className="px-4 font-semibold"
+                >
+                  启动店名抢单监听
+                </Button>
               </div>
             </div>
           )}

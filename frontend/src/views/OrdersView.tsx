@@ -15,7 +15,9 @@ import {
   Radio,
   Empty,
   Modal,
-  Popconfirm
+  Popconfirm,
+  Descriptions,
+  Banner
 } from '@douyinfe/semi-ui';
 import { gsap, useGSAP } from '../utils/animations';
 
@@ -211,7 +213,7 @@ export const OrdersView: React.FC = () => {
     try {
       const res = await api.submitPlatformOrderId(uploadModalOrder.id, orderIdToSubmit);
       if (res.ok) {
-        Toast.success(res.message || '外卖单号已成功绑定！');
+        Toast.success(res.message || '外卖单号已成功绑定');
         setUploadModalOrder(null);
         setPlatformOrderIdInput('');
         fetchOrders(undefined, true);
@@ -230,7 +232,7 @@ export const OrdersView: React.FC = () => {
     try {
       const res = await api.delayOrderVoucher(order.id);
       if (res.ok) {
-        Toast.success(res.message || '领红包延时特权已激活！凭证有效期已延长');
+        Toast.success(res.message || '领红包延时特权已激活，凭证有效期已延长');
         fetchOrders(undefined, true);
       } else {
         Toast.error(res.message || '延时申请失败');
@@ -249,7 +251,7 @@ export const OrdersView: React.FC = () => {
         platform_order_id: order.platform_order_id
       });
       if (res.ok) {
-        Toast.success(res.message || '免单券使用成功！该订单已享全额免单');
+        Toast.success(res.message || '免单券使用成功，该订单已享全额免单');
         fetchOrders(undefined, true);
       } else {
         Toast.error(res.message || '免单券使用失败');
@@ -700,13 +702,34 @@ export const OrdersView: React.FC = () => {
         width={440}
       >
         <div className="space-y-3 py-1">
-          <div className="p-2.5 rounded-lg bg-semi-color-fill-0 border border-semi-color-border-subtle text-xs text-semi-color-text-1">
-            <div className="font-semibold text-semi-color-text-0">{uploadModalOrder?.store_name}</div>
-            <div className="mt-1 flex items-center gap-3 text-semi-color-text-2">
-              <span>实付门槛: ¥{uploadModalOrder?.order_money}</span>
-              <span>预计返利: ¥{uploadModalOrder?.rebate_money}</span>
-            </div>
-          </div>
+          <Descriptions
+            size="small"
+            row={false}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: 'var(--semi-color-fill-0)',
+              borderRadius: 'var(--semi-border-radius-medium)',
+              border: '1px solid var(--semi-color-border-subtle)'
+            }}
+            data={[
+              {
+                key: '商户名称',
+                value: (
+                  <Text strong ellipsis={{ showTooltip: true }}>
+                    {uploadModalOrder?.store_name}
+                  </Text>
+                )
+              },
+              {
+                key: '实付门槛',
+                value: <Text code size="small">¥{uploadModalOrder?.order_money}</Text>
+              },
+              {
+                key: '预计返利',
+                value: <Text type="danger" strong>¥{uploadModalOrder?.rebate_money}</Text>
+              }
+            ]}
+          />
           <div>
             <Text size="small" type="secondary" className="block mb-1">
               请输入外卖平台 (美团/饿了么/京东) 订单号：
@@ -718,9 +741,11 @@ export const OrdersView: React.FC = () => {
               autoFocus
             />
           </div>
-          <Text size="small" type="tertiary" className="text-[11px] block text-amber-600 dark:text-amber-400">
-            提示: 单号提交后官方将锁定绑定关系，平台禁止二次修改，请务必核对正确。
-          </Text>
+          <Banner
+            type="warning"
+            description="单号提交后官方将锁定绑定关系，平台禁止二次修改，请务必核对正确"
+            className="rounded-lg text-xs"
+          />
         </div>
       </Modal>
     </div>

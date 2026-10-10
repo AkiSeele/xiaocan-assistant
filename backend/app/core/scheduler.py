@@ -166,10 +166,12 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             log_output += f"[{time.strftime('%H:%M:%S')}] 兼容旧版调用模式: 正在分派原子任务【天天赚元宝签到】与【天天赚元宝任务】...\n"
             try:
                 sign_res = await client.do_user_sign(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                msg = sign_res.get("status", {}).get("msg", "打卡成功")
-                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {msg}\n"
+                msg = sign_res.get("status", {}).get("msg") or sign_res.get("msg") or "打卡成功"
+                point = sign_res.get("point") or sign_res.get("data", {}).get("point") or ""
+                extra = f" (获得元宝: +{point})" if point else ""
+                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {msg}{extra}\n"
             except XiaoCanRPCError as e:
-                if e.code == 3 or "已签" in e.msg:
+                if e.code in (3, 40002) or "已签" in e.msg or "已经签到" in e.msg:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: 今日已完成签到打卡\n"
                 else:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (提示码: {e.code})\n"
@@ -652,13 +654,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢SVIP大牌券成功",
-                            content=f"账号【{nickname}】在 09:30 场次成功抢到每日大牌券【{pool_desc}】！",
+                            content=f"账号【{nickname}】在 09:30 场次成功抢到每日大牌券【{pool_desc}】",
                             account_key=account_key
                         )
                         break
                     except XiaoCanRPCError as e:
                         if e.code == 40024:
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: 官方限制: 您还有保底大牌券未领取，需先在App内使用当月保底券 (代码: {e.code})\n"
+                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: 官方限制: 你还有保底大牌券未领取，需先在App内使用当月保底券 (代码: {e.code})\n"
                         else:
                             log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
                         if e.code in (40003, 40004, 40017, 40021, 40024, 40037, 40038, 40039, 40040):
@@ -798,13 +800,24 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "yb_sign":
             # 天天赚元宝签到打卡 (每日 08:10)
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在执行天天赚元宝每日签到打卡...\n"
+            log_output += f"[{time.strftime('%H:%M:%S')}] 正在执行天天赚元宝每日签到打卡 (官方微服务 ActivityTaskMobileService.SignIn)...\n"
             try:
                 sign_res = await client.do_user_sign(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                msg = sign_res.get("status", {}).get("msg", "打卡成功")
-                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {msg} (代码: 0)\n"
+                msg = sign_res.get("status", {}).get("msg") or sign_res.get("msg") or "签到成功"
+                point = sign_res.get("point") or sign_res.get("data", {}).get("point") or ""
+                extra = f" (获得元宝: +{point})" if point else ""
+                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {msg}{extra} (代码: 0)\n"
+
+                # 尝试同步历史连续签到天数与最新元宝资产
+                try:
+                    hist = await client.get_sign_in_history(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                    days = hist.get("days") or hist.get("data", {}).get("days")
+                    if days:
+                        log_output += f"[{time.strftime('%H:%M:%S')}] 签到统计: 已连续打卡 {days} 天\n"
+                except Exception:
+                    pass
             except XiaoCanRPCError as e:
-                if e.code == 3 or "已签" in e.msg:
+                if e.code in (3, 40002) or "已签" in e.msg or "已经签到" in e.msg:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: 今日已完成签到打卡无需重复操作\n"
                 else:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (提示码: {e.code})\n"

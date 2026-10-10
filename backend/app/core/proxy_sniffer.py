@@ -3,7 +3,7 @@
 支持:
 1. Windows 系统代理一键自动化接管与无损还原 (win_proxy)
 2. 小蚕 HTTPS 域名 (*.xiaocan.cn / *.xiaocan.com) 的透明 SSL 动态证书拦截
-3. 非小蚕域名纯盲转发 (TCP Tunneling)，绝不干扰其它任何软件或网页网络
+3. 非小蚕域名纯盲转发 (TCP Tunneling)，绝不干扰其他任何软件或网页网络
 4. 捕获凭据后毫秒级自动还原系统代理并安全退出守护进程，杜绝断网
 """
 import asyncio
@@ -370,7 +370,7 @@ class SnifferManager:
             await client_writer.drain()
 
     async def _handle_blind_tunnel(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, host: str, port: int, send_http_ok: bool = True):
-        """非小蚕域名的纯盲目 TCP 管道透传 (绝不窥探或误拦截其它软件网络流量)"""
+        """非小蚕域名的纯盲目 TCP 管道透传 (绝不窥探或误拦截其他软件网络流量)"""
         try:
             remote_reader, remote_writer = await asyncio.open_connection(host, port)
             if send_http_ok:

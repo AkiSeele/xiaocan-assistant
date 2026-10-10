@@ -6,7 +6,8 @@ import {
   Button,
   Space,
   Avatar,
-  Toast
+  Toast,
+  Descriptions
 } from '@douyinfe/semi-ui';
 import {
   IconCopy,
@@ -14,7 +15,6 @@ import {
   IconSpin
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
-import { TaskIcon } from './TaskIcons';
 import type { JobLog } from '../types';
 
 const { Text } = Typography;
@@ -110,12 +110,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
 
   return (
     <Modal
-      title={
-        <div className="flex items-center gap-2">
-          {taskId && <TaskIcon taskId={taskId} className="w-5 h-5 shrink-0" />}
-          <span className="font-semibold text-semi-color-text-0">日志详情 - [{taskName}]</span>
-        </div>
-      }
+      title={`日志详情 - [${taskName}]`}
       visible={visible}
       onCancel={onClose}
       footer={
@@ -137,39 +132,52 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
       centered
     >
       <div className="space-y-3 pt-1">
-        {/* 元信息条 */}
-        <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-semi-color-fill-0 border border-semi-color-border text-xs">
-          <Space>
-            <Text type="secondary">执行时间：</Text>
-            <span className="font-mono text-semi-color-text-0">{createdAt}</span>
-          </Space>
-          <Space>
-            <Text type="secondary">执行账号：</Text>
-            <div className="flex items-center gap-1.5">
-              <Avatar
-                size="extra-extra-small"
-                src={matchedAccount?.avatar || undefined}
-                color="orange"
-                className="shrink-0"
-              >
-                {matchedAccount?.nickname?.[0] || '用'}
-              </Avatar>
-              <span className="font-semibold text-semi-color-text-0 truncate max-w-[150px]">
-                {accountNickname}
-              </span>
-            </div>
-          </Space>
-          <Space>
-            <Text type="secondary">状态：</Text>
-            <Tag
-              color={isRunning ? 'blue' : isSuccess ? 'green' : 'red'}
-              size="small"
-              prefixIcon={isRunning ? <IconSpin spin /> : undefined}
-            >
-              {isRunning ? '正在执行中' : isSuccess ? '执行成功' : '执行异常'}
-            </Tag>
-          </Space>
-        </div>
+        {/* 元信息条：采用官方 Descriptions 组件结构化展示 */}
+        <Descriptions
+          size="small"
+          row={false}
+          style={{
+            padding: '10px 16px',
+            backgroundColor: 'var(--semi-color-fill-0)',
+            borderRadius: 'var(--semi-border-radius-medium)',
+            border: '1px solid var(--semi-color-border)'
+          }}
+          data={[
+            {
+              key: '执行时间',
+              value: <Text code size="small">{createdAt}</Text>
+            },
+            {
+              key: '执行账号',
+              value: (
+                <Space spacing="tight">
+                  <Avatar
+                    size="extra-extra-small"
+                    src={matchedAccount?.avatar || undefined}
+                    color="orange"
+                  >
+                    {matchedAccount?.nickname?.[0] || '用'}
+                  </Avatar>
+                  <Text strong ellipsis={{ showTooltip: true }} style={{ maxWidth: 140 }}>
+                    {accountNickname}
+                  </Text>
+                </Space>
+              )
+            },
+            {
+              key: '状态',
+              value: (
+                <Tag
+                  color={isRunning ? 'blue' : isSuccess ? 'green' : 'red'}
+                  size="small"
+                  prefixIcon={isRunning ? <IconSpin spin /> : undefined}
+                >
+                  {isRunning ? '正在执行中' : isSuccess ? '执行成功' : '执行异常'}
+                </Tag>
+              )
+            }
+          ]}
+        />
 
         {/* 步骤流水结构化可视化解析 */}
         <div className="space-y-2">

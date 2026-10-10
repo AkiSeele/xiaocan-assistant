@@ -17,7 +17,8 @@ import {
   Spin,
   Select,
   RadioGroup,
-  Radio
+  Radio,
+  Descriptions
 } from '@douyinfe/semi-ui';
 import {
   IconPlay,
@@ -1794,9 +1795,6 @@ export const Dashboard: React.FC = () => {
         visible={Boolean(activeMessageModal)}
         title={
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-md bg-semi-color-fill-0 flex items-center justify-center shrink-0">
-              {activeMessageModal?.channel_id && (CHANNEL_META[activeMessageModal.channel_id]?.icon || <IconBell size="small" />)}
-            </div>
             <span className="truncate">
               {activeMessageModal?.title || '消息通知详情'}
             </span>
@@ -1851,22 +1849,26 @@ export const Dashboard: React.FC = () => {
         width={540}
       >
         <div className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 bg-semi-color-fill-0 rounded-lg border border-semi-color-border text-xs">
-            <div>
-              <span className="text-semi-color-text-2">发送时间: </span>
-              <span className="font-mono text-semi-color-text-1">
-                {formatMsgTime(activeMessageModal?.create_time)}
-              </span>
-            </div>
-            {activeMessageModal?.object_name && (
-              <div className="truncate">
-                <span className="text-semi-color-text-2">关联商户: </span>
-                <span className="font-medium text-semi-color-text-0">
-                  {activeMessageModal.object_name}
-                </span>
-              </div>
-            )}
-          </div>
+          <Descriptions
+            size="small"
+            row={false}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: 'var(--semi-color-fill-0)',
+              borderRadius: 'var(--semi-border-radius-medium)',
+              border: '1px solid var(--semi-color-border)'
+            }}
+            data={[
+              {
+                key: '发送时间',
+                value: <Text code size="small">{formatMsgTime(activeMessageModal?.create_time)}</Text>
+              },
+              ...(activeMessageModal?.object_name ? [{
+                key: '关联商户',
+                value: <Text strong ellipsis={{ showTooltip: true }}>{activeMessageModal.object_name}</Text>
+              }] : [])
+            ]}
+          />
           <div className="bg-semi-color-fill-0 p-3.5 rounded-lg border border-semi-color-border text-xs leading-relaxed text-semi-color-text-1 select-text whitespace-pre-wrap">
             {activeMessageModal?.content || '暂无详细内容'}
           </div>

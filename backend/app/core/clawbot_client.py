@@ -465,7 +465,7 @@ async def send_message(
                 return {
                     "ok": False,
                     "channel": "clawbot",
-                    "message": "ClawBot 会话尚未激活或上下文已过期。请在手机微信中向您的 ClawBot 机器人发送一条任意消息以建立会话！"
+                    "message": "ClawBot 会话尚未激活或上下文已过期，请在手机微信中向你的 ClawBot 机器人发送一条任意消息以建立会话"
                 }
             else:
                 errmsg = data.get("errmsg") or f"错误码 {ret}"

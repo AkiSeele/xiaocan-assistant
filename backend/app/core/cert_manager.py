@@ -1,7 +1,7 @@
 """
 SSL 动态证书生成与管理 (Certificate Manager)
 用于支持小蚕助手的 HTTPS 嗅探：为小蚕相关域名 (*.xiaocan.cn / *.xiaocan.com) 动态签发证书。
-非小蚕域名的流量通过纯 TCP 隧道透传，绝不干涉其它网络连接。
+非小蚕域名的流量通过纯 TCP 隧道透传，绝不干涉其他网络连接。
 """
 import datetime
 import os

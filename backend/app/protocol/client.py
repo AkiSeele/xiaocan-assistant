@@ -690,14 +690,36 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """元宝乐园每日签到 (SilkwormMobileMarketingService.UserSign)"""
+        """天天赚元宝每日签到打卡 (官方原生微服务 ActivityTaskMobileService.SignIn)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "app_id": 10
         }
         return await self.invoke_rpc(
-            server_name="SilkwormMarketing",
-            method_name="SilkwormMobileMarketingService.UserSign",
+            server_name="ActivityTask",
+            method_name="ActivityTaskMobileService.SignIn",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
+    async def get_sign_in_history(
+        self,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """获取天天赚元宝签到历史记录与连续签到天数 (ActivityTaskMobileService.SignInHistory)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "app_id": 10
+        }
+        return await self.invoke_rpc(
+            server_name="ActivityTask",
+            method_name="ActivityTaskMobileService.SignInHistory",
             body=body,
             city_code=city_code,
             token=token,

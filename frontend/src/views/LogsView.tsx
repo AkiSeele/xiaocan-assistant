@@ -133,7 +133,7 @@ export const LogsView: React.FC = () => {
       lastLogsSignatureRef.current = queryKey;
     }
     try {
-      const res = await api.getJobs(filterAccount || undefined, 150);
+      const res = await api.getJobs(filterAccount || undefined, 300);
       if (res.ok) {
         setLogs(res.jobs || []);
       }
@@ -220,6 +220,22 @@ export const LogsView: React.FC = () => {
       setCurrentPage(totalPages);
     }
   }, [totalPages, currentPage]);
+
+  // 切割当前页需要展示的数据切片 (受控模式下 Semi Table 默认不切片，必须传入当前页切片数据)
+  const pagedLogs = useMemo(() => {
+    const startIndex = (safeCurrentPage - 1) * pageSize;
+    return filteredLogs.slice(startIndex, startIndex + pageSize);
+  }, [filteredLogs, safeCurrentPage, pageSize]);
+
+  // 翻页时平滑回滚表格滚动区域至顶部，提升阅读浏览体验
+  useEffect(() => {
+    if (tableContainerRef.current) {
+      const tableBody = tableContainerRef.current.querySelector('.semi-table-body');
+      if (tableBody) {
+        tableBody.scrollTop = 0;
+      }
+    }
+  }, [safeCurrentPage]);
 
   const columns = useMemo(() => [
     {
@@ -573,7 +589,7 @@ export const LogsView: React.FC = () => {
           <Table
             rowKey="id"
             columns={columns}
-            dataSource={filteredLogs}
+            dataSource={pagedLogs}
             loading={loading}
             pagination={{
               currentPage: safeCurrentPage,
@@ -581,16 +597,18 @@ export const LogsView: React.FC = () => {
               total: filteredLogs.length,
               showSizeChanger: true,
               pageSizeOpts: [10, 20, 50, 100],
+              formatPageText: (pageInfo?: { currentStart?: number; currentEnd?: number; total?: number }) => {
+                const total = pageInfo?.total ?? filteredLogs.length;
+                const start = pageInfo?.currentStart ?? (filteredLogs.length > 0 ? (safeCurrentPage - 1) * pageSize + 1 : 0);
+                const end = pageInfo?.currentEnd ?? Math.min(safeCurrentPage * pageSize, total);
+                return `第 ${start}-${end} 条，共 ${total} 条`;
+              },
               onPageChange: (page: number) => {
                 setCurrentPage(page);
               },
               onPageSizeChange: (newPageSize: number) => {
                 setPageSize(newPageSize);
                 setCurrentPage(1);
-              },
-              onChange: (page: number, newPageSize: number) => {
-                setCurrentPage(page);
-                setPageSize(newPageSize);
               },
             }}
             onChange={(changeInfo) => {

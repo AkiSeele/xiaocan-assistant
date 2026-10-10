@@ -34,7 +34,7 @@ client = XiaoCanClient()
 TASK_META = {
     # --- 日常打卡与元宝任务 (daily) ---
     "yb_task": {"id": "yb_task", "label": "领天天赚元宝", "tip": "自动完成社群打卡、电商浏览、领券加赠及天天打卡，一键聚拢元宝", "category": "daily", "default_time": "08:05"},
-    "yb_sign": {"id": "yb_sign", "label": "天天赚元宝签到", "tip": "每日天天赚元宝独立签到打卡", "category": "daily", "default_time": "08:10"},
+    "yb_sign": {"id": "yb_sign", "label": "天天赚元宝签到", "tip": "官方App赚钱界面『天天赚元宝』每日签到打卡，累积连续签到天数并领取元宝奖励", "category": "daily", "default_time": "08:10"},
     "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "会员每日打卡 + VIP专属签到抽奖 + 里程碑核验 + 专属成长礼包", "category": "daily", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
     "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "晚间睡前自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
     "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
@@ -2696,7 +2696,7 @@ async def grab_store_now(data: Dict[str, Any] = Body(...)):
         return {
             "ok": True,
             "order_id": res.get("order_id"),
-            "message": f"小蚕官方抢单成功！已为您锁定【{apt_data['store_name']}】名额 (订单ID: {res.get('order_id')})！"
+            "message": f"小蚕官方抢单成功，已为你锁定【{apt_data['store_name']}】名额 (订单ID: {res.get('order_id')})"
         }
     else:
         err_code = res.get("code")

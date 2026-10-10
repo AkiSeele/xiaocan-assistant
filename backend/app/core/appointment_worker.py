@@ -195,7 +195,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                     rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，已自愈平滑替换为当前最优红包 #{redpack_id} (金额: ¥{best_val:.2f})"
                 else:
                     redpack_id = None
-                    rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，当前无其它可用红包，自愈降级为无红包模式"
+                    rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，当前无其他可用红包，自愈降级为无红包模式"
         else:
             rp_desc = "未指定有效红包ID，以无红包模式发起"
     else:
@@ -771,7 +771,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                 try:
                     await send_system_notification(
                         title="霸王餐开抢预热提醒",
-                        content=f"您预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪！",
+                        content=f"你预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪",
                         account_key=apt.get("account_key")
                     )
                 except Exception as ne:

@@ -93,7 +93,7 @@ export const TopHeader: React.FC = () => {
         setNtpOffset(offset);
         setNtpSynced(true);
         const offsetDesc = `${offset >= 0 ? '+' : ''}${Math.round(offset)}ms`;
-        Toast.success(`时钟校准成功！北京时间已同步，本地时差: ${offsetDesc} (授时源: ${res.server || 'ntp.aliyun.com'})`);
+        Toast.success(`时钟校准成功，北京时间已同步，本地时差: ${offsetDesc} (授时源: ${res.server || 'ntp.aliyun.com'})`);
       } else {
         Toast.warning('NTP 授时同步响应异常，已回退为本地时钟');
       }

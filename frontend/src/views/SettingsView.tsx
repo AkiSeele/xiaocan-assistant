@@ -120,8 +120,8 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
       } else if (pollRes.status === 'confirmed') {
         setStep(2);
         setAuthorizedUser(pollRes.user_id || '');
-        setStatusText('微信授权成功！凭证已自动保存');
-        Toast.success('微信授权成功！');
+        setStatusText('微信授权成功，凭证已自动保存');
+        Toast.success('微信授权成功');
         pollActivation();
       } else {
         pollTimerRef.current = setTimeout(() => startPolling(ticket), 2000);
@@ -150,7 +150,7 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
       const res = await api.checkClawBotActivation();
       if (res.activated) {
         setActivationDone(true);
-        Toast.success('微信会话上下文已成功激活就绪！');
+        Toast.success('微信会话上下文已激活就绪');
       } else {
         Toast.info('暂未检测到新消息，在微信发送任意消息后点击【立即检测激活】');
       }
@@ -188,12 +188,7 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
     <Modal
       visible={visible}
       onCancel={onClose}
-      title={
-        <div className="flex items-center gap-2">
-          <IconQrCode className="text-semi-color-primary" />
-          <span className="font-semibold">绑定微信 ClawBot 官方推送通道</span>
-        </div>
-      }
+      title="绑定微信 ClawBot 官方推送通道"
       footer={
         <div className="flex items-center justify-between w-full">
           <Text type="secondary" size="small">
@@ -259,7 +254,7 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
             {step === 1 && (
               <div className="w-full mt-4 p-3.5 rounded-lg bg-semi-color-fill-0 border border-semi-color-border space-y-2">
                 <div className="text-xs text-semi-color-text-1">
-                  若您的手机微信界面提示了数字配对码，请输入以继续授权：
+                  若你的手机微信界面提示了数字配对码，请输入以继续授权：
                 </div>
                 <div className="flex items-center gap-2">
                   <Input
@@ -291,7 +286,7 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
             <div className="p-4 rounded-xl bg-semi-color-fill-0 border border-semi-color-border space-y-3">
               <div className="flex items-center gap-2 text-semi-color-success font-medium">
                 <IconTick />
-                <span>微信授权绑定成功！</span>
+                <span>微信授权绑定成功</span>
                 {authorizedUser && <Tag color="green" size="small">用户 ID: {authorizedUser}</Tag>}
               </div>
 
@@ -330,7 +325,7 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
                 type="success"
                 closeIcon={null}
                 title="微信推送通道就绪"
-                description="系统已自动持久化会话凭证，秒杀中签、外卖霸王餐中奖与每日任务运行结果将实时推送至您的微信。"
+                description="系统已自动持久化会话凭证，秒杀中签、外卖霸王餐中奖与每日任务运行结果将实时推送至你的微信。"
               />
             )}
           </div>
@@ -374,14 +369,26 @@ export const SettingsView: React.FC = () => {
     tianditu_key: '109fd484f999e3c0472ab15fa38fe2ac',
   });
 
+  // GSAP: 遵循 gsap-skills 与 gsap-performance 规范，Tab 切换仅对当前激活面板进行平滑微淡入，彻底杜绝全局选择器打架与视觉闪烁
   useGSAP(() => {
-    gsap.from('.settings-card', {
-      y: 16,
-      autoAlpha: 0,
-      duration: 0.35,
-      stagger: 0.06,
-      ease: 'power2.out',
-    });
+    // 立即终止前序补间，防止快速连续点击 Tab 时动画争夺造成画面闪烁
+    gsap.killTweensOf('.settings-tab-panel');
+
+    const activePanel = containerRef.current?.querySelector(`.tab-panel-${activeTab}`);
+    if (activePanel) {
+      gsap.fromTo(
+        activePanel,
+        { opacity: 0.7, y: 6 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: 0.18,
+          ease: 'power2.out',
+          overwrite: 'auto',
+          clearProps: 'transform,opacity',
+        }
+      );
+    }
   }, { scope: containerRef, dependencies: [activeTab] });
 
   const loadData = async () => {
@@ -489,7 +496,7 @@ export const SettingsView: React.FC = () => {
     try {
       const res = await api.testTianditu({ tianditu_key: String(key).trim() });
       if (res.ok) {
-        Toast.success(`[成功] ${res.message || '天地图 API 鉴权连通成功！通道运行正常'}`);
+        Toast.success(`[成功] ${res.message || '天地图 API 鉴权连通成功，通道运行正常'}`);
       } else {
         Toast.error(`[失败] ${res.message || '天地图鉴权失败'}`);
       }
@@ -580,7 +587,7 @@ export const SettingsView: React.FC = () => {
                 }
                 itemKey="channels"
               >
-                <div className="pt-4 space-y-6">
+                <div className="settings-tab-panel tab-panel-channels pt-4 space-y-6">
                   {/* 1. 微信 ClawBot 官方推送通道 */}
                   <Card
                     className="settings-card rounded-xl border border-semi-color-border shadow-xs"
@@ -837,7 +844,7 @@ export const SettingsView: React.FC = () => {
                     </div>
                   </Card>
 
-                  {/* 3. 其它多端通知通道 (企业微信 / Bark / Telegram) */}
+                  {/* 3. 其他多端通知通道 (企业微信 / Bark / Telegram) */}
                   <div>
                     <div className="mb-3">
                       <Text strong className="text-base">扩展推送通道</Text>
@@ -988,7 +995,7 @@ export const SettingsView: React.FC = () => {
                 }
                 itemKey="strategies"
               >
-                <div className="pt-4 space-y-6">
+                <div className="settings-tab-panel tab-panel-strategies pt-4 space-y-6">
                   <Card
                     className="settings-card rounded-xl border border-semi-color-border shadow-xs"
                     title={
@@ -1078,7 +1085,7 @@ export const SettingsView: React.FC = () => {
                 }
                 itemKey="location"
               >
-                <div className="pt-4 space-y-6">
+                <div className="settings-tab-panel tab-panel-location pt-4 space-y-6">
                   <Card
                     className="settings-card rounded-xl border border-semi-color-border shadow-xs"
                     title={
@@ -1147,7 +1154,7 @@ export const SettingsView: React.FC = () => {
                 }
                 itemKey="about"
               >
-                <div className="pt-4 space-y-6">
+                <div className="settings-tab-panel tab-panel-about pt-4 space-y-6">
                   <Card
                     className="settings-card rounded-xl border border-semi-color-border shadow-xs"
                     title={<span className="font-semibold text-base">系统架构与运行环境</span>}

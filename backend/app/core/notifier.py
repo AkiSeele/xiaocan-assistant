@@ -119,7 +119,7 @@ async def test_single_channel(channel: str, config: Dict[str, Any]) -> Dict[str,
     单通道即时测试
     """
     test_title = "通知连通性测试"
-    test_content = "这是一条来自小蚕助手的连通性测试消息，如果您收到此消息，说明该通知通道已成功接入并正常工作！"
+    test_content = "这是一条来自小蚕助手的连通性测试消息，如果你收到此消息，说明该通知通道已成功接入并正常工作"
 
     if channel == "clawbot":
         return await send_clawbot_notification(
@@ -400,7 +400,7 @@ async def test_account_channel(account_key: str, mode: str, config: Dict[str, An
     test_title = f"专属通知连通测试 · {acc_name}"
     test_content = (
         f"这是一条发往账号【{acc_name}】专属通道的连通性测试消息。\n"
-        f"如果您收到本条推送，说明您的独立个人通道已正确接入，后续该账号的中签、抢单与预警消息将仅定向发送至此处！"
+        f"如果你收到本条推送，说明你的独立个人通道已正确接入，后续该账号的中签、抢单与预警消息将仅定向发送至此处"
     )
 
     if mode == "disabled":
