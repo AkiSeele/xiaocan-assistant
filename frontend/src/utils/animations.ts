@@ -37,25 +37,24 @@ export const animateStaggerEnter = (
 };
 
 /**
- * Tab 切换或筛选视图切换时的平滑微过渡
- * 起始保留适度不透明度，消除白屏/黑屏闪烁，带来温润就位感
+ * Tab 切换或筛选视图切换时的平滑微过渡 (遵循 Semi Design 高性能 GPU 合成通道规范)
+ * 采用纯 GPU 合成层的轻柔淡入 (0 位移)，杜绝大容器跳动与下坠抖动，消除画面抽搐感
  */
 export const animateSmoothSwitch = (
   target: Element | Element[] | NodeListOf<Element> | string,
-  yOffset: number = 8,
-  duration: number = 0.24
+  _yOffset: number = 0,
+  duration: number = 0.2
 ) => {
   gsap.killTweensOf(target);
   gsap.fromTo(
     target,
-    { autoAlpha: 0.65, y: yOffset },
+    { autoAlpha: 0.7 },
     {
       autoAlpha: 1,
-      y: 0,
       duration,
-      ease: 'power2.out',
+      ease: 'power1.out',
       overwrite: 'auto',
-      clearProps: 'transform,opacity,visibility',
+      clearProps: 'opacity,visibility',
     }
   );
 };

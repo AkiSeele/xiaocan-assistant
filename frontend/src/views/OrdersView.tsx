@@ -165,7 +165,7 @@ export const OrdersView: React.FC = () => {
     fetchOrders(undefined, true, orders.length > 0);
   }, { throttleMs: 3000 });
 
-  // 筛选与 Tab 切换时的平滑微过渡 (遵循 Semi Design 高性能 GPU 合成通道)
+  // 筛选与 Tab 切换时的平滑微过渡 (遵循 Semi Design 高性能 GPU 合成通道，杜绝整体表格下坠位移)
   useGSAP(
     () => {
       const tableEl = containerRef.current?.querySelector('.orders-table-container');
@@ -173,14 +173,13 @@ export const OrdersView: React.FC = () => {
         gsap.killTweensOf(tableEl);
         gsap.fromTo(
           tableEl,
-          { autoAlpha: 0.7, y: 6 },
+          { autoAlpha: 0.72 },
           {
             autoAlpha: 1,
-            y: 0,
-            duration: 0.22,
-            ease: 'power2.out',
+            duration: 0.18,
+            ease: 'power1.out',
             overwrite: 'auto',
-            clearProps: 'transform,opacity,visibility',
+            clearProps: 'opacity,visibility',
           }
         );
       }

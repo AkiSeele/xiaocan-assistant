@@ -482,7 +482,7 @@ export const Dashboard: React.FC = () => {
     { scope: dashboardRef }
   );
 
-  // 切换主控账号时，Bento 核心资产卡片与待办任务区域平滑微过渡
+  // 切换主控账号时，Bento 核心资产卡片与待办任务区域平滑微过渡 (纯 GPU 柔和淡入，消除抖动)
   useGSAP(
     () => {
       if (!dashboardRef.current) return;
@@ -491,15 +491,14 @@ export const Dashboard: React.FC = () => {
         gsap.killTweensOf(targets);
         gsap.fromTo(
           targets,
-          { autoAlpha: 0.72, y: 5 },
+          { autoAlpha: 0.72 },
           {
             autoAlpha: 1,
-            y: 0,
-            duration: 0.22,
+            duration: 0.2,
             stagger: 0.02,
-            ease: 'power2.out',
+            ease: 'power1.out',
             overwrite: 'auto',
-            clearProps: 'transform,opacity,visibility',
+            clearProps: 'opacity,visibility',
           }
         );
       }

@@ -378,14 +378,13 @@ export const SettingsView: React.FC = () => {
     if (activePanel) {
       gsap.fromTo(
         activePanel,
-        { opacity: 0.7, y: 6 },
+        { opacity: 0.75 },
         {
           opacity: 1,
-          y: 0,
           duration: 0.18,
-          ease: 'power2.out',
+          ease: 'power1.out',
           overwrite: 'auto',
-          clearProps: 'transform,opacity',
+          clearProps: 'opacity',
         }
       );
     }
