@@ -79,7 +79,7 @@ async def prepare_warmup_and_wait(
         return ""
 
     offset_ms = time_service.get_ntp_offset() * 1000.0
-    warmup_log = f"[{time.strftime('%H:%M:%S')}] 任务已预热唤醒，阿里云NTP已校准 (时钟偏差: {offset_ms:+.1f}ms, 目标时刻: {target_hour:02d}:{target_minute:02d}:00)\n"
+    warmup_log = f"[{time_service.format_now()}] 任务已预热唤醒，阿里云NTP已校准 (时钟偏差: {offset_ms:+.1f}ms, 目标时刻: {target_hour:02d}:{target_minute:02d}:00)\n"
 
     # 1. 预热网关长连接 (Keep-Alive Pre-warm)，消除首包 DNS 解析与 TLS 1.3 握手耗时
     try:
@@ -594,64 +594,78 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 log_output += f"[{time.strftime('%H:%M:%S')}] 红包雨处理异常: {e}\n"
 
         elif task_id == "brand_flash":
-            # 抢每日09:30 SVIP额外放量大牌券 (绝不消耗每月保底大牌券配额)
-            warmup_msg = await prepare_warmup_and_wait(
-                target_hour=9, target_minute=30, token=token,
-                silk_id=silk_id, user_id=user_id, city_code=city_code,
-                early_ms=50, trigger_type=trigger_type
-            )
-            if warmup_msg:
-                log_output += warmup_msg
+            # 抢每日09:30 SVIP额外放量大牌券 (绝不消耗每月保底大牌券配额 - 极速直射模式)
+            from . import time_service
+            log_output += f"[{time_service.format_now()}] 正在预热探测今日 09:30 SVIP 额外大牌放量券实时配置 (微服务 VipRightsService.ExtraBrandCardPool)...\n"
+            log_output += f"[{time_service.format_now()}] 配额保护模式: 仅抢每日放量券，严禁触发消耗账号每月保底大牌券额度\n"
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索今日 09:30 SVIP 额外大牌放量券实时库存 (官方微服务 VipRightsService.ExtraBrandCardPool)...\n"
-            log_output += f"[{time.strftime('%H:%M:%S')}] 配额保护模式: 仅抢每日放量券，严禁触发消耗账号每月保底大牌券额度\n"
+            pool_type = 99
+            pool_desc = "通用大牌券 (品牌通用)"
+            can_burst = True
+
             try:
                 extra_res = await client.get_extra_brand_card_pool(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 b_info = extra_res.get("info") or {}
-                today_grabbed = b_info.get("today_grabbed", False)
-                user_day_num = b_info.get("user_day_num", 1)
+                # 兼容小蚕官方 APK 原生模型字段 (驼峰与下划线双向支持)
+                user_day_num = b_info.get("user_day_num") or b_info.get("userDayNum") or 1
                 pools = b_info.get("pools") or []
 
-                p0 = pools[0] if pools else {}
-                pool_type = p0.get("type", 99)
-                is_pool_grabbed = p0.get("is_grabbed", False)
-                is_reach_month_limit = p0.get("is_reach_month_upper_limit", False)
-                pool_desc = p0.get("name") or "通用大牌券"
-                has_inv = p0.get("has_inventory", True)
-                if p0.get("desc"):
-                    pool_desc += f" ({p0.get('desc')})"
+                if pools:
+                    p0 = pools[0]
+                    pool_type = p0.get("type", 99)
+                    # 官方实体字段: isGrabbed (boolean), hasInventory (boolean)
+                    is_pool_grabbed = p0.get("is_grabbed") if p0.get("is_grabbed") is not None else p0.get("isGrabbed", False)
+                    is_reach_month_limit = p0.get("is_reach_month_upper_limit") if p0.get("is_reach_month_upper_limit") is not None else p0.get("isReachMonthUpperLimit", False)
+                    p_name = p0.get("name") or "通用大牌券"
+                    has_inv = p0.get("has_inventory") if p0.get("has_inventory") is not None else p0.get("hasInventory", True)
+                    pool_desc = f"{p_name} ({p0.get('desc')})" if p0.get("desc") else p_name
 
-                if today_grabbed or is_pool_grabbed:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 权益核验: 今日大牌放量神券已成功领取 (每日限领 {user_day_num} 张)，无需重复抢券\n"
-                elif is_reach_month_limit:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 权益核验: 本月大牌放量神券已达上限，无需重复抢券\n"
-                else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 奖池就绪: 目标券种【{pool_desc}】(类型: {pool_type}, 实时库存: {'有余量' if has_inv else '已售罄'})\n"
-
-                    # 执行突发秒杀并发 (burst retry)
-                    for try_idx in range(1, 4):
-                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        try:
-                            grab_res = await client.grab_extra_brand_card(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, card_type=pool_type)
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求: 抢券成功！已成功领取【{pool_desc}】\n"
-                            from .notifier import send_system_notification
-                            await send_system_notification(
-                                title="抢SVIP大牌券成功",
-                                content=f"账号【{nickname}】在 09:30 场次成功抢到每日大牌券【{pool_desc}】！",
-                                account_key=account_key
-                            )
-                            break
-                        except XiaoCanRPCError as e:
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
-                            if e.code in (40003, 40004, 40017, 40021, 40024, 40037, 40038, 40039, 40040):
-                                break
-                        except Exception as e:
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求异常: {e}\n"
-                        await asyncio.sleep(0.1)
+                    if is_pool_grabbed:
+                        log_output += f"[{time_service.format_now()}] 权益核验: 今日大牌放量神券已成功领取 (每日限领 {user_day_num} 张)，无需重复抢券\n"
+                        can_burst = False
+                    elif is_reach_month_limit:
+                        log_output += f"[{time_service.format_now()}] 权益核验: 本月大牌放量神券已达上限，无需重复抢券\n"
+                        can_burst = False
+                    else:
+                        inv_desc = "官方显示有余量" if has_inv else "待09:30整点开闸放量"
+                        log_output += f"[{time_service.format_now()}] 奖池就绪: 目标券种【{pool_desc}】(类型: {pool_type}, 实时库存: {inv_desc})，直射通道预热就绪\n"
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] SVIP大牌券配置响应: {e.msg} (代码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 预热奖池探测提示: {e.msg} (代码: {e.code})\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] SVIP大牌券秒杀异常: {e}\n"
+                log_output += f"[{time_service.format_now()}] 预热奖池探测异常: {e}\n"
+
+            if can_burst:
+                warmup_msg = await prepare_warmup_and_wait(
+                    target_hour=9, target_minute=30, token=token,
+                    silk_id=silk_id, user_id=user_id, city_code=city_code,
+                    early_ms=50, trigger_type=trigger_type
+                )
+                if warmup_msg:
+                    log_output += warmup_msg
+
+                # 毫秒级整点零等待直射开火 (Zero-latency Burst)
+                for try_idx in range(1, 4):
+                    ts_fmt = time_service.format_now_ms()
+                    try:
+                        grab_res = await client.grab_extra_brand_card(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, card_type=pool_type)
+                        log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求: 抢券成功！已成功领取【{pool_desc}】\n"
+                        from .notifier import send_system_notification
+                        await send_system_notification(
+                            title="抢SVIP大牌券成功",
+                            content=f"账号【{nickname}】在 09:30 场次成功抢到每日大牌券【{pool_desc}】！",
+                            account_key=account_key
+                        )
+                        break
+                    except XiaoCanRPCError as e:
+                        if e.code == 40024:
+                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: 官方限制: 您还有保底大牌券未领取，需先在App内使用当月保底券 (代码: {e.code})\n"
+                        else:
+                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
+                        if e.code in (40003, 40004, 40017, 40021, 40024, 40037, 40038, 40039, 40040):
+                            break
+                    except Exception as e:
+                        log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求异常: {e}\n"
+                    await asyncio.sleep(0.1)
 
         elif task_id == "yb_task":
             # 领天天赚元宝中心任务 (含官方任务5/57/59打卡、领券加赠、抽奖机会累加与气泡元宝聚拢)
@@ -798,7 +812,17 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到异常: {e}\n"
 
         elif task_id == "svip_rebate":
-            # 抢SVIP专属返利券 (每日 09:00:00 准点秒杀)
+            # 抢SVIP专属返利券 (每日 09:00:00 准点秒杀 - 极速直射模式)
+            from . import time_service
+            log_output += f"[{time_service.format_now()}] 正在预热检索今日 09:00 SVIP 专属返利券档位与资格 (官方独立App原生协议 VipRightsService)...\n"
+            try:
+                rebate_res = await client.get_plus_vip_rebate_card_infos(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                card_infos = rebate_res.get("card_infos") or []
+                info_summary = "、".join([f"VIP{c.get('vip_level')}:{c.get('title')}" for c in card_infos[:4]])
+                log_output += f"[{time_service.format_now()}] 返利券档位: 已拉取 {len(card_infos)} 档返利券 ({info_summary or '常规档位'})，通道预热就绪\n"
+            except Exception as e:
+                log_output += f"[{time_service.format_now()}] 返利券档位预热异常: {e}\n"
+
             warmup_msg = await prepare_warmup_and_wait(
                 target_hour=9, target_minute=0, token=token,
                 silk_id=silk_id, user_id=user_id, city_code=city_code,
@@ -807,48 +831,32 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             if warmup_msg:
                 log_output += warmup_msg
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索今日 09:00 SVIP 专属返利券档位与资格 (官方独立App原生协议 VipRightsService)...\n"
-            try:
-                rebate_res = await client.get_plus_vip_rebate_card_infos(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                card_infos = rebate_res.get("card_infos") or []
-                info_summary = "、".join([f"VIP{c.get('vip_level')}:{c.get('title')}" for c in card_infos[:4]])
-                log_output += f"[{time.strftime('%H:%M:%S')}] 返利券档位: 已拉取 {len(card_infos)} 档返利券 ({info_summary or '常规档位'})\n"
-
-                for try_idx in range(1, 4):
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    try:
-                        claim_res = await client.grab_rebate_card_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求 抢券成功！已领取SVIP专属大额返利券\n"
-                        from .notifier import send_system_notification
-                        await send_system_notification(
-                            title="抢SVIP返利券成功",
-                            content=f"账号【{nickname}】成功领取今日 09:00 SVIP 专属大额返利券！",
-                            account_key=account_key
-                        )
+            # 毫秒级整点零等待直射开火 (Zero-latency Burst)
+            for try_idx in range(1, 4):
+                ts_fmt = time_service.format_now_ms()
+                try:
+                    claim_res = await client.grab_rebate_card_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                    log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求 抢券成功！已领取SVIP专属大额返利券\n"
+                    from .notifier import send_system_notification
+                    await send_system_notification(
+                        title="抢SVIP返利券成功",
+                        content=f"账号【{nickname}】成功领取今日 09:00 SVIP 专属大额返利券！",
+                        account_key=account_key
+                    )
+                    break
+                except XiaoCanRPCError as ce:
+                    log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
+                    if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
                         break
-                    except XiaoCanRPCError as ce:
-                        log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
-                        if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
-                            break
-                    except Exception as e:
-                        log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求异常: {e}\n"
-                    await asyncio.sleep(0.1)
-            except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] SVIP返利券接口响应: {e.msg} (代码: {e.code})\n"
-            except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] SVIP返利券处理异常: {e}\n"
+                except Exception as e:
+                    log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求异常: {e}\n"
+                await asyncio.sleep(0.1)
 
         elif task_id == "free_order":
-            # 抢每月免单券 (每日 14:00:00 准点开抢)
-            warmup_msg = await prepare_warmup_and_wait(
-                target_hour=14, target_minute=0, token=token,
-                silk_id=silk_id, user_id=user_id, city_code=city_code,
-                early_ms=50, trigger_type=trigger_type
-            )
-            if warmup_msg:
-                log_output += warmup_msg
-
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索每月免单券 14:00 专属通道状态与账户资格 (官方独立App原生协议 VipRightsService)...\n"
+            # 抢每月免单券 (每日 14:00:00 准点开抢 - 极速直射模式)
+            from . import time_service
+            log_output += f"[{time_service.format_now()}] 正在预热检索每月免单券 14:00 专属通道状态与账户资格 (官方独立App原生协议 VipRightsService)...\n"
+            can_grab_free = True
             try:
                 free_res = await client.get_user_free_order_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 f_info = free_res.get("info") or {}
@@ -856,29 +864,42 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 used = f_info.get("used", False)
                 if had:
                     used_str = "已使用" if used else "未使用待核销"
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 账户监测: 本月已持有免单券 (状态: {used_str})，每月限抢1张，无需重复抢券\n"
+                    log_output += f"[{time_service.format_now()}] 账户监测: 本月已持有免单券 (状态: {used_str})，每月限抢1张，无需重复抢券\n"
+                    can_grab_free = False
                 else:
-                    for try_idx in range(1, 4):
-                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        try:
-                            lottery_res = await client.grab_free_order_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                            log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求 抢券成功！已抢到每月外卖免单券\n"
-                            from .notifier import send_system_notification
-                            await send_system_notification(
-                                title="抢每月免单券成功",
-                                content=f"账号【{nickname}】成功抢到每月外卖全额免单券！",
-                                account_key=account_key
-                            )
-                            break
-                        except XiaoCanRPCError as ce:
-                            log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
-                            if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
-                                break
-                        except Exception as e:
-                            log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求异常: {e}\n"
-                        await asyncio.sleep(0.1)
+                    log_output += f"[{time_service.format_now()}] 资格核准: 账户享有 14:00 免单抢券资格，通道预热就绪\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 抢免单券处理异常: {e}\n"
+                log_output += f"[{time_service.format_now()}] 免单券资格核验异常: {e}\n"
+
+            if can_grab_free:
+                warmup_msg = await prepare_warmup_and_wait(
+                    target_hour=14, target_minute=0, token=token,
+                    silk_id=silk_id, user_id=user_id, city_code=city_code,
+                    early_ms=50, trigger_type=trigger_type
+                )
+                if warmup_msg:
+                    log_output += warmup_msg
+
+                # 毫秒级整点零等待直射开火 (Zero-latency Burst)
+                for try_idx in range(1, 4):
+                    ts_fmt = time_service.format_now_ms()
+                    try:
+                        lottery_res = await client.grab_free_order_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                        log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求 抢券成功！已抢到每月外卖免单券\n"
+                        from .notifier import send_system_notification
+                        await send_system_notification(
+                            title="抢每月免单券成功",
+                            content=f"账号【{nickname}】成功抢到每月外卖全额免单券！",
+                            account_key=account_key
+                        )
+                        break
+                    except XiaoCanRPCError as ce:
+                        log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
+                        if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
+                            break
+                    except Exception as e:
+                        log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求异常: {e}\n"
+                    await asyncio.sleep(0.1)
 
         elif task_id == "flash_sale":
             # 元宝秒杀抢券 (每日 10:00 / 14:00 / 18:00 放量)
@@ -932,18 +953,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 log_output += f"[{time.strftime('%H:%M:%S')}] 元宝秒杀异常: {e}\n"
 
         elif task_id == "media_vip":
-            # 抢每月影音VIP (每日 10:00 / 17:00 / 20:00 三场)
-            now_dt = datetime.now()
+            # 抢每月影音VIP (每日 10:00 / 17:00 / 20:00 三场 - 极速直射模式)
+            from . import time_service
+            now_dt = time_service.now_dt()
             target_h = 10 if now_dt.hour < 10 or (now_dt.hour == 9 and now_dt.minute >= 50) else (17 if now_dt.hour < 17 or (now_dt.hour == 16 and now_dt.minute >= 50) else 20)
-            warmup_msg = await prepare_warmup_and_wait(
-                target_hour=target_h, target_minute=0, token=token,
-                silk_id=silk_id, user_id=user_id, city_code=city_code,
-                early_ms=50, trigger_type=trigger_type
-            )
-            if warmup_msg:
-                log_output += warmup_msg
+            log_output += f"[{time_service.format_now()}] 正在预热检索 {target_h}:00 影音会员周卡专属通道与资格 (官方独立App原生协议 VipRightsService)...\n"
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索 {target_h}:00 影音会员周卡专属通道与资格 (官方独立App原生协议 VipRightsService)...\n"
+            can_grab_media = True
             try:
                 v_res = await client.get_user_tencent_vip_info(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 v_info = v_res.get("info") or {}
@@ -970,51 +986,61 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
                 # 资格与余量校验：has_quota 为 True 代表具备抢券资格，available_count 代表本月剩余可用次数
                 if not has_quota:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 账户核验: 当前账号暂无影音VIP特权领取资格 (未达到SVIP级别要求)\n"
+                    log_output += f"[{time_service.format_now()}] 账户核验: 当前账号暂无影音VIP特权领取资格 (未达到SVIP级别要求)\n"
+                    can_grab_media = False
                 elif avail <= 0:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 账户核验: 本月影音VIP周卡名额已用完 (本月已领 {month_claimed_count} 次，最近一次: {latest_claim_desc})，无需重复抢券\n"
+                    log_output += f"[{time_service.format_now()}] 账户核验: 本月影音VIP周卡名额已用完 (本月已领 {month_claimed_count} 次，最近一次: {latest_claim_desc})，无需重复抢券\n"
+                    can_grab_media = False
                 else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 资格核准: 账号享有影音VIP特权 (本月已领 {month_claimed_count} 次，最近一次: {latest_claim_desc}，本月尚余 {avail} 次可用名额)\n"
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 场次就绪: 当前目标场次 {next_str} | 实时库存: {'有余量' if has_inv else '待放量/已发完'}\n"
-                    for try_idx in range(1, 4):
-                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        try:
-                            lottery_res = await client.grab_tencent_vip_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                            # 动态拉取所斩获的具体影音会员权益信息 (如网易云音乐 VIP 周卡、腾讯视频 VIP 周卡等) 及 CDK 券码
-                            benefit_name = "影音VIP周卡"
-                            cdk_code = ""
-                            try:
-                                fresh_list = await client.get_user_tencent_vip_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, page=1, page_size=1)
-                                fresh_items = fresh_list.get("items") or []
-                                if fresh_items:
-                                    f_item = fresh_items[0]
-                                    p_name = f_item.get("platform") or ""
-                                    cdk_code = f_item.get("cdk") or ""
-                                    if p_name:
-                                        benefit_name = f"{p_name} VIP周卡"
-                            except Exception:
-                                pass
-
-                            cdk_suffix = f" (券码CDK: {cdk_code})" if cdk_code else ""
-                            log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求: 抢券成功！斩获【{benefit_name}】{cdk_suffix}\n"
-                            from .notifier import send_system_notification
-                            await send_system_notification(
-                                title="抢影音会员周卡成功",
-                                content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{benefit_name}】！{cdk_suffix}",
-                                account_key=account_key
-                            )
-                            break
-                        except XiaoCanRPCError as ce:
-                            log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
-                            if ce.code in (40003, 40004, 40017, 40021, 40024, 40037, 40038, 40039, 40040):
-                                break
-                        except Exception as e:
-                            log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求异常: {e}\n"
-                        await asyncio.sleep(0.1)
+                    log_output += f"[{time_service.format_now()}] 资格核准: 账号享有影音VIP特权 (本月已领 {month_claimed_count} 次，最近一次: {latest_claim_desc}，本月尚余 {avail} 次可用名额)\n"
+                    log_output += f"[{time_service.format_now()}] 场次就绪: 当前目标场次 {next_str} | 实时库存: {'有余量' if has_inv else '待放量/已发完'}，通道预热就绪\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 影音周卡处理异常: {e}\n"
+                log_output += f"[{time_service.format_now()}] 预热影音VIP资格异常: {e}\n"
 
+            if can_grab_media:
+                warmup_msg = await prepare_warmup_and_wait(
+                    target_hour=target_h, target_minute=0, token=token,
+                    silk_id=silk_id, user_id=user_id, city_code=city_code,
+                    early_ms=50, trigger_type=trigger_type
+                )
+                if warmup_msg:
+                    log_output += warmup_msg
 
+                # 毫秒级整点零等待直射开火 (Zero-latency Burst)
+                for try_idx in range(1, 4):
+                    ts_fmt = time_service.format_now_ms()
+                    try:
+                        lottery_res = await client.grab_tencent_vip_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                        benefit_name = "影音VIP周卡"
+                        cdk_code = ""
+                        try:
+                            fresh_list = await client.get_user_tencent_vip_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, page=1, page_size=1)
+                            fresh_items = fresh_list.get("items") or []
+                            if fresh_items:
+                                f_item = fresh_items[0]
+                                p_name = f_item.get("platform") or ""
+                                cdk_code = f_item.get("cdk") or ""
+                                if p_name:
+                                    benefit_name = f"{p_name} VIP周卡"
+                        except Exception:
+                            pass
+
+                        cdk_suffix = f" (券码CDK: {cdk_code})" if cdk_code else ""
+                        log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求: 抢券成功！斩获【{benefit_name}】{cdk_suffix}\n"
+                        from .notifier import send_system_notification
+                        await send_system_notification(
+                            title="抢影音会员周卡成功",
+                            content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{benefit_name}】！{cdk_suffix}",
+                            account_key=account_key
+                        )
+                        break
+                    except XiaoCanRPCError as ce:
+                        log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
+                        if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
+                            break
+                    except Exception as e:
+                        log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求异常: {e}\n"
+                    await asyncio.sleep(0.1)
 
         elif task_id == "expire_remind":
             # 凭据/JWT到期预警

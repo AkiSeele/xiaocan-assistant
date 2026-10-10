@@ -1636,15 +1636,18 @@ class XiaoCanClient:
         except Exception:
             pid_int = 0
 
-        # 对齐移动 App 原生协议参数 (PromotionDetailViewModel$order$1)
+        # 对齐移动 App 官方原生协议模型 (com.realtech.data.FusionGrabPromotionQuotaRequest)
         body: Dict[str, Any] = {
             "silk_id": int(silk_id) if silk_id else 0,
             "promotion_id": pid_int,
             "store_platform": int(store_platform or 1),
             "if_advance_order": bool(if_advance_order),
+            "if_pre_order": False,
+            "advance_order_time": 0,
             "latitude": float(latitude or 0.0),
             "longitude": float(longitude or 0.0),
-            "city_code": int(city_code or 440303)
+            "city_code": int(city_code or 440303),
+            "source": 1
         }
         if redpack_id is not None:
             try:
@@ -1668,15 +1671,12 @@ class XiaoCanClient:
             except (ValueError, TypeError):
                 pass
 
-        # 智能判定活动微服务路由：
-        # 1. 19位雪花算法ID (pid_int >= 10_000_000_000): 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota
-        # 2. 8~9位标准活动ID (pid_int < 10_000_000_000): 官方直连微服务 Silkworm.SilkwormService.GrabPromotionQuota
-        is_fusion_pid = pid_int >= 10_000_000_000
-
-        primary_server = "SilkwormFusion" if is_fusion_pid else "Silkworm"
-        primary_method = "FusionService.FusionGrabPromotionQuota" if is_fusion_pid else "SilkwormService.GrabPromotionQuota"
-        fallback_server = "Silkworm" if is_fusion_pid else "SilkwormFusion"
-        fallback_method = "SilkwormService.GrabPromotionQuota" if is_fusion_pid else "FusionService.FusionGrabPromotionQuota"
+        # 官方 App 原生唯一主路由: 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota
+        # (官方 APK 逆向证实无论 7/8/9 位还是 19 位活动 ID，移动 App 原生均走 FusionGrabPromotionQuota)
+        primary_server = "SilkwormFusion"
+        primary_method = "FusionService.FusionGrabPromotionQuota"
+        fallback_server = "Silkworm"
+        fallback_method = "SilkwormService.GrabPromotionQuota"
 
         try:
             return await self.invoke_rpc(
@@ -1690,21 +1690,25 @@ class XiaoCanClient:
                 platform="app"
             )
         except XiaoCanRPCError as rpc_err:
-            # 当返回错误码为 2 (参数错误) 或 3 (活动已过期 / 服务端不认该ID)，自动尝试备用微服务进行自愈
-            if rpc_err.code in (2, 3):
+            # 当主路由返回参数/版本兼容性响应码时 (如 2、3 或 5)，启动自愈备用路由尝试
+            if rpc_err.code in (2, 3, 5):
                 logger.info(
-                    f"主路由 {primary_server}.{primary_method} 返回兼容性响应码 {rpc_err.code} ({rpc_err.msg})，启动自愈备用路由 {fallback_server}.{fallback_method}..."
+                    f"官方主路由 {primary_server}.{primary_method} 返回代码 {rpc_err.code} ({rpc_err.msg})，启动自愈备用通道 {fallback_server}.{fallback_method}..."
                 )
-                return await self.invoke_rpc(
-                    server_name=fallback_server,
-                    method_name=fallback_method,
-                    body=body,
-                    city_code=city_code,
-                    token=token,
-                    silk_id=silk_id,
-                    user_id=user_id,
-                    platform="app"
-                )
+                try:
+                    return await self.invoke_rpc(
+                        server_name=fallback_server,
+                        method_name=fallback_method,
+                        body=body,
+                        city_code=city_code,
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        platform="app"
+                    )
+                except Exception:
+                    # 若自愈路由依然失败，抛出最初的原生异常
+                    raise rpc_err
             raise rpc_err
 
     async def get_user_max_redpack(

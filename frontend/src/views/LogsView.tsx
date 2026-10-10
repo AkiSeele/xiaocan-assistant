@@ -9,7 +9,6 @@ import {
   Select,
   Toast,
   Empty,
-  Modal,
   Avatar,
   Popconfirm,
   Tooltip,
@@ -20,16 +19,15 @@ import {
   IconRefresh,
   IconDelete,
   IconClock,
-  IconCopy,
   IconFile,
   IconCheckCircleStroked,
   IconAlertCircle,
-  IconList,
   IconSpin
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { TaskIcon } from '../components/TaskIcons';
+import { LogDetailModal } from '../components/LogDetailModal';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { JobLog } from '../types';
 
@@ -192,11 +190,6 @@ export const LogsView: React.FC = () => {
     setActiveLog(log);
     setDetailModalVisible(true);
   }, []);
-
-  const handleCopy = (text: string) => {
-    navigator.clipboard?.writeText(text);
-    Toast.success('日志内容已复制到剪贴板');
-  };
 
   const filteredLogs = useMemo(() => {
     return logs.filter(item => {
@@ -630,93 +623,12 @@ export const LogsView: React.FC = () => {
         </div>
       </Card>
 
-      {/* 完整日志步骤详情回显弹窗 */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2">
-            {activeLog && <TaskIcon taskId={activeLog.task_id} className="w-6 h-6" />}
-            <span>日志详情 - [{TASK_LABELS[activeLog?.task_id || ''] || '调度任务'}]</span>
-          </div>
-        }
+      {/* 统一完整日志步骤详情回显弹窗 */}
+      <LogDetailModal
         visible={detailModalVisible}
-        onCancel={() => setDetailModalVisible(false)}
-        footer={
-          <div className="flex justify-between items-center w-full">
-            <Button
-              theme="light"
-              type="tertiary"
-              icon={<IconCopy />}
-              onClick={() => handleCopy(activeLog?.output || '')}
-            >
-              复制全部日志
-            </Button>
-            <Button theme="solid" type="primary" onClick={() => setDetailModalVisible(false)}>
-              关闭
-            </Button>
-          </div>
-        }
-        width={680}
-        centered
-      >
-        {activeLog && (
-          <div className="space-y-3 pt-1">
-            {/* 元信息条 */}
-            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-semi-color-fill-0 border border-semi-color-border text-xs">
-              <Space>
-                <Text type="secondary">执行时间：</Text>
-                <span className="font-mono text-semi-color-text-0">{activeLog.created_at}</span>
-              </Space>
-              <Space>
-                <Text type="secondary">账号：</Text>
-                <span className="font-semibold text-semi-color-text-0">
-                  {accounts.find(a => a.key === activeLog.account_key)?.nickname || activeLog.account_key}
-                </span>
-              </Space>
-              <Space>
-                <Text type="secondary">状态：</Text>
-                <Tag
-                  color={activeLog.status === 'running' ? 'blue' : (activeLog.status === 'success' ? 'green' : 'red')}
-                  size="small"
-                  prefixIcon={activeLog.status === 'running' ? <IconSpin spin /> : undefined}
-                >
-                  {activeLog.status === 'running' ? '正在执行中' : (activeLog.status === 'success' ? '执行成功' : '执行失败')}
-                </Tag>
-              </Space>
-            </div>
-
-            {/* 步骤流水结构化可视化解析 */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5 text-xs text-semi-color-text-1 font-medium">
-                <IconList size="small" />
-                <span>详细执行步骤过程：</span>
-              </div>
-              <div className="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-xl font-mono text-[12px] max-h-[380px] overflow-y-auto whitespace-pre-wrap leading-relaxed shadow-inner">
-                {activeLog.output ? (
-                  activeLog.output.split('\n').map((line, idx) => {
-                    const isStep = line.includes('步骤');
-                    const isSuccess = line.includes('成功');
-                    const isError = line.includes('失败') || line.includes('异常') || line.includes('未成功');
-                    const isRunning = line.includes('正在') || line.includes('检测') || line.includes('预热') || line.includes('持续');
-                    let color = '#d4d4d4';
-                    if (isStep) color = '#79b8ff';
-                    else if (isSuccess) color = '#7ee787';
-                    else if (isError) color = '#ff7b72';
-                    else if (isRunning) color = '#f9d770';
-
-                    return (
-                      <div key={idx} style={{ color }} className="py-0.5">
-                        {line}
-                      </div>
-                    );
-                  })
-                ) : (
-                  '无日志内容'
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </Modal>
+        onClose={() => setDetailModalVisible(false)}
+        log={activeLog}
+      />
     </div>
   );
 };

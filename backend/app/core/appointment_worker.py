@@ -345,8 +345,8 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
         return {"ok": False, "code": -1, "message": str(e)}
 
 
-async def process_active_appointments() -> bool:
-    """单轮调度处理所有活跃的预约和监听任务，返回是否有临近 35 秒内的秒杀任务"""
+async def process_active_appointments() -> Tuple[bool, bool]:
+    """单轮调度处理所有活跃的预约和监听任务，返回 (是否有临近 35 秒内的秒杀任务, 是否临近整分准点放单)"""
     global _cached_active_appointments, _last_fetch_active_ts, _cached_accounts
     from . import time_service
     now_ts = time_service.now_ts()
@@ -359,10 +359,18 @@ async def process_active_appointments() -> bool:
 
     active_list = _cached_active_appointments
     if not active_list:
-        return False
+        return False, False
 
     now_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
     has_primed = False
+
+    # 检测是否临近每分钟 00 秒放单时刻 (58.5s ~ 02.0s 窗口期)
+    curr_min_start = int(now_ts // 60) * 60
+    sec_in_min = now_ts - curr_min_start
+    has_near_minute = False
+    if any(a.get("status") in ("monitoring", "running", "waiting") for a in active_list):
+        if sec_in_min >= 58.5 or sec_in_min < 2.0:
+            has_near_minute = True
 
     for apt in active_list:
         aid = apt["id"]
@@ -404,17 +412,27 @@ async def process_active_appointments() -> bool:
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 店名监听截止时间到达 ({apt.get('until_time')})，监听任务自动结束", sync_db=True, status="error")
                 continue
 
-            # 3. 检查频率 (默认每 check_interval 秒搜索一次，最低 3 秒)
-            interval = max(3, int(apt.get("check_interval") or 5))
+            # 3. 检查频率与每分钟 00 秒准点放单对齐机制
+            # 算法核心：无论设置的轮询频率为何值，从 00:00 开始的每 1 分钟整点 (00秒) 均保证进行一次嗅探
+            interval = max(3, int(apt.get("check_interval") or 10))
             last_checked = _parse_time_today(apt.get("last_checked_at"))
-            if last_checked and (now_ts - last_checked) < interval:
+            is_on_minute_probe = False
+
+            # 分支 A: 整分 00 秒准点放单保底命中 (00~02.5秒区间且当前分钟尚未执行过嗅探)
+            if sec_in_min < 2.5 and (not last_checked or last_checked < curr_min_start):
+                is_on_minute_probe = True
+            # 分支 B: 临近分钟末尾避让保护 (57.5~59.9秒区间，避免抢跑导致 00 秒被限流，主动延后至 00 秒准点发射)
+            elif sec_in_min >= 57.5:
+                continue
+            # 分支 C: 常规轮询间隔触发
+            elif last_checked and (now_ts - last_checked) < interval:
                 continue
 
             # 如果当前网络处于 WAF 熔断冷却期，主动跳过嗅探，避免延长封锁
             if is_waf_blocked():
                 remain = get_waf_cooldown_seconds()
                 if (int(now_ts) % 30) < 2 and linked_log_id > 0:
-                    t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    t_now = time_service.format_now_ms()
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] 当前网络IP处于官方腾讯云WAF临时拦截冷却中 (剩余约 {remain} 秒)，已自动暂停嗅探以避免延长封锁。切换手机热点或重启光猫更换IP可立即恢复。", sync_db=True, status="running")
                 continue
 
@@ -425,8 +443,9 @@ async def process_active_appointments() -> bool:
             _apt_poll_counters[aid] = _apt_poll_counters.get(aid, 0) + 1
             poll_cnt = _apt_poll_counters[aid]
 
-            # 防风控随机微抖动
-            await asyncio.sleep(random.uniform(0.1, 0.4))
+            # 防风控随机微抖动：准点对齐嗅探零延迟直射开火，常规轮询时微抖动 0.05~0.15s
+            if not is_on_minute_probe:
+                await asyncio.sleep(random.uniform(0.05, 0.15))
 
             kw = (apt.get("keyword") or apt.get("store_name") or "").strip()
             match_mode = apt.get("match_mode") or "contains"
@@ -551,13 +570,14 @@ async def process_active_appointments() -> bool:
                     reverse=True
                 )
 
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                t_now = time_service.format_now_ms()
+                probe_tag = " (整分准点放单对齐)" if is_on_minute_probe else ""
                 best_item = matched_candidates[0] if matched_candidates else None
 
                 if best_item:
                     store_label = best_item.get("name", kw)
                     rebate_label = best_item.get("rebate_desc", "")
-                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探成功: 检索到「{store_label}」有可抢名额 ({rebate_label}, 剩余库存 {best_item.get('left_number')} 份)，立即触发闪电抢单！"
+                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探成功{probe_tag}: 检索到「{store_label}」有可抢名额 ({rebate_label}, 剩余库存 {best_item.get('left_number')} 份)，立即触发闪电抢单！"
                     logger.info(f"店名监听 #{aid} 命中可用方案【{store_label}】({rebate_label})，立即触发抢单！")
                     if linked_log_id > 0:
                         _append_apt_log(aid, linked_log_id, step_str, sync_db=True, status="running")
@@ -582,7 +602,7 @@ async def process_active_appointments() -> bool:
                             is_adv = True
 
                     res = await execute_grab_for_appointment(grab_apt, account, advance=is_adv, action_source="store_monitor")
-                    t_grab = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    t_grab = time_service.format_now_ms()
                     if res.get("ok"):
                         succ_msg = f"抢单成功: 【{store_label}】{rebate_label}"
                         logger.info(f"店名监听 #{aid} {succ_msg}")
@@ -607,9 +627,9 @@ async def process_active_appointments() -> bool:
                 else:
                     # 未找到符合条件的方案
                     store_count = len(total_found_stores)
-                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探: 关键词「{kw}」，发现 {store_count} 家商户 (当前暂无满足条件的剩余名额)，持续保持监听..."
+                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探{probe_tag}: 关键词「{kw}」，发现 {store_count} 家商户 (当前暂无满足条件的剩余名额)，持续保持监听..."
                     if linked_log_id > 0:
-                        _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt == 1 or poll_cnt % 3 == 0), status="running")
+                        _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt == 1 or poll_cnt % 3 == 0 or is_on_minute_probe), status="running")
 
             except Exception as se:
                 logger.warning(f"店名监听 #{aid} 执行异常: {se}")
@@ -643,10 +663,16 @@ async def process_active_appointments() -> bool:
                     _append_apt_log(aid, linked_log_id, exp_line, sync_db=True, status="error")
                 continue
 
-            # 2. 控制检查频率 (默认每 check_interval 秒检查一次，最低 3 秒)
+            # 2. 控制检查频率与整分准点放单对齐
             interval = max(3, int(apt.get("check_interval") or 5))
             last_checked = _parse_time_today(apt.get("last_checked_at"))
-            if last_checked and (now_ts - last_checked) < interval:
+            is_on_minute_probe = False
+
+            if sec_in_min < 2.5 and (not last_checked or last_checked < curr_min_start):
+                is_on_minute_probe = True
+            elif sec_in_min >= 57.5:
+                continue
+            elif last_checked and (now_ts - last_checked) < interval:
                 continue
 
             # 如果当前网络处于 WAF 熔断冷却期，主动跳过库存查询，避免延长封锁
@@ -829,25 +855,27 @@ async def process_active_appointments() -> bool:
                             t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                             _append_apt_log(aid, linked_log_id, f"[{t_now}] 抢单流程结束: {last_msg}", sync_db=True, status="error")
 
-    return has_primed
+    return has_primed, has_near_minute
 
 
 async def _appointment_loop():
-    """后台常驻循环：常态 1.0s 低功耗，有临近秒杀时自适应 20ms 超高精度监测"""
+    """后台常驻循环：常态 0.5s 低功耗，临近秒杀或整分准点放单时自适应 20ms~50ms 超高精度监测"""
     logger.info("霸王餐预约与名额监听引擎已启动")
     while _is_running:
         try:
-            has_primed = await process_active_appointments()
+            has_primed, has_near_minute = await process_active_appointments()
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"预约监听主循环发生未捕获异常: {e}")
-            has_primed = False
+            has_primed, has_near_minute = False, False
 
         if has_primed:
             await asyncio.sleep(0.02)
+        elif has_near_minute:
+            await asyncio.sleep(0.05)
         else:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
     logger.info("霸王餐预约与名额监听引擎已安全退出")
 
 

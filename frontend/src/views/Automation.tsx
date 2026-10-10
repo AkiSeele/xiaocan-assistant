@@ -27,13 +27,13 @@ import {
   IconEdit,
   IconCheckCircleStroked,
   IconAlertCircle,
-  IconCopy,
   IconCalendarClockStroked,
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { useGSAP, animateStaggerEnter } from '../utils/animations';
 import { useOnActivated } from '../utils/useOnActivated';
+import { LogDetailModal } from '../components/LogDetailModal';
 import type { TaskItem, Account } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -859,7 +859,7 @@ export const Automation: React.FC = () => {
             </span>
           </Title>
           <Tag color="violet" size="small">
-            SVIP大牌神券 / 免单
+            红包雨 / SVIP大牌券 / 免单
           </Tag>
         </Card>
 
@@ -880,7 +880,7 @@ export const Automation: React.FC = () => {
             </span>
           </Title>
           <Tag color="blue" size="small">
-            签到 / 抽奖 / 红包雨
+            会员签到 / 元宝抽奖 / 领气泡
           </Tag>
         </Card>
 
@@ -1332,55 +1332,17 @@ export const Automation: React.FC = () => {
         </div>
       </Modal>
 
-      {/* 单次任务执行日志 */}
-      <Modal
-        title={execTitle}
+      {/* 统一单次任务执行日志弹窗 */}
+      <LogDetailModal
         visible={execResultModal}
-        onCancel={() => setExecResultModal(false)}
-        footer={
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-            <Button
-              theme="light"
-              type="tertiary"
-              icon={<IconCopy />}
-              onClick={() => {
-                navigator.clipboard?.writeText(execOutput);
-                Toast.success('已复制到剪贴板');
-              }}
-            >
-              复制
-            </Button>
-            <Button theme="solid" type="primary" onClick={() => setExecResultModal(false)}>
-              关闭
-            </Button>
-          </div>
-        }
-        width={560}
-        centered
-        bodyStyle={{
-          maxHeight: 'calc(80vh - 120px)',
-          overflowY: 'auto',
-          padding: '16px 20px',
-        }}
-      >
-        <div
-          style={{
-            backgroundColor: 'var(--semi-color-fill-0)',
-            color: 'var(--semi-color-text-0)',
-            padding: '14px',
-            borderRadius: 'var(--semi-border-radius-medium)',
-            fontFamily: 'monospace',
-            fontSize: 13,
-            maxHeight: 340,
-            overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
-            lineHeight: '1.6',
-            border: '1px solid var(--semi-color-border)',
-          }}
-        >
-          {execOutput}
-        </div>
-      </Modal>
+        onClose={() => setExecResultModal(false)}
+        customTitle={execTitle}
+        customTaskId={runningTaskId || undefined}
+        customAccountKey={currentAccountKey}
+        customCreatedAt={new Date().toLocaleTimeString()}
+        customStatus={execTitle.includes('成功') ? 'success' : 'error'}
+        customOutput={execOutput}
+      />
     </div>
   );
 };

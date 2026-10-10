@@ -35,7 +35,9 @@ import {
   IconFastForward,
   IconChevronRight,
   IconPlus,
-  IconCopy
+  IconCopy,
+  IconBolt,
+  IconFilter
 } from '@douyinfe/semi-icons';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -1331,7 +1333,7 @@ export const StoreSniping: React.FC = () => {
         rebate_mode_filter: values.rebate_mode_filter || 'all',
         min_rebate_price: Number(values.min_rebate_price || 0),
         min_rebate_rate: Number(values.min_rebate_rate || 0),
-        max_order_money: Number(values.max_order_money || 0),
+        max_order_money: 0,
         auto_stop_on_success: values.auto_stop_on_success !== false ? 1 : 0,
         timeout_sec: values.timeout_sec !== undefined && values.timeout_sec !== null ? Number(values.timeout_sec) : 7200,
         until_time: Number(values.timeout_sec) === 0 ? '23:59' : undefined,
@@ -3566,22 +3568,32 @@ export const StoreSniping: React.FC = () => {
       </Modal>
 
       {/* 店名抢单监听配置弹窗 */}
+      {/* 店名抢单监听配置弹窗 */}
       <Modal
         title={
           <div className="flex items-center gap-2">
-            <Tag color="cyan" prefixIcon={<IconSearch />}>店名嗅探</Tag>
+            <Tag color="cyan" prefixIcon={<IconSearch />}>智能嗅探</Tag>
             <span className="font-semibold text-base">店名抢单监听配置</span>
           </div>
         }
         visible={nameMonitorVisible}
         onCancel={() => setNameMonitorVisible(false)}
         footer={null}
-        width={620}
+        width={640}
         centered
         bodyStyle={{
-          padding: '16px 22px 20px',
+          padding: '16px 20px 20px',
         }}
       >
+        {/* 顶部准点放单智能对齐特性横幅 */}
+        <Banner
+          type="info"
+          icon={<IconBolt />}
+          closeIcon={null}
+          className="rounded-lg mb-3"
+          description="已内置整分准点放单智能对齐：无论设置何种轮询频率，系统均会在每 1 分钟的 00 秒整点（xx:xx:00）精准执行一次嗅探，不错过商家整点放单"
+        />
+
         <Form
           key={nameMonitorInitialKeyword}
           initValues={{
@@ -3591,7 +3603,6 @@ export const StoreSniping: React.FC = () => {
             rebate_mode_filter: 'all',
             min_rebate_price: 0,
             min_rebate_rate: 0,
-            max_order_money: 0,
             timeout_sec: 7200,
             check_interval: 10,
             auto_stop_on_success: true,
@@ -3600,114 +3611,129 @@ export const StoreSniping: React.FC = () => {
           onSubmit={handleSubmitNameMonitor}
         >
           {() => (
-            <div className="space-y-3">
-              {/* 第 1 行：商户关键词 */}
-              <Form.Input
-                field="keyword"
-                label="目标商户名称 / 搜索关键词"
-                placeholder="例如：霸王茶姬 / 肯德基 / 蜜雪冰城"
-                rules={[{ required: true, message: '请输入要监听的店铺关键词' }]}
-              />
+            <div className="space-y-3.5">
+              {/* 分组一：目标商户与平台规则 */}
+              <div className="p-3 bg-[var(--semi-color-fill-0)] rounded-lg border border-[var(--semi-color-border)] space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-semi-color-text-1">
+                  <IconSearch />
+                  <span>商户检索与平台</span>
+                </div>
 
-              {/* 第 2 行：匹配模式与外卖平台 */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Form.RadioGroup
-                  field="match_mode"
-                  label="店名匹配模式"
-                  type="button"
-                  buttonSize="middle"
-                  className="w-full"
-                >
-                  <Radio value="contains">包含匹配 (推荐)</Radio>
-                  <Radio value="exact">完全匹配</Radio>
-                </Form.RadioGroup>
+                <Form.Input
+                  field="keyword"
+                  label="目标商户名称 / 搜索关键词"
+                  prefix={<IconSearch className="text-semi-color-text-2" />}
+                  placeholder="例如：霸王茶姬 / 肯德基 / 蜜雪冰城 / 活鱼馆"
+                  rules={[{ required: true, message: '请输入要监听的店铺关键词' }]}
+                  showClear
+                />
 
-                <Form.RadioGroup
-                  field="platform"
-                  label="目标外卖平台"
-                  type="button"
-                  buttonSize="middle"
-                  className="w-full"
-                >
-                  <Radio value="all">全平台</Radio>
-                  <Radio value="meituan">美团</Radio>
-                  <Radio value="eleme">饿了么</Radio>
-                </Form.RadioGroup>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <Form.RadioGroup
+                    field="match_mode"
+                    label="店名匹配模式"
+                    type="button"
+                    buttonSize="middle"
+                    className="w-full flex *:flex-1 text-center"
+                  >
+                    <Radio value="contains">包含匹配 (推荐)</Radio>
+                    <Radio value="exact">完全匹配</Radio>
+                  </Form.RadioGroup>
+
+                  <Form.RadioGroup
+                    field="platform"
+                    label="目标外卖平台"
+                    type="button"
+                    buttonSize="middle"
+                    className="w-full flex *:flex-1 text-center"
+                  >
+                    <Radio value="all">全平台</Radio>
+                    <Radio value="meituan">美团外卖</Radio>
+                    <Radio value="eleme">饿了么</Radio>
+                  </Form.RadioGroup>
+                </div>
               </div>
 
-              {/* 第 3 行：方案偏好 */}
-              <Form.RadioGroup
-                field="rebate_mode_filter"
-                label="活动方案偏好"
-                type="button"
-                buttonSize="middle"
-                className="w-full"
-              >
-                <Radio value="all">全部方案</Radio>
-                <Radio value="fixed">实付满返</Radio>
-                <Radio value="percent">按比例返</Radio>
-              </Form.RadioGroup>
+              {/* 分组二：活动方案与返利门槛 */}
+              <div className="p-3 bg-[var(--semi-color-fill-0)] rounded-lg border border-[var(--semi-color-border)] space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-semi-color-text-1">
+                  <IconFilter />
+                  <span>方案筛选与返利门槛</span>
+                </div>
 
-              {/* 第 4 行：数值门槛（最低返利、最低比例、最高起送） */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <Form.InputNumber
-                  field="min_rebate_price"
-                  label="最低返利 (元)"
-                  min={0}
-                  step={1}
-                  placeholder="0 (不限)"
-                />
+                <Form.RadioGroup
+                  field="rebate_mode_filter"
+                  label="活动方案偏好"
+                  type="button"
+                  buttonSize="middle"
+                  className="w-full flex *:flex-1 text-center"
+                >
+                  <Radio value="all">全部方案</Radio>
+                  <Radio value="fixed">仅实付满返</Radio>
+                  <Radio value="percent">仅按比例返</Radio>
+                </Form.RadioGroup>
 
-                <Form.InputNumber
-                  field="min_rebate_rate"
-                  label="最低比例 (%)"
-                  min={0}
-                  max={100}
-                  step={5}
-                  placeholder="0 (不限)"
-                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <Form.InputNumber
+                    field="min_rebate_price"
+                    label="最低返利金额 (元)"
+                    prefix="¥"
+                    min={0}
+                    step={1}
+                    placeholder="0 (不设门槛)"
+                  />
 
-                <Form.InputNumber
-                  field="max_order_money"
-                  label="最高起送 (元)"
-                  min={0}
-                  step={5}
-                  placeholder="0 (不限)"
-                />
+                  <Form.InputNumber
+                    field="min_rebate_rate"
+                    label="最低返利比例 (%)"
+                    suffix="%"
+                    min={0}
+                    max={100}
+                    step={5}
+                    placeholder="0 (不设门槛)"
+                  />
+                </div>
               </div>
 
-              {/* 第 5 行：监听持续时长与嗅探轮询频率 (对称对齐) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Form.Select
-                  field="timeout_sec"
-                  label="监听持续时长"
-                  style={{ width: '100%' }}
-                >
-                  <Select.Option value={1800}>30 分钟</Select.Option>
-                  <Select.Option value={3600}>1 小时</Select.Option>
-                  <Select.Option value={7200}>2 小时 (推荐)</Select.Option>
-                  <Select.Option value={14400}>4 小时</Select.Option>
-                  <Select.Option value={0}>今日结束 (23:59)</Select.Option>
-                </Form.Select>
+              {/* 分组三：调度策略与时长 */}
+              <div className="p-3 bg-[var(--semi-color-fill-0)] rounded-lg border border-[var(--semi-color-border)] space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-semi-color-text-1">
+                  <IconClock />
+                  <span>监听时长与轮询频率</span>
+                </div>
 
-                <Form.Select
-                  field="check_interval"
-                  label="嗅探轮询频率"
-                  style={{ width: '100%' }}
-                >
-                  <Select.Option value={5}>5 秒 (极速秒抢)</Select.Option>
-                  <Select.Option value={10}>10 秒 (均衡推荐)</Select.Option>
-                  <Select.Option value={15}>15 秒 (轻量防封)</Select.Option>
-                  <Select.Option value={30}>30 秒 (长效挂机)</Select.Option>
-                </Form.Select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Form.Select
+                    field="timeout_sec"
+                    label="监听持续时长"
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value={1800}>30 分钟</Select.Option>
+                    <Select.Option value={3600}>1 小时</Select.Option>
+                    <Select.Option value={7200}>2 小时 (推荐)</Select.Option>
+                    <Select.Option value={14400}>4 小时</Select.Option>
+                    <Select.Option value={0}>今日结束 (23:59)</Select.Option>
+                  </Form.Select>
+
+                  <Form.Select
+                    field="check_interval"
+                    label="嗅探轮询频率 (每分钟 00 秒整点必嗅探)"
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value={5}>5 秒 (极速秒抢模式)</Select.Option>
+                    <Select.Option value={10}>10 秒 (均衡推荐模式)</Select.Option>
+                    <Select.Option value={15}>15 秒 (轻量防封模式)</Select.Option>
+                    <Select.Option value={30}>30 秒 (长效挂机模式)</Select.Option>
+                  </Form.Select>
+                </div>
               </div>
 
               {/* 底部操作栏：左侧开关，右侧操作按钮 */}
-              <div className="flex items-center justify-between gap-3 pt-3 mt-1 border-t border-semi-color-border">
+              <div className="flex items-center justify-between gap-3 pt-2 border-t border-[var(--semi-color-border)]">
                 <div className="flex items-center gap-2">
                   <Form.Switch field="auto_stop_on_success" noLabel />
                   <span className="text-xs text-semi-color-text-0 font-medium select-none">
-                    抢单成功后自动停止
+                    抢单成功后自动停止监听
                   </span>
                 </div>
 
@@ -3720,7 +3746,7 @@ export const StoreSniping: React.FC = () => {
                     type="warning"
                     htmlType="submit"
                     loading={nameMonitorSubmitting}
-                    icon={<IconSearch />}
+                    icon={<IconBolt />}
                   >
                     启动店名抢单监听
                   </Button>

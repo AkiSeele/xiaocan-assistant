@@ -35,17 +35,17 @@ TASK_META = {
     # --- 日常打卡与元宝任务 (daily) ---
     "yb_task": {"id": "yb_task", "label": "领天天赚元宝", "tip": "自动完成社群打卡、电商浏览、领券加赠及天天打卡，一键聚拢元宝", "category": "daily", "default_time": "08:05"},
     "yb_sign": {"id": "yb_sign", "label": "天天赚元宝签到", "tip": "每日天天赚元宝独立签到打卡", "category": "daily", "default_time": "08:10"},
+    "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "会员每日打卡 + VIP专属签到抽奖 + 里程碑核验 + 专属成长礼包", "category": "daily", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
     "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "晚间睡前自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
-    "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "daily", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
     "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
     "flash_sale": {"id": "flash_sale", "label": "元宝秒杀抢券", "tip": "元宝商城限量秒杀抢券，支持自定义商品ID", "category": "daily", "default_time": "10:00"},
 
     # --- 会员秒杀与特权抢券 (member) ---
+    "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "member", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
     "svip_rebate": {"id": "svip_rebate", "label": "抢SVIP专属返利券", "tip": "SVIP专属大额返利券每日 09:00:00 准点秒杀", "category": "member", "vip": "SVIP2-6", "default_time": "09:00", "fixed_time": True, "time_label": "09:00 固定"},
     "brand_flash": {"id": "brand_flash", "label": "抢SVIP大牌券", "tip": "每日 09:30:00 准点抢额外放量大牌神券（独立通道，绝不消耗每月保底张数）", "category": "member", "vip": "SVIP2-6 / VIP5+", "default_time": "09:30", "fixed_time": True, "time_label": "09:30 固定"},
     "media_vip": {"id": "media_vip", "label": "抢每月影音VIP", "tip": "影音会员VIP周卡(网易云音乐/腾讯视频等)每日三场 (10/17/20点)，智能检测本月余量与历史记录", "category": "member", "vip": "SVIP4-6 / VIP5-6", "default_time": "10:00", "fixed_time": True, "time_label": "三场 10/17/20点"},
     "free_order": {"id": "free_order", "label": "抢每月免单券", "tip": "外卖霸王餐全额免单券每日 14:00:00 准点秒杀", "category": "member", "vip": "SVIP5-6 / VIP6", "default_time": "14:00", "fixed_time": True, "time_label": "14:00 固定"},
-    "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "会员每日打卡 + VIP专属签到抽奖 + 里程碑核验 + 专属成长礼包", "category": "member", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
 
     # --- 资产守护与双返利监控 (custom) ---
     "expire_remind": {"id": "expire_remind", "label": "凭据/JWT到期预警", "tip": "监控小蚕凭据与JWT有效期，提前推送防掉线", "category": "custom", "default_time": "08:00"},
@@ -3010,12 +3010,15 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
         req_parts.append(f"门槛≤¥{max_order_money:.1f}")
     req_str = "、".join(req_parts) if req_parts else "不设额外门槛"
 
+    from ..core import time_service
+    t_now_init = time_service.format_now_ms()
+
     s_log = (
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 创建店名抢单监听任务 - 调度引擎装载就绪\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标商户关键词: 「{keyword}」 (模式: {match_desc} | 平台: {plat_desc})\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 方案筛选要求: {filter_desc} | 阈值规则: {req_str}\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听频率: 每 {poll_sec} 秒嗅探一次 | 时段: {start_at} 至 {until_str} | 抢成自停: {'开启' if auto_stop_on_success else '关闭'}\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 执行账号: 【{nick}】，高频嗅探与自动秒抢通道已就绪..."
+        f"[{t_now_init}] 创建店名抢单监听任务 - 调度引擎装载就绪\n"
+        f"[{t_now_init}] 目标商户关键词: 「{keyword}」 (模式: {match_desc} | 平台: {plat_desc})\n"
+        f"[{t_now_init}] 方案筛选要求: {filter_desc} | 阈值规则: {req_str}\n"
+        f"[{t_now_init}] 监听策略: 准点放单智能对齐 (每分钟 00 秒必嗅探) + 每 {poll_sec} 秒轮询 | 时段: {start_at} 至 {until_str} | 抢成自停: {'开启' if auto_stop_on_success else '关闭'}\n"
+        f"[{t_now_init}] 执行账号: 【{nick}】，高频嗅探与自动秒抢通道已就绪..."
     )
     log_id = 0
     try:

@@ -41,6 +41,7 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { TaskIcon } from '../components/TaskIcons';
+import { LogDetailModal } from '../components/LogDetailModal';
 import { useGSAP, animateStaggerEnter, gsap } from '../utils/animations';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { JobLog, StoreAppointment, OrderStats, DashboardChartData, XiaoCanMessage, XiaoCanMessageChannel, Order, TaskItem } from '../types';
@@ -1781,85 +1782,12 @@ export const Dashboard: React.FC = () => {
 
 
 
-      {/* 日志输出查看详情弹窗 */}
-      <Modal
+      {/* 统一日志输出查看详情弹窗 */}
+      <LogDetailModal
         visible={Boolean(activeLogModal)}
-        title={
-          <div className="flex items-center gap-2">
-            {activeLogModal?.task_id && <TaskIcon taskId={activeLogModal.task_id} className="w-5 h-5 shrink-0" />}
-            <span className="truncate">
-              任务执行详情 [{TASK_LABELS[activeLogModal?.task_id || ''] || '系统调度任务'}]
-            </span>
-          </div>
-        }
-        onCancel={() => setActiveLogModal(null)}
-        footer={
-          <div className="flex justify-between items-center w-full">
-            <Button
-              theme="light"
-              type="tertiary"
-              size="small"
-              icon={<IconCopy />}
-              onClick={() => handleCopy(activeLogModal?.output || '', '任务日志')}
-            >
-              复制全部日志
-            </Button>
-            <Button
-              theme="solid"
-              type="primary"
-              onClick={() => setActiveLogModal(null)}
-            >
-              关闭
-            </Button>
-          </div>
-        }
-        width={620}
-      >
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-3 bg-semi-color-fill-0 rounded-lg border border-semi-color-border text-xs">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-semi-color-text-2 shrink-0">执行账号:</span>
-              <Avatar
-                size="extra-extra-small"
-                src={accounts.find((a) => a.key === activeLogModal?.account_key)?.avatar || undefined}
-                color="orange"
-                className="shrink-0"
-              >
-                {accounts.find((a) => a.key === activeLogModal?.account_key)?.nickname?.[0] || '蚕'}
-              </Avatar>
-              <span className="font-medium text-semi-color-text-0 truncate">
-                {accounts.find((a) => a.key === activeLogModal?.account_key)?.nickname || activeLogModal?.account_key || '默认'}
-              </span>
-            </div>
-            <div>
-              <span className="text-semi-color-text-2">调度时间: </span>
-              <span className="font-mono text-semi-color-text-1">{activeLogModal?.created_at}</span>
-            </div>
-            <div>
-              <span className="text-semi-color-text-2">执行状态: </span>
-              <Tag
-                color={
-                  activeLogModal?.status === 'success'
-                    ? 'green'
-                    : activeLogModal?.status === 'running'
-                    ? 'cyan'
-                    : 'red'
-                }
-                size="small"
-              >
-                {activeLogModal?.status === 'success'
-                  ? '执行成功'
-                  : activeLogModal?.status === 'running'
-                  ? '正在执行'
-                  : '执行异常'}
-              </Tag>
-            </div>
-          </div>
-          <div className="bg-semi-color-fill-0 p-3.5 rounded-lg border border-semi-color-border font-mono text-xs max-h-80 overflow-y-auto whitespace-pre-wrap leading-relaxed text-semi-color-text-1 select-text">
-            {activeLogModal?.output || '暂无输出信息'}
-          </div>
-        </div>
-      </Modal>
+        onClose={() => setActiveLogModal(null)}
+        log={activeLogModal}
+      />
 
       {/* 消息通知详情弹窗 */}
       <Modal

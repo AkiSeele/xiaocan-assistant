@@ -143,3 +143,14 @@ def get_ntp_status() -> Dict[str, Any]:
         "round_trip_ms": round(_ntp_state.get("round_trip_ms", 0.0), 1),
         "last_sync": _ntp_state.get("last_sync", 0.0)
     }
+
+
+def format_now(fmt: str = "%H:%M:%S") -> str:
+    """获取经 NTP 校准的高精度标准时间格式化字符串"""
+    return now_dt().strftime(fmt)
+
+
+def format_now_ms() -> str:
+    """获取经 NTP 校准的高精度标准时间毫秒级格式化字符串 (如 09:30:00.123)"""
+    return now_dt().strftime("%H:%M:%S.%f")[:-3]
+
