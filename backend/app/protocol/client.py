@@ -1659,6 +1659,7 @@ class XiaoCanClient:
             pid_int = 0
 
         # 对齐移动 App 官方原生协议模型 (com.realtech.data.FusionGrabPromotionQuotaRequest)
+        # 官方微服务定义: source=1 代表 silkworm (直连模式不被Fusion支持)，source=2 代表聚合模式 (支持标准与雪花算法活动)
         body: Dict[str, Any] = {
             "silk_id": int(silk_id) if silk_id else 0,
             "promotion_id": pid_int,
@@ -1669,7 +1670,7 @@ class XiaoCanClient:
             "latitude": float(latitude or 0.0),
             "longitude": float(longitude or 0.0),
             "city_code": int(city_code or 440303),
-            "source": 1
+            "source": 2
         }
         if redpack_id is not None:
             try:
@@ -1694,7 +1695,7 @@ class XiaoCanClient:
                 pass
 
         # 官方 App 原生唯一主路由: 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota
-        # (官方 APK 逆向证实无论 7/8/9 位还是 19 位活动 ID，移动 App 原生均走 FusionGrabPromotionQuota)
+        # (官方 APK 逆向证实无论 7/8/9 位还是 19 位活动 ID，移动 App 原生均走 FusionGrabPromotionQuota, source=2)
         primary_server = "SilkwormFusion"
         primary_method = "FusionService.FusionGrabPromotionQuota"
         fallback_server = "Silkworm"
@@ -1712,16 +1713,19 @@ class XiaoCanClient:
                 platform="app"
             )
         except XiaoCanRPCError as rpc_err:
-            # 当主路由返回参数/版本兼容性响应码时 (如 2、3 或 5)，启动自愈备用路由尝试
-            if rpc_err.code in (2, 3, 5):
+            # 当主路由返回参数/版本/源兼容性响应码时 (如 1、2、3 或 5)，启动自愈备用路由尝试
+            if rpc_err.code in (1, 2, 3, 5):
                 logger.info(
                     f"官方主路由 {primary_server}.{primary_method} 返回代码 {rpc_err.code} ({rpc_err.msg})，启动自愈备用通道 {fallback_server}.{fallback_method}..."
                 )
                 try:
+                    # 备用直连通道 Silkworm.SilkwormService.GrabPromotionQuota 不需要 source 字段
+                    fallback_body = dict(body)
+                    fallback_body.pop("source", None)
                     return await self.invoke_rpc(
                         server_name=fallback_server,
                         method_name=fallback_method,
-                        body=body,
+                        body=fallback_body,
                         city_code=city_code,
                         token=token,
                         silk_id=silk_id,
