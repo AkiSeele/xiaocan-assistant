@@ -119,7 +119,7 @@ export const api = {
       stores: StoreItem[];
       message?: string;
     }>('/store/dual-rebate-scan', { params, timeout: 120000 }).then(r => r.data),
-  grabStoreNow: (data: { account_key: string; store_id?: string; store_name?: string; promotion_id: string; platform?: string; order_money?: number; rebate_price?: number; rebate_desc?: string; advance?: boolean; redpack_id?: string; redpack_name?: string; redpack_mode?: number }) =>
+  grabStoreNow: (data: { account_key: string; store_id?: string; store_name?: string; store_icon?: string; promotion_id: string; platform?: string; order_money?: number; rebate_price?: number; rebate_desc?: string; rebate_type?: string; advance?: boolean; redpack_id?: string; redpack_name?: string; redpack_mode?: number }) =>
     client.post<{ ok: boolean; order_id?: number; can_monitor?: boolean; message: string }>('/store/grab-now', data).then(r => r.data),
   createAppointment: (data: Partial<StoreAppointment>) => client.post<{ ok: boolean; appointment_id: number; message: string }>('/store/appoint', data).then(r => r.data),
   createNameMonitor: (data: NameMonitorPayload) =>

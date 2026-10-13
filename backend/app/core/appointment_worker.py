@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import random
+import re
 import time
 import uuid
 from datetime import datetime
@@ -253,43 +254,74 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
         log_steps.append(f"[{t_step4}] 步骤 4/4: 抢单成功锁定 - 官方系统订单 #{order_id} 生成完毕！")
         success_msg = f"抢单成功锁定！官方系统订单 #{order_id} 生成完毕，请前往外卖平台下单"
 
-        # 自动触发 App 原生「领红包延时 2 小时」任务特权 (延长活动订单凭证上传有效期 2 小时)
+        raw_pid_str = str(apt.get("promotion_id") or "").strip()
+        clean_pid_str = re.sub(r"_p\d+$", "", raw_pid_str)
         try:
-            delay_task_type = 4 if int(platform_code) == 1 else 3
-            delay_res = await client.complete_task_event(
-                token=token,
-                silk_id=silk_id,
-                user_id=user_id,
-                city_code=city_code,
-                promotion_order_id=order_id,
-                task_type=delay_task_type
-            )
-            is_delayed = bool(delay_res.get("if_delay") or delay_res.get("if_delay_success") or delay_res.get("ifDelay") or delay_res.get("ifDelaySuccess"))
-            d_time = delay_res.get("delay_time") or delay_res.get("delayTime") or 7200
-            if is_delayed or d_time > 0:
-                log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
-            else:
-                log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 已提交领红包延时申请")
-        except Exception as de:
-            logger.info(f"领红包延时触发提示: {de}")
-            log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 领红包延时提示: {de}")
+            pid_int = int(clean_pid_str)
+        except Exception:
+            pid_int = 0
+        rebate_type_str = str(apt.get("rebate_type") or "").strip().lower()
+        rebate_desc_str = str(apt.get("rebate_desc") or "").strip()
+        is_percent_order = (
+            rebate_type_str == "percent"
+            or pid_int >= 10_000_000_000
+            or "%" in rebate_desc_str
+            or "比例" in rebate_desc_str
+            or bool(res.get("user_ratio"))
+            or bool(res.get("ratio"))
+            or int(res.get("order_type") or 0) == 12
+            or float(apt.get("order_money") or 0) <= 0
+        )
+
+        # 仅实付满返订单支持触发 App 原生「领红包延时 2 小时」任务特权；百分比/按比例返订单不支持该延时特权
+        if not is_percent_order:
+            try:
+                delay_task_type = 4 if int(platform_code) == 1 else 3
+                delay_res = await client.complete_task_event(
+                    token=token,
+                    silk_id=silk_id,
+                    user_id=user_id,
+                    city_code=city_code,
+                    promotion_order_id=order_id,
+                    task_type=delay_task_type
+                )
+                is_delayed = bool(delay_res.get("if_delay") or delay_res.get("if_delay_success") or delay_res.get("ifDelay") or delay_res.get("ifDelaySuccess"))
+                raw_d_time = int(delay_res.get("delay_time") or delay_res.get("delayTime") or 0)
+                if is_delayed or raw_d_time > 0:
+                    d_time = raw_d_time if raw_d_time > 0 else 7200
+                    log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
+            except Exception as de:
+                logger.info(f"领红包延时触发提示: {de}")
 
         log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程完成 - 订单状态已置为待下单，已投递抢单成功系统通知")
         logger.info(f"预约/监听任务 #{aid} 抢单成功: {success_msg}")
 
         # 写入订单库
         try:
-            db.create_order({
+            ratio_val = 0.0
+            if is_percent_order:
+                raw_r = float(res.get("user_ratio") or res.get("ratio") or 0)
+                if raw_r > 0:
+                    ratio_val = round(raw_r / 100.0 if raw_r >= 100 else raw_r, 1)
+                else:
+                    m_ratio = re.search(r"(\d+(?:\.\d+)?)\s*%", rebate_desc_str)
+                    if m_ratio:
+                        ratio_val = float(m_ratio.group(1))
+            db.save_order({
                 "account_key": apt["account_key"],
+                "order_sn": str(res.get("order_id_str") or order_id),
+                "promotion_order_id": order_id,
                 "store_id": apt["store_id"],
                 "store_name": apt["store_name"],
                 "store_icon": apt.get("store_icon") or "",
                 "platform": apt.get("platform", "meituan"),
-                "order_money": apt.get("order_money", 0.0),
-                "rebate_money": apt.get("rebate_price", 0.0),
+                "order_money": 0.0 if is_percent_order else float(apt.get("order_money", 0.0)),
+                "rebate_money": float(apt.get("rebate_price", 0.0)),
+                "order_type": 12 if is_percent_order else 1,
+                "rebate_ratio": ratio_val,
                 "status": "pending",
                 "condition": "无需评价",
-                "promotion_order_id": order_id
+                "order_time": int(time.time())
             })
         except Exception as oe:
             logger.warning(f"写入订单记录失败: {oe}")

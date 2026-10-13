@@ -1242,11 +1242,13 @@ export const StoreSniping: React.FC = () => {
         account_key: currentAccountKey,
         store_id: targetPromo.store_id || store.store_id,
         store_name: store.name,
+        store_icon: store.icon || '',
         promotion_id: promoId,
         platform: normalizeStorePlatform(targetPromo.platform ? targetPromo : store),
         order_money: targetPromo.order_money,
         rebate_price: targetPromo.rebate_price,
         rebate_desc: targetPromo.rebate_desc,
+        rebate_type: targetPromo.rebate_type || store.rebate_type,
         advance: advance
       });
 

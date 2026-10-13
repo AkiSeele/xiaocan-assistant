@@ -2682,12 +2682,14 @@ async def grab_store_now(data: Dict[str, Any] = Body(...)):
         "account_key": account_key,
         "store_id": str(data.get("store_id", "")),
         "store_name": data.get("store_name", "店铺活动"),
+        "store_icon": str(data.get("store_icon") or ""),
         "promotion_id": str(promotion_id),
         "platform": data.get("platform", "meituan"),
         "store_platform": int(data.get("store_platform") or (3 if data.get("platform") in ("jingdong", "jd") else (2 if data.get("platform") == "eleme" else 1))),
         "order_money": float(data.get("order_money", 0.0)),
         "rebate_price": float(data.get("rebate_price", 0.0)),
         "rebate_desc": data.get("rebate_desc", ""),
+        "rebate_type": str(data.get("rebate_type") or ""),
         "redpack_mode": int(data.get("redpack_mode", 0)),
         "redpack_id": data.get("redpack_id"),
         "redpack_name": data.get("redpack_name", "")
@@ -3244,16 +3246,33 @@ async def list_orders(
                 except Exception:
                     pass
             
+            order_type_val = int(o.get("order_type") or 0)
+            raw_ratio = float(o.get("ratio") or 0)
+            rebate_ratio = round(raw_ratio / 100.0 if raw_ratio >= 100 else raw_ratio, 1) if raw_ratio > 0 else 0.0
+            is_percent_order = (order_type_val == 12 or rebate_ratio > 0 or bool(o.get("if_mt_fan")))
+
             raw_om = float(o.get("store_platform_order_money", 0))
-            order_money = round(raw_om / 100.0 if raw_om >= 100 else raw_om, 2)
-            if order_money == 0 and o.get("platform_order_total_price"):
-                try:
-                    order_money = round(float(o.get("platform_order_total_price")), 2)
-                except Exception:
-                    pass
+            if is_percent_order:
+                order_money = 0.0
+                if o.get("platform_order_total_price"):
+                    try:
+                        order_money = round(float(o.get("platform_order_total_price")), 2)
+                    except Exception:
+                        pass
+            else:
+                order_money = round(raw_om / 100.0 if raw_om >= 100 else raw_om, 2)
+                if order_money == 0 and o.get("platform_order_total_price"):
+                    try:
+                        order_money = round(float(o.get("platform_order_total_price")), 2)
+                    except Exception:
+                        pass
 
             raw_rebate = float(o.get("user_rebate", 0))
             rebate_money = round(raw_rebate / 100.0 if raw_rebate >= 100 else raw_rebate, 2)
+            if is_percent_order and rebate_money <= 0:
+                raw_max_comm = float(o.get("max_commission") or raw_om or 0)
+                if raw_max_comm > 0:
+                    rebate_money = round(raw_max_comm / 100.0 if raw_max_comm >= 100 else raw_max_comm, 2)
 
             raw_orig = float(o.get("original_user_rebate", 0))
             orig_rebate = round(raw_orig / 100.0 if raw_orig >= 100 else raw_orig, 2)
@@ -3287,11 +3306,14 @@ async def list_orders(
             else:
                 status_str = "completed" if raw_st in (5, 6) else "pending"
 
-            cond_val = promo.get("rebate_condition")
-            cond_raw = promo.get("rebate_condition_str") or ("无需评价" if cond_val == 99 else ("随心好评" if cond_val == 2 else "用餐反馈"))
-            cond_str = cond_raw.replace("（需含字含图）", "").replace("(需含字含图)", "").strip() if cond_raw else "用餐反馈"
-            if not cond_str or cond_str == "图文好评":
-                cond_str = "用餐反馈"
+            if is_percent_order:
+                cond_str = "无需评价"
+            else:
+                cond_val = promo.get("rebate_condition")
+                cond_raw = promo.get("rebate_condition_str") or ("无需评价" if cond_val == 99 else ("随心好评" if cond_val == 2 else "用餐反馈"))
+                cond_str = cond_raw.replace("（需含字含图）", "").replace("(需含字含图)", "").strip() if cond_raw else "用餐反馈"
+                if not cond_str or cond_str == "图文好评":
+                    cond_str = "用餐反馈"
             screens = o.get("platform_evaluation_screenshot") or []
             receipt_img = screens[0] if screens else ""
             ot = o.get("order_time")
@@ -3319,7 +3341,9 @@ async def list_orders(
                 "reject_reason": "",
                 "expire_time": exp_at,
                 "created_at": c_at,
-                "order_time": int(ot or 0)
+                "order_time": int(ot or 0),
+                "order_type": 12 if is_percent_order else order_type_val,
+                "rebate_ratio": rebate_ratio
             })
 
         # 若本次查询为「待上传」(query_st == 0) 或全部，核验本地与官方待处理列表
@@ -3550,6 +3574,9 @@ async def delay_order_voucher(order_id: int):
     if not target_order:
         raise HTTPException(status_code=404, detail="订单记录不存在")
 
+    if int(target_order.get("order_type") or 0) == 12 or float(target_order.get("rebate_ratio") or 0) > 0:
+        raise HTTPException(status_code=400, detail="百分比按比例返现订单不支持「领红包延时2小时」特权")
+
     account_key = target_order.get("account_key")
     acc = db.get_account_by_key(account_key) if account_key else None
     if not acc or not acc.get("token"):
@@ -3579,9 +3606,10 @@ async def delay_order_voucher(order_id: int):
             task_type=task_type
         )
         is_delayed = bool(res.get("if_delay") or res.get("if_delay_success"))
-        delay_time = res.get("delay_time", 7200)
+        raw_delay_time = int(res.get("delay_time") or res.get("delayTime") or 0)
+        delay_time = raw_delay_time if raw_delay_time > 0 else (7200 if is_delayed else 0)
         delay_hours = round(delay_time / 3600.0, 1) if delay_time else 2.0
-        msg = f"官方领红包延时特权已成功激活！凭据上传有效期已顺延 {delay_hours} 小时" if (is_delayed or delay_time > 0) else "已成功向官方提交延时请求"
+        msg = f"官方领红包延时特权已成功激活！凭据上传有效期已顺延 {delay_hours} 小时" if (is_delayed or raw_delay_time > 0) else "已成功向官方提交延时请求"
         return {
             "ok": True,
             "is_delayed": is_delayed,

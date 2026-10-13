@@ -172,6 +172,10 @@ def init_db():
         c.execute("ALTER TABLE orders ADD COLUMN timeout_time INTEGER DEFAULT 0")
     if "original_user_rebate" not in cols:
         c.execute("ALTER TABLE orders ADD COLUMN original_user_rebate REAL DEFAULT 0")
+    if "order_type" not in cols:
+        c.execute("ALTER TABLE orders ADD COLUMN order_type INTEGER DEFAULT 0")
+    if "rebate_ratio" not in cols:
+        c.execute("ALTER TABLE orders ADD COLUMN rebate_ratio REAL DEFAULT 0")
 
     # 自动自愈 orders 中缺失 store_icon 的记录 (从已有历史同名/同 store_id 记录回填)
     try:
@@ -843,8 +847,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         cursor = conn.execute("""
-        INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time)
-        VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time)
+        INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time, order_type, rebate_ratio)
+        VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time, :order_type, :rebate_ratio)
         ON CONFLICT(order_sn) DO UPDATE SET
             promotion_order_id = excluded.promotion_order_id,
             platform_order_id = excluded.platform_order_id,
@@ -861,6 +865,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             order_time = excluded.order_time,
             expire_time = excluded.expire_time,
             condition = excluded.condition,
+            order_type = excluded.order_type,
+            rebate_ratio = excluded.rebate_ratio,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at
         """, {
@@ -884,7 +890,9 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "expire_time": data.get("expire_time", ""),
             "created_at": data.get("created_at", now),
             "updated_at": now,
-            "order_time": int(data.get("order_time") or 0)
+            "order_time": int(data.get("order_time") or 0),
+            "order_type": int(data.get("order_type") or 0),
+            "rebate_ratio": float(data.get("rebate_ratio") or 0)
         })
         conn.commit()
         last_id = cursor.lastrowid

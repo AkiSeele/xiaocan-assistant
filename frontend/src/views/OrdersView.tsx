@@ -339,16 +339,33 @@ export const OrdersView: React.FC = () => {
       width: 170,
       render: (_: any, row?: Order) => {
         const hasRedpack = Boolean(row?.redpack_reward_num && row.redpack_reward_num > 0);
+        const isPercentOrder =
+          row?.order_type === 12 ||
+          Boolean(row?.rebate_ratio && row.rebate_ratio > 0) ||
+          Number(row?.order_money || 0) <= 0;
+        const hasRealOrderMoney = Number(row?.order_money || 0) > 0;
         return (
           <div>
             <div className="text-xs text-semi-color-text-2">
-              门槛实付：<Text strong>¥{row?.order_money}</Text>
+              {isPercentOrder && !hasRealOrderMoney ? (
+                <>
+                  返利模式：<Text strong>{row?.rebate_ratio ? `按实付 ${row.rebate_ratio}% 返` : '按比例返现'}</Text>
+                </>
+              ) : (
+                <>
+                  门槛实付：<Text strong>¥{row?.order_money}</Text>
+                </>
+              )}
             </div>
             <div className="text-sm font-semibold text-semi-color-danger mt-0.5 flex items-center gap-1 flex-wrap">
-              <span>返利：¥{row?.rebate_money}</span>
+              <span>
+                {isPercentOrder && !hasRealOrderMoney && row?.status !== 'completed'
+                  ? `最高返：¥${row?.rebate_money}`
+                  : `返利：¥${row?.rebate_money}`}
+              </span>
               {hasRedpack && (
                 <Tag size="small" color="red">
-                  +{((row!.redpack_reward_num!) / 100).toFixed(2)} 红包
+                  +{((row!.redpack_reward_num!) > 5 ? (row!.redpack_reward_num!) / 100 : (row!.redpack_reward_num!)).toFixed(2)} 红包
                 </Tag>
               )}
             </div>
@@ -362,6 +379,10 @@ export const OrdersView: React.FC = () => {
       width: 270,
       render: (status: string, row?: Order) => {
         const hasExtId = !!row?.platform_order_id;
+        const isPercentOrder =
+          row?.order_type === 12 ||
+          Boolean(row?.rebate_ratio && row.rebate_ratio > 0) ||
+          Number(row?.order_money || 0) <= 0;
         let badgeColor: 'green' | 'amber' | 'blue' | 'red' | 'grey' | 'cyan' = 'grey';
         let statusText = '未知状态';
 
@@ -377,7 +398,7 @@ export const OrdersView: React.FC = () => {
             statusText = '已下单待反馈';
           } else {
             badgeColor = 'blue';
-            statusText = '待提交外卖单号';
+            statusText = isPercentOrder ? '待下单同步单号' : '待提交外卖单号';
           }
         } else if (status === 'rejected') {
           badgeColor = 'red';
@@ -418,7 +439,7 @@ export const OrdersView: React.FC = () => {
                       onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
                     />
                   </div>
-                  {status === 'pending' && (
+                  {status === 'pending' && !isPercentOrder && (
                     <div className="flex items-center gap-1.5 mt-1">
                       <Button
                         theme="light"
@@ -465,17 +486,19 @@ export const OrdersView: React.FC = () => {
                       >
                         回填单号
                       </Button>
-                      <Button
-                        theme="light"
-                        type="warning"
-                        size="small"
-                        loading={delayingOrderId === row?.id}
-                        className="!py-0.5 !px-1.5 text-xs h-5"
-                        onClick={() => row && handleDelayVoucher(row)}
-                        title="激活官方领红包延时2小时特权"
-                      >
-                        延时2h
-                      </Button>
+                      {!isPercentOrder && (
+                        <Button
+                          theme="light"
+                          type="warning"
+                          size="small"
+                          loading={delayingOrderId === row?.id}
+                          className="!py-0.5 !px-1.5 text-xs h-5"
+                          onClick={() => row && handleDelayVoucher(row)}
+                          title="激活官方领红包延时2小时特权"
+                        >
+                          延时2h
+                        </Button>
+                      )}
                     </div>
                   )}
                 </div>

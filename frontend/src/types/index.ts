@@ -178,6 +178,8 @@ export interface Order {
   reject_reason?: string;
   expire_time?: string;
   timeout_time?: number;
+  order_type?: number;
+  rebate_ratio?: number;
   created_at: string;
   updated_at?: string;
 }
