@@ -25,7 +25,7 @@ from ..core.jwt_utils import extract_token_from_text, decode_jwt_payload, extrac
 from ..core.proxy_sniffer import sniffer
 from ..core.wechat_scanner import scan_wechat_credentials, wechat_listener
 from ..core.tianditu import tianditu_client
-from ..protocol.client import XiaoCanClient, is_waf_blocked, get_waf_cooldown_seconds
+from ..protocol.client import XiaoCanClient, is_waf_blocked, get_waf_cooldown_seconds, register_shangjin_poi_dict
 
 router = APIRouter(prefix="/api")
 client = XiaoCanClient()
@@ -1389,6 +1389,7 @@ def _normalize_shangjin_item(poi: Dict[str, Any], user_lat: Optional[float] = No
             dist = 0
 
     wm_poi_id = str(poi.get("wm_poi_id") or "")
+    register_shangjin_poi_dict(poi)
     action_url = poi.get("action_url") or {}
     dp_url = action_url.get("dp_url") or ""
     poi_id_m = re.search(r"poi_id=(\d+)", dp_url)
@@ -1423,6 +1424,7 @@ def _normalize_shangjin_item(poi: Dict[str, Any], user_lat: Optional[float] = No
 
         item = {
             "store_id": str(store_id),
+            "wm_poi_id": wm_poi_id,
             "name": _clean_emoji(name),
             "promotion_id": pid,
             "icon": icon,

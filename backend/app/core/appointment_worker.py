@@ -218,7 +218,10 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
             if_advance_order=advance,
             latitude=lat,
             longitude=lon,
-            redpack_id=redpack_id
+            redpack_id=redpack_id,
+            store_id=str(apt.get("store_id") or ""),
+            store_name=str(apt.get("store_name") or ""),
+            wm_poi_id=str(apt.get("wm_poi_id") or "")
         )
         
         # 严格校验小蚕官方订单编号 (成功时必须返回 promotion_order_id > 0)
@@ -696,7 +699,10 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     token=account["token"],
                     silk_id=account.get("silk_id"),
                     user_id=account.get("user_id"),
-                    city_code=account.get("city_code", 440303)
+                    city_code=account.get("city_code", 440303),
+                    store_name=str(apt.get("store_name") or ""),
+                    latitude=float(account.get("latitude") or 22.54836),
+                    longitude=float(account.get("longitude") or 114.13166)
                 )
                 pdetail = detail.get("promotion_detail") or {}
                 mt_left = pdetail.get("meituan_left_number", 0)

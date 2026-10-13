@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -13,6 +14,47 @@ from .signer import generate_headers
 logger = logging.getLogger("xiaocan.protocol")
 
 GW_BASE_URL = "https://gw.xiaocantech.com/rpc"
+
+# 美团赏金按比例返活动 (source=5) 元数据热缓存: poi_event_id -> {wm_poi_id, meituan_pv_id, store_name}
+_SHANGJIN_EVENT_META: Dict[str, Dict[str, str]] = {}
+
+
+def register_shangjin_event_meta(
+    poi_event_id: Any,
+    wm_poi_id: Any,
+    meituan_pv_id: Any = "",
+    store_name: Any = ""
+) -> None:
+    eid = str(poi_event_id or "").strip()
+    wid = str(wm_poi_id or "").strip()
+    if not eid or not wid:
+        return
+    prev = _SHANGJIN_EVENT_META.get(eid) or {}
+    _SHANGJIN_EVENT_META[eid] = {
+        "wm_poi_id": wid,
+        "meituan_pv_id": str(meituan_pv_id or prev.get("meituan_pv_id") or "").strip(),
+        "store_name": str(store_name or prev.get("store_name") or "").strip(),
+    }
+    if len(_SHANGJIN_EVENT_META) > 5000:
+        # 保持缓存有界
+        first_key = next(iter(_SHANGJIN_EVENT_META))
+        _SHANGJIN_EVENT_META.pop(first_key, None)
+
+
+def register_shangjin_poi_dict(poi: Dict[str, Any], meituan_pv_id: str = "") -> None:
+    if not isinstance(poi, dict):
+        return
+    wid = str(poi.get("wm_poi_id") or "").strip()
+    if not wid:
+        return
+    pvid = str(poi.get("mt_pv_id") or poi.get("meituan_pv_id") or meituan_pv_id or "").strip()
+    sname = str(poi.get("name") or "").strip()
+    top_eid = str(poi.get("poi_event_id") or "").strip()
+    if top_eid:
+        register_shangjin_event_meta(top_eid, wid, pvid, sname)
+    for plan in (poi.get("plan_activity_info_list") or []):
+        if isinstance(plan, dict) and plan.get("poi_event_id"):
+            register_shangjin_event_meta(plan.get("poi_event_id"), wid, pvid, sname)
 
 
 class XiaoCanRPCError(Exception):
@@ -28,12 +70,10 @@ _waf_blocked_until: float = 0.0
 
 
 def is_waf_blocked() -> bool:
-    import time
     return time.time() < _waf_blocked_until
 
 
 def get_waf_cooldown_seconds() -> int:
-    import time
     return max(0, int(_waf_blocked_until - time.time()))
 
 
@@ -205,6 +245,10 @@ class XiaoCanClient:
                 silk_id=silk_id
             )
             if res.get("feed_items"):
+                pv = str(fusion_body.get("page_pv_id") or "")
+                for item in res["feed_items"]:
+                    if isinstance(item, dict) and (item.get("source") == 5 or item.get("wm_poi_id")):
+                        register_shangjin_poi_dict(item, meituan_pv_id=pv)
                 return res
         except Exception as e:
             logger.warning(f"GetFeedPromotions 调用异常，尝试切换至 RecService: {e}")
@@ -373,7 +417,7 @@ class XiaoCanClient:
             "search_word": keyword.strip() if keyword else "",
             "app_id": 10
         }
-        return await self.invoke_rpc(
+        res = await self.invoke_rpc(
             server_name="SilkwormRcs",
             method_name="SilkwormRcsService.MeituanShangjinGetPoiList",
             body=body,
@@ -382,6 +426,11 @@ class XiaoCanClient:
             user_id=user_id,
             silk_id=silk_id
         )
+        if isinstance(res, dict):
+            pvid = str(res.get("meituan_pv_id") or res.get("page_pv_id") or "")
+            for poi in (res.get("poi_list") or []):
+                register_shangjin_poi_dict(poi, meituan_pv_id=pvid)
+        return res
 
     async def get_user_info(
         self,
@@ -1650,17 +1699,91 @@ class XiaoCanClient:
         longitude: float = 0.0,
         redpack_id: Optional[Any] = None,
         vip_extra_silk_card_id: Optional[Any] = None,
-        vip_promotion_card_id: Optional[Any] = None
+        vip_promotion_card_id: Optional[Any] = None,
+        store_id: Optional[str] = None,
+        store_name: Optional[str] = None,
+        wm_poi_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """抢占霸王餐秒杀名额配额 (双模智能路由: 官方直连微服务 Silkworm.SilkwormService.GrabPromotionQuota / 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota)"""
+        """
+        抢占霸王餐秒杀名额配额 (三模智能路由，严格对齐官方 APK 逆向协议):
+        1. source=5 美团赏金按比例返活动 (15+位雪花算法 poi_event_id):
+           -> SilkwormRcs.SilkwormRcsService.MeituanShangjinRegisterEvent
+        2. source=2 聚合三方满返活动 (<=7位 promotion_id):
+           -> SilkwormFusion.FusionService.FusionGrabPromotionQuota (source=2)
+        3. source=1 小蚕标准直连活动 (8~10位 promotion_id):
+           -> Silkworm.SilkwormService.GrabPromotionQuota
+        """
+        raw_pid_str = str(promotion_id or "").strip()
+        clean_pid_str = re.sub(r"_p\d+$", "", raw_pid_str)
         try:
-            pid_int = int(promotion_id)
+            pid_int = int(clean_pid_str)
         except Exception:
             pid_int = 0
 
-        # 对齐移动 App 官方原生协议模型 (com.realtech.data.FusionGrabPromotionQuotaRequest)
-        # 官方微服务定义: source=1 代表 silkworm (直连模式不被Fusion支持)，source=2 代表聚合模式 (支持标准与雪花算法活动)
-        body: Dict[str, Any] = {
+        # 分支一: 15+ 位雪花算法 ID -> 美团赏金按比例返现报名 (SilkwormRcs.SilkwormRcsService.MeituanShangjinRegisterEvent)
+        if pid_int >= 10_000_000_000:
+            meta = _SHANGJIN_EVENT_META.get(clean_pid_str) or {}
+            resolved_wm_poi_id = str(wm_poi_id or meta.get("wm_poi_id") or "").strip()
+            resolved_pv_id = str(meta.get("meituan_pv_id") or "").strip()
+
+            if not resolved_wm_poi_id and store_name:
+                try:
+                    await self.search_shangjin_stores(
+                        keyword=store_name,
+                        latitude=float(latitude or 22.54836),
+                        longitude=float(longitude or 114.13166),
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        city_code=int(city_code or 440303),
+                        sort_type=3
+                    )
+                    meta = _SHANGJIN_EVENT_META.get(clean_pid_str) or {}
+                    resolved_wm_poi_id = str(meta.get("wm_poi_id") or "").strip()
+                    resolved_pv_id = str(meta.get("meituan_pv_id") or resolved_pv_id or "").strip()
+                except Exception as lke:
+                    logger.debug(f"反查美团赏金 wm_poi_id 异常 (将使用 store_id 兜底): {lke}")
+
+            if not resolved_wm_poi_id:
+                resolved_wm_poi_id = str(store_id or clean_pid_str).strip()
+            if not resolved_pv_id:
+                resolved_pv_id = str(uuid.uuid4())
+
+            sj_body: Dict[str, Any] = {
+                "silk_id": int(silk_id) if silk_id else 0,
+                "wm_poi_id": resolved_wm_poi_id,
+                "poi_event_id": clean_pid_str,
+                "meituan_pv_id": resolved_pv_id,
+                "phone": ""
+            }
+            if redpack_id is not None:
+                try:
+                    r_int = int(redpack_id)
+                    if r_int > 0:
+                        sj_body["redpack_id"] = r_int
+                except (ValueError, TypeError):
+                    pass
+            if vip_extra_silk_card_id is not None:
+                try:
+                    v_int = int(vip_extra_silk_card_id)
+                    if v_int > 0:
+                        sj_body["vip_extra_silk_card_id"] = v_int
+                except (ValueError, TypeError):
+                    pass
+
+            return await self.invoke_rpc(
+                server_name="SilkwormRcs",
+                method_name="SilkwormRcsService.MeituanShangjinRegisterEvent",
+                body=sj_body,
+                city_code=city_code,
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                platform="app"
+            )
+
+        # 构造标准/聚合抢单请求报文
+        base_body: Dict[str, Any] = {
             "silk_id": int(silk_id) if silk_id else 0,
             "promotion_id": pid_int,
             "store_platform": int(store_platform or 1),
@@ -1669,43 +1792,54 @@ class XiaoCanClient:
             "advance_order_time": 0,
             "latitude": float(latitude or 0.0),
             "longitude": float(longitude or 0.0),
-            "city_code": int(city_code or 440303),
-            "source": 2
+            "city_code": int(city_code or 440303)
         }
         if redpack_id is not None:
             try:
                 r_int = int(redpack_id)
                 if r_int > 0:
-                    body["redpack_id"] = r_int
+                    base_body["redpack_id"] = r_int
             except (ValueError, TypeError):
                 pass
         if vip_promotion_card_id is not None:
             try:
                 vp_int = int(vip_promotion_card_id)
                 if vp_int > 0:
-                    body["vip_promotion_card_id"] = vp_int
+                    base_body["vip_promotion_card_id"] = vp_int
             except (ValueError, TypeError):
                 pass
         if vip_extra_silk_card_id is not None:
             try:
                 v_int = int(vip_extra_silk_card_id)
                 if v_int > 0:
-                    body["vip_extra_silk_card_id"] = v_int
+                    base_body["vip_extra_silk_card_id"] = v_int
             except (ValueError, TypeError):
                 pass
 
-        # 官方 App 原生唯一主路由: 聚合微服务 SilkwormFusion.FusionService.FusionGrabPromotionQuota
-        # (官方 APK 逆向证实无论 7/8/9 位还是 19 位活动 ID，移动 App 原生均走 FusionGrabPromotionQuota, source=2)
-        primary_server = "SilkwormFusion"
-        primary_method = "FusionService.FusionGrabPromotionQuota"
-        fallback_server = "Silkworm"
-        fallback_method = "SilkwormService.GrabPromotionQuota"
+        # 分支二: <=7 位聚合活动 ID (source=2, DineDash) -> 主路由 SilkwormFusion (source=2)
+        # 分支三: 8~10 位标准活动 ID (source=1, Silkworm) -> 主路由 Silkworm 直连 (零多余往返延迟)
+        is_fusion_primary = (0 < pid_int < 10_000_000)
+
+        if is_fusion_primary:
+            primary_server = "SilkwormFusion"
+            primary_method = "FusionService.FusionGrabPromotionQuota"
+            primary_body = {**base_body, "source": 2}
+            fallback_server = "Silkworm"
+            fallback_method = "SilkwormService.GrabPromotionQuota"
+            fallback_body = dict(base_body)
+        else:
+            primary_server = "Silkworm"
+            primary_method = "SilkwormService.GrabPromotionQuota"
+            primary_body = dict(base_body)
+            fallback_server = "SilkwormFusion"
+            fallback_method = "FusionService.FusionGrabPromotionQuota"
+            fallback_body = {**base_body, "source": 2}
 
         try:
             return await self.invoke_rpc(
                 server_name=primary_server,
                 method_name=primary_method,
-                body=body,
+                body=primary_body,
                 city_code=city_code,
                 token=token,
                 silk_id=silk_id,
@@ -1713,15 +1847,13 @@ class XiaoCanClient:
                 platform="app"
             )
         except XiaoCanRPCError as rpc_err:
-            # 当主路由返回参数/版本/源兼容性响应码时 (如 1、2、3 或 5)，启动自愈备用路由尝试
+            # 仅当主路由返回跨表未命中/兼容性状态码 (1, 2, 3, 5) 时尝试备用通道；
+            # 若主路由已明确返回真实业务拦截 (如 6=该活动名额已抢完, 4=活动未开始, 61=卡券不足)，直接抛出真实提示
             if rpc_err.code in (1, 2, 3, 5):
                 logger.info(
-                    f"官方主路由 {primary_server}.{primary_method} 返回代码 {rpc_err.code} ({rpc_err.msg})，启动自愈备用通道 {fallback_server}.{fallback_method}..."
+                    f"官方主路由 {primary_server}.{primary_method} 返回代码 {rpc_err.code} ({rpc_err.msg})，尝试备用通道 {fallback_server}.{fallback_method}..."
                 )
                 try:
-                    # 备用直连通道 Silkworm.SilkwormService.GrabPromotionQuota 不需要 source 字段
-                    fallback_body = dict(body)
-                    fallback_body.pop("source", None)
                     return await self.invoke_rpc(
                         server_name=fallback_server,
                         method_name=fallback_method,
@@ -1732,8 +1864,12 @@ class XiaoCanClient:
                         user_id=user_id,
                         platform="app"
                     )
+                except XiaoCanRPCError as fb_err:
+                    # 若备用通道返回明确的业务状态 (如 code=6 该活动名额已抢完)，优先向用户反馈真实业务错误，杜绝被跨表假“活动已过期(3)”掩盖
+                    if fb_err.code not in (1, 2, 3, 5):
+                        raise fb_err
+                    raise rpc_err
                 except Exception:
-                    # 若自愈路由依然失败，抛出最初的原生异常
                     raise rpc_err
             raise rpc_err
 
@@ -1787,14 +1923,88 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 440303,
+        store_name: Optional[str] = None,
+        latitude: float = 0.0,
+        longitude: float = 0.0
     ) -> Dict[str, Any]:
-        """查询店铺霸王餐活动实时库存与详情 (SilkwormService.GetStorePromotionDetail)"""
+        """
+        查询店铺霸王餐活动实时库存与详情 (三模智能路由):
+        1. 15+位美团赏金 poi_event_id -> SilkwormRcsService.MeituanShangjinGetPoiList 精准匹配实时 inventory
+        2. <=7位聚合活动 ID (source=2) -> SilkwormFusion.FusionService.GetFusionPromotionDetail (防止命中 Silkworm 2023 年旧表重号记录)
+        3. 8~10位标准活动 ID (source=1) -> Silkworm.SilkwormService.GetStorePromotionDetail
+        """
+        raw_pid_str = str(promotion_id or "").strip()
+        clean_pid_str = re.sub(r"_p\d+$", "", raw_pid_str)
         try:
-            pid_int = int(promotion_id)
+            pid_int = int(clean_pid_str)
         except Exception:
             pid_int = 0
 
+        # 1. 美团赏金按比例返活动 (15+位雪花算法 poi_event_id)
+        if pid_int >= 10_000_000_000:
+            meta = _SHANGJIN_EVENT_META.get(clean_pid_str) or {}
+            kw = (store_name or meta.get("store_name") or "").strip()
+            inv = 0
+            if kw:
+                try:
+                    sj_res = await self.search_shangjin_stores(
+                        keyword=kw,
+                        latitude=float(latitude or 22.54836),
+                        longitude=float(longitude or 114.13166),
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        city_code=int(city_code or 440303),
+                        sort_type=3
+                    )
+                    for poi in (sj_res.get("poi_list") or []):
+                        if str(poi.get("poi_event_id") or "") == clean_pid_str:
+                            inv = int(poi.get("inventory") or 0)
+                        for plan in (poi.get("plan_activity_info_list") or []):
+                            if str(plan.get("poi_event_id") or "") == clean_pid_str:
+                                inv = int(plan.get("inventory") or 0)
+                                break
+                except Exception as e:
+                    logger.debug(f"轮询美团赏金活动库存异常: {e}")
+            return {
+                "status": {"code": 0},
+                "promotion_detail": {
+                    "promotion_id": pid_int,
+                    "meituan_left_number": inv,
+                    "eleme_left_number": 0,
+                    "left_number": inv,
+                    "source": 5
+                }
+            }
+
+        # 2. 聚合三方满返活动 (<=7位 ID, source=2)
+        if 0 < pid_int < 10_000_000:
+            fusion_res = await self.invoke_rpc(
+                server_name="SilkwormFusion",
+                method_name="FusionService.GetFusionPromotionDetail",
+                body={
+                    "silk_id": int(silk_id) if silk_id else 0,
+                    "promotion_id": pid_int,
+                    "source": 2
+                },
+                city_code=city_code,
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                platform="app"
+            )
+            pdet = fusion_res.get("promotion_detail")
+            if isinstance(pdet, dict):
+                left_val = int(pdet.get("left_number") or 0)
+                plat_val = int(pdet.get("store_platform") or (pdet.get("store") or {}).get("store_platform") or 1)
+                if "meituan_left_number" not in pdet:
+                    pdet["meituan_left_number"] = left_val if plat_val == 1 else 0
+                if "eleme_left_number" not in pdet:
+                    pdet["eleme_left_number"] = left_val if plat_val == 2 else 0
+            return fusion_res
+
+        # 3. 标准直连霸王餐活动 (8~10位 ID, source=1)
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "promotion_id": pid_int
