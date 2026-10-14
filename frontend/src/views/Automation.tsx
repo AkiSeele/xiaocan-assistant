@@ -18,6 +18,7 @@ import {
   Tabs,
   TabPane,
   Checkbox,
+  Select,
 } from '@douyinfe/semi-ui';
 import {
   IconPlay,
@@ -207,14 +208,19 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
               marginBottom: 8,
             }}
           >
-            {task.tip}
+            {task.tip ? task.tip.replace(/[（(][^）)]*[）)]/g, '').trim() : ''}
           </Paragraph>
 
           {/* 触发时段与参数标记 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             {task.fixed_time ? (
-              <Tooltip content={task.time_label || '固定场次'}>
-                <Tag color="violet" size="small">
+              <Tooltip content={task.task_id === 'dual_rebate_monitor' ? '点击配置固定时间段与巡检参数' : (task.time_label || '固定场次')}>
+                <Tag
+                  color="violet"
+                  size="small"
+                  className={task.task_id === 'dual_rebate_monitor' ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}
+                  onClick={task.task_id === 'dual_rebate_monitor' ? () => onOpenConfig(task) : undefined}
+                >
                   <IconClock style={{ marginRight: 4 }} />
                   {(task.time_label || '固定场次').replace(/[（(][^）)]*[）)]/g, '').trim()}
                 </Tag>
@@ -528,10 +534,37 @@ export const Automation: React.FC = () => {
   // 打开参数配置抽屉
   const handleOpenConfig = (task: TaskItem) => {
     setSelectedTask(task);
-    setDrawerParams(task.params ? { ...task.params } : {});
+    const initialParams = task.params ? { ...task.params } : {};
+    if (task.task_id === 'dual_rebate_monitor') {
+      const im = Number(initialParams.interval_minutes);
+      if (![30, 60, 120].includes(im)) {
+        initialParams.interval_minutes = 60;
+      }
+    }
+    setDrawerParams(initialParams);
     setDrawerCronTime(task.cron_time || '09:00');
     setDrawerApplyAllAccounts(false);
     setDrawerVisible(true);
+  };
+
+  // 下拉选择参数变更处理（针对美团同店双返利 30 分钟高频风控二次确认）
+  const handleSelectParamChange = (key: string, newVal: any, _currentVal: any) => {
+    if (selectedTask?.task_id === 'dual_rebate_monitor' && key === 'interval_minutes' && Number(newVal) === 30) {
+      Modal.confirm({
+        title: '高频巡检风控预警',
+        content: '30分钟巡检频率较高，高频扫描商圈商户可能增加平台风控风险，如验证码拦截、临时限流或封禁。建议日常使用推荐的 1小时 或 2小时 固定时段巡检。确定要切换为 30分钟 巡检吗？',
+        okText: '确认切换为30分钟',
+        cancelText: '保持原有时段',
+        icon: <IconAlertCircle style={{ color: 'var(--semi-color-warning)' }} />,
+        okButtonProps: { type: 'warning' },
+        onOk: () => {
+          setDrawerParams((prev) => ({ ...prev, [key]: Number(newVal) }));
+        },
+      });
+      return;
+    }
+    const finalVal = typeof newVal === 'string' && !isNaN(Number(newVal)) ? Number(newVal) : newVal;
+    setDrawerParams((prev) => ({ ...prev, [key]: finalVal }));
   };
 
   // 保存抽屉参数
@@ -1028,7 +1061,7 @@ export const Automation: React.FC = () => {
                 {selectedTask.label}
               </Text>
               <Text type="secondary" size="small" style={{ lineHeight: '20px' }}>
-                {selectedTask.tip}
+                {selectedTask.tip ? selectedTask.tip.replace(/[（(][^）)]*[）)]/g, '').trim() : ''}
               </Text>
             </div>
 
@@ -1052,7 +1085,9 @@ export const Automation: React.FC = () => {
                   bordered
                   description={
                     <span style={{ fontSize: 12 }}>
-                      固定时段: {selectedTask.time_label || '系统自动轮询'}，到点自动触发，无需设置。
+                      {selectedTask.task_id === 'dual_rebate_monitor'
+                        ? `固定时段: ${selectedTask.time_label || '固定时段巡检'}，可在下方「高级参数」中修改固定时间段。`
+                        : `固定时段: ${selectedTask.time_label || '系统自动轮询'}，到点自动触发，无需设置。`}
                     </span>
                   }
                 />
@@ -1094,6 +1129,46 @@ export const Automation: React.FC = () => {
                 {selectedTask.param_defs.map((pd) => {
                   const val = drawerParams[pd.key] ?? pd.def;
 
+                  if (pd.type === 'select') {
+                    let selectVal = val;
+                    if (pd.key === 'interval_minutes' && selectedTask.task_id === 'dual_rebate_monitor') {
+                      const numVal = Number(val);
+                      selectVal = [30, 60, 120].includes(numVal) ? numVal : 60;
+                    }
+
+                    return (
+                      <div
+                        key={pd.key}
+                        style={{
+                          backgroundColor: 'var(--semi-color-fill-0)',
+                          padding: '12px 14px',
+                          borderRadius: 'var(--semi-border-radius-medium)',
+                          border: '1px solid var(--semi-color-border)',
+                        }}
+                      >
+                        <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
+                          {pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}
+                        </Text>
+                        <Select
+                          value={selectVal}
+                          onChange={(newVal) => handleSelectParamChange(pd.key, newVal, selectVal)}
+                          style={{ width: '100%' }}
+                        >
+                          {(pd.options || []).map((opt) => (
+                            <Select.Option key={String(opt.value)} value={opt.value}>
+                              {opt.label}
+                            </Select.Option>
+                          ))}
+                        </Select>
+                        {pd.hint && (
+                          <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 4 }}>
+                            {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
+                          </Text>
+                        )}
+                      </div>
+                    );
+                  }
+
                   if (pd.type === 'check' || pd.type === 'boolean') {
                     return (
                       <div
@@ -1110,11 +1185,11 @@ export const Automation: React.FC = () => {
                       >
                         <div>
                           <Text strong style={{ fontSize: 13, display: 'block' }}>
-                            {pd.label}
+                            {pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}
                           </Text>
                           {pd.hint && (
                             <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 2 }}>
-                              {pd.hint}
+                              {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
                             </Text>
                           )}
                         </div>
@@ -1140,7 +1215,7 @@ export const Automation: React.FC = () => {
                         }}
                       >
                         <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
-                          {pd.label}
+                          {pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}
                         </Text>
                         <InputNumber
                           value={Number(val)}
@@ -1152,7 +1227,7 @@ export const Automation: React.FC = () => {
                         />
                         {pd.hint && (
                           <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 4 }}>
-                            {pd.hint}
+                            {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
                           </Text>
                         )}
                       </div>
@@ -1170,16 +1245,16 @@ export const Automation: React.FC = () => {
                       }}
                     >
                       <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
-                        {pd.label}
+                        {pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}
                       </Text>
                       <Input
                         value={String(val ?? '')}
                         onChange={(v) => setDrawerParams((prev) => ({ ...prev, [pd.key]: v }))}
-                        placeholder={pd.hint || `请输入 ${pd.label}`}
+                        placeholder={pd.hint ? pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim() : `请输入 ${pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}`}
                       />
                       {pd.hint && (
                         <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 4 }}>
-                          {pd.hint}
+                          {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
                         </Text>
                       )}
                     </div>

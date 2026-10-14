@@ -57,15 +57,21 @@ export interface AccountNotifyResponse {
   message?: string;
 }
 
+export interface TaskParamOption {
+  label: string;
+  value: any;
+}
+
 export interface TaskParamField {
   key: string;
   label: string;
   def: any;
-  type: 'number' | 'check' | 'string' | string;
+  type: 'number' | 'check' | 'string' | 'select' | string;
   step?: string;
   min?: number;
   max?: number;
   hint?: string;
+  options?: TaskParamOption[];
 }
 
 export interface TaskItem {

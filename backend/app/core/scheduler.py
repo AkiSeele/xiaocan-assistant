@@ -37,7 +37,7 @@ TASK_DEFAULT_TIME = {
     "vip_expand": "08:30",      # 会员成长膨胀礼包
     "expire_remind": "08:00",   # 登录凭据到期巡检
     "coupon_remind": "08:30",   # 卡券到期提醒
-    "dual_rebate_monitor": "*/10 9-22 * * *", # 美团同店双返利智能监控 (每10分钟准点对齐00/30分)
+    "dual_rebate_monitor": "0 9-23 * * *", # 美团同店双返利智能监控 (默认1小时固定时段巡检)
 }
 
 
@@ -1187,33 +1187,48 @@ def reload_schedules():
 
             task_id = cfg["task_id"]
             if task_id == "dual_rebate_monitor":
-                # 美团同店双返利智能监控调度引擎：严格保证 00 分与 30 分准点开火！
+                # 美团同店双返利智能监控调度引擎：按固定时段巡检 (默认 1 小时，可选 30 分钟、2 小时)
                 task_params = cfg.get("params") or {}
                 try:
-                    interval = int(task_params.get("interval_minutes", 10))
+                    interval = int(task_params.get("interval_minutes", 60))
                 except Exception:
-                    interval = 10
+                    interval = 60
+
+                # 防风控安全兜底：必须是 30, 60, 120 之一，其余旧值一律重置为 60 分钟 (1小时)
+                if interval not in (30, 60, 120):
+                    interval = 60
+
                 active_only = bool(task_params.get("active_hours_only", True))
 
                 if interval == 30:
                     minute_expr = "0,30"
-                elif interval == 15:
-                    minute_expr = "0,15,30,45"
-                elif interval == 5:
-                    minute_expr = "*/5"
-                else:  # 默认 10 分钟：对齐 00/30 分并在 10/20 分补充捡漏
-                    minute_expr = "0,10,20,30,40,50"
-
-                if active_only:
-                    # 营业时段 09:00 ~ 23:00 (含 09:00:00 启动与 23:00:00 收官，夜间 23:01~08:59 休眠静默)
-                    trigger = OrTrigger([
-                        CronTrigger(hour="9-22", minute=minute_expr),
-                        CronTrigger(hour=23, minute=0)
-                    ])
-                    hours_desc = "09:00~23:00"
-                else:
-                    trigger = CronTrigger(hour="*", minute=minute_expr)
-                    hours_desc = "全天24小时"
+                    if active_only:
+                        trigger = OrTrigger([
+                            CronTrigger(hour="9-22", minute=minute_expr),
+                            CronTrigger(hour=23, minute=0)
+                        ])
+                        hours_desc = "09:00~23:00 每30分钟"
+                    else:
+                        trigger = CronTrigger(hour="*", minute=minute_expr)
+                        hours_desc = "全天24小时 每30分钟"
+                elif interval == 120:
+                    minute_expr = 0
+                    if active_only:
+                        # 营业时段 09:00 ~ 23:00 之间每 2 小时整点执行 (09:00, 11:00, 13:00, 15:00, 17:00, 19:00, 21:00, 23:00)
+                        trigger = CronTrigger(hour="9-23/2", minute=minute_expr)
+                        hours_desc = "09:00~23:00 每2小时整点"
+                    else:
+                        trigger = CronTrigger(hour="*/2", minute=minute_expr)
+                        hours_desc = "全天24小时 每2小时整点"
+                else:  # interval == 60 (默认 1 小时)
+                    minute_expr = 0
+                    if active_only:
+                        # 营业时段 09:00 ~ 23:00 之间每小时整点执行 (09:00, 10:00, 11:00, ..., 23:00)
+                        trigger = CronTrigger(hour="9-23", minute=minute_expr)
+                        hours_desc = "09:00~23:00 每小时整点"
+                    else:
+                        trigger = CronTrigger(hour="*", minute=minute_expr)
+                        hours_desc = "全天24小时 每小时整点"
 
                 scheduler.add_job(
                     execute_task_job,
@@ -1226,7 +1241,7 @@ def reload_schedules():
                     misfire_grace_time=60,
                     replace_existing=True
                 )
-                logger.info(f"已装载美团同店双返利监控: {acc.get('nickname')} - 周期={interval}分钟 (对齐00/30分, 时段={hours_desc})")
+                logger.info(f"已装载美团同店双返利监控: {acc.get('nickname')} - 固定时段={interval}分钟 (时段={hours_desc})")
                 continue
 
             fixed_trig = create_fixed_trigger(task_id)

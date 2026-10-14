@@ -53,21 +53,32 @@ TASK_META = {
     "dual_rebate_monitor": {
         "id": "dual_rebate_monitor",
         "label": "美团同店双返利监控",
-        "tip": "准点扫描美团同店双返利商户，对齐每半小时放量开抢整点(:00/:30)，支持下架二次核验防抖",
+        "tip": "准点扫描美团同店双返利商户，支持下架二次核验防抖",
         "category": "custom",
-        "default_time": "*/10 9-22 * * *",
+        "default_time": "0 9-23 * * *",
         "fixed_time": True,
-        "time_label": "30分钟整点准时巡检"
+        "time_label": "1小时固定时段"
     },
 }
 
 TASK_PARAM_DEFS = {
     "dual_rebate_monitor": [
-        {"key": "interval_minutes", "label": "巡检周期间隔（分钟）", "def": 10, "type": "number", "step": "5", "min": 5, "max": 30, "hint": "巡检间隔周期：默认 10 分钟（整点00/30分必测，并在10/20分补充捡漏），可选 15、30 或 5 分钟，均保证00/30分准点开火"},
-        {"key": "active_hours_only", "label": "仅在营业时段巡检 (09:00~23:00)", "def": True, "type": "check", "hint": "开启后仅在营业时段运行 (09:00~23:00)，夜间 23:00~09:00 自动休眠静默，防风控与打扰"},
-        {"key": "confirm_removal", "label": "下架二次核验保护", "def": True, "type": "check", "hint": "商户缺失时必须连续 2 轮巡检均未搜出才确认为已下架，杜绝接口偶发异常导致的误报"},
-        {"key": "max_stores", "label": "扫描商户范围上限（家）", "def": 300, "type": "number", "step": "50", "min": 100, "max": 800, "hint": "按距离由近及远流式扫描的美团商户数上限（建议 200~500 家）"},
-        {"key": "keyword", "label": "关键词优先过滤（可选）", "def": "", "type": "string", "hint": "指定优先扫描的品类或品牌关键词，留空则扫描全商圈"},
+        {
+            "key": "interval_minutes",
+            "label": "固定时间段",
+            "def": 60,
+            "type": "select",
+            "options": [
+                {"label": "1小时", "value": 60},
+                {"label": "30分钟", "value": 30},
+                {"label": "2小时", "value": 120}
+            ],
+            "hint": "固定巡检时段：默认1小时，可选30分钟或2小时。频率过高易触发平台风控"
+        },
+        {"key": "active_hours_only", "label": "仅在营业时段巡检", "def": True, "type": "check", "hint": "开启后仅在营业时段运行，夜间自动休眠静默，防风控与打扰"},
+        {"key": "confirm_removal", "label": "下架二次核验保护", "def": True, "type": "check", "hint": "商户缺失时连续2轮巡检均未检出才确认为已下架，杜绝接口偶发异常导致的误报"},
+        {"key": "max_stores", "label": "扫描商户范围上限", "def": 300, "type": "number", "step": "50", "min": 100, "max": 800, "hint": "按距离由近及远流式扫描的美团商户数上限，建议200至500家"},
+        {"key": "keyword", "label": "关键词优先过滤", "def": "", "type": "string", "hint": "指定优先扫描的品类或品牌关键词，留空则扫描全商圈"},
         {"key": "notify_on_initial", "label": "首轮全量基准推送", "def": True, "type": "check", "hint": "任务开启或跨天重置后的第一轮扫描，是否推送完整基准商户清单"}
     ],
     "redpack_rain": [
@@ -823,7 +834,15 @@ async def get_tasks(account_key: str = Query(...)):
             "enabled": bool(cfg.get("enabled", 0)),
             "cron_time": cfg.get("cron_time") or meta["default_time"],
             "fixed_time": meta.get("fixed_time", False),
-            "time_label": meta.get("time_label", ""),
+            "time_label": (
+                (
+                    "30分钟固定时段" if int(merged_params.get("interval_minutes", 60) or 60) == 30
+                    else "2小时固定时段" if int(merged_params.get("interval_minutes", 60) or 60) == 120
+                    else "1小时固定时段"
+                )
+                if tid == "dual_rebate_monitor"
+                else meta.get("time_label", "")
+            ),
             "next_run_time": next_run_time,
             "params": merged_params,
             "param_defs": param_defs
@@ -841,13 +860,22 @@ async def toggle_task(data: Dict[str, Any] = Body(...)):
     cron_time = data.get("cron_time")
     params = data.get("params")
 
-    if task_id == "dual_rebate_monitor" and enabled:
-        from ..core.notifier import is_any_notify_channel_enabled
-        if not is_any_notify_channel_enabled():
-            raise HTTPException(
-                status_code=400,
-                detail="开启【美团同店双返利监控】任务前，必须先在【系统设置】中配置并启用至少一种通知渠道！"
-            )
+    if task_id == "dual_rebate_monitor":
+        if isinstance(params, dict) and "interval_minutes" in params:
+            try:
+                im = int(params["interval_minutes"])
+                if im not in (30, 60, 120):
+                    params["interval_minutes"] = 60
+            except Exception:
+                params["interval_minutes"] = 60
+
+        if enabled:
+            from ..core.notifier import is_any_notify_channel_enabled
+            if not is_any_notify_channel_enabled():
+                raise HTTPException(
+                    status_code=400,
+                    detail="开启【美团同店双返利监控】任务前，必须先在【系统设置】中配置并启用至少一种通知渠道！"
+                )
 
     db.save_task_config(account_key, task_id, enabled, cron_time, params)
     scheduler.reload_schedules()
