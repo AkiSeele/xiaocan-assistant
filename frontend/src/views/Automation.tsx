@@ -1170,9 +1170,14 @@ export const Automation: React.FC = () => {
                   }
 
                   if (pd.type === 'check' || pd.type === 'boolean') {
+                    const isChecked = Boolean(val);
                     return (
                       <div
                         key={pd.key}
+                        onClick={() =>
+                          setDrawerParams((prev) => ({ ...prev, [pd.key]: !isChecked }))
+                        }
+                        className="group transition-all hover:bg-semi-color-fill-1 hover:border-semi-color-primary-light-active"
                         style={{
                           backgroundColor: 'var(--semi-color-fill-0)',
                           padding: '12px 14px',
@@ -1181,24 +1186,49 @@ export const Automation: React.FC = () => {
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
+                          gap: 16,
+                          cursor: 'pointer',
+                          userSelect: 'none',
                         }}
                       >
-                        <div>
-                          <Text strong style={{ fontSize: 13, display: 'block' }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Text
+                            strong
+                            style={{
+                              fontSize: 13,
+                              display: 'block',
+                              lineHeight: '20px',
+                              color: 'var(--semi-color-text-0)',
+                            }}
+                          >
                             {pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}
                           </Text>
                           {pd.hint && (
-                            <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 2 }}>
+                            <Text
+                              type="tertiary"
+                              size="small"
+                              style={{
+                                display: 'block',
+                                marginTop: 4,
+                                lineHeight: '18px',
+                                wordBreak: 'break-word',
+                              }}
+                            >
                               {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
                             </Text>
                           )}
                         </div>
-                        <Switch
-                          checked={Boolean(val)}
-                          onChange={(checked) =>
-                            setDrawerParams((prev) => ({ ...prev, [pd.key]: checked }))
-                          }
-                        />
+                        <div
+                          style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Switch
+                            checked={isChecked}
+                            onChange={(checked) =>
+                              setDrawerParams((prev) => ({ ...prev, [pd.key]: checked }))
+                            }
+                          />
+                        </div>
                       </div>
                     );
                   }
