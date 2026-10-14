@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 SQLite 数据库初始化与轻量 ORM 封装
 单文件零运维，自动建表
@@ -299,6 +300,18 @@ def init_db():
     except Exception:
         pass
 
+    # 自动自愈：系统启动时，将历史异常退出或重启遗留的处于 running 状态的孤儿任务置为 aborted
+    try:
+        now_time = time.strftime('%H:%M:%S')
+        running_logs = c.execute("SELECT id, output FROM job_logs WHERE status = 'running'").fetchall()
+        for r in running_logs:
+            lid = r[0]
+            out = r[1] or ""
+            tail_msg = f"\n[{now_time}] 服务重启自愈: 系统服务已重启，历史执行中任务已自动置为中断终止。"
+            c.execute("UPDATE job_logs SET status = 'aborted', output = ? WHERE id = ?", (out.rstrip() + tail_msg, lid))
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -330,7 +343,7 @@ def find_account(
     user_id: Optional[str] = None,
     token: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
-    """根据 key、user_id、silk_id 或 token 查找已存在的小蚕账号，避免重复入库"""
+    # 根据 key, user_id, silk_id 或 token 查找已存在的小蚕账号，避免重复入库
     with get_conn() as conn:
         if key and str(key).strip():
             row = conn.execute("SELECT * FROM accounts WHERE key = ?", (str(key).strip(),)).fetchone()
@@ -641,7 +654,31 @@ def update_job_log(log_id: int, status: Optional[str] = None, output: Optional[s
         return True
 
 
+def auto_clean_stale_running_jobs():
+    """运行时自愈：对于 running 状态超过 10 分钟未更新的任务判定为超时僵尸任务，自动置为 aborted"""
+    try:
+        with get_conn() as conn:
+            cur_ts = int(time.time())
+            stale_threshold = 600  # 10 分钟
+            rows = conn.execute("SELECT id, created_at, output FROM job_logs WHERE status = 'running'").fetchall()
+            for r in rows:
+                c_at = r["created_at"]
+                try:
+                    c_ts = int(time.mktime(time.strptime(c_at, "%Y-%m-%d %H:%M:%S")))
+                    if cur_ts - c_ts > stale_threshold:
+                        old_out = r["output"] or ""
+                        now_str = time.strftime('%H:%M:%S')
+                        new_out = old_out.rstrip() + f"\n[{now_str}] 执行超时自愈: 任务运行已超过 10 分钟未响应，已被系统自动置为中断终止。"
+                        conn.execute("UPDATE job_logs SET status = 'aborted', output = ? WHERE id = ?", (new_out, r["id"]))
+                except Exception:
+                    pass
+            conn.commit()
+    except Exception:
+        pass
+
+
 def get_job_logs(account_key: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    auto_clean_stale_running_jobs()
     with get_conn() as conn:
         if account_key:
             rows = conn.execute("SELECT * FROM job_logs WHERE account_key = ? ORDER BY id DESC LIMIT ?", (account_key, limit)).fetchall()

@@ -1629,6 +1629,10 @@ export const Dashboard: React.FC = () => {
                                 <Tag color="green" prefixIcon={<IconCheckCircleStroked />} size="small">
                                   成功
                                 </Tag>
+                              ) : log.status === 'aborted' ? (
+                                <Tag color="amber" prefixIcon={<IconAlertCircle />} size="small">
+                                  已中断
+                                </Tag>
                               ) : (
                                 <Tag color="red" prefixIcon={<IconAlertCircle />} size="small">
                                   异常

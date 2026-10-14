@@ -263,7 +263,7 @@ export interface JobLog {
   job_id: string;
   account_key: string;
   task_id: string;
-  status: 'success' | 'error' | 'running';
+  status: 'success' | 'error' | 'running' | 'aborted';
   output: string;
   created_at: string;
 }

@@ -107,6 +107,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
 
   const isRunning = status === 'running';
   const isSuccess = status === 'success';
+  const isAborted = status === 'aborted';
 
   return (
     <Modal
@@ -168,11 +169,11 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
               key: '状态',
               value: (
                 <Tag
-                  color={isRunning ? 'blue' : isSuccess ? 'green' : 'red'}
+                  color={isRunning ? 'blue' : isSuccess ? 'green' : isAborted ? 'amber' : 'red'}
                   size="small"
                   prefixIcon={isRunning ? <IconSpin spin /> : undefined}
                 >
-                  {isRunning ? '正在执行中' : isSuccess ? '执行成功' : '执行异常'}
+                  {isRunning ? '正在执行中' : isSuccess ? '执行成功' : isAborted ? '已中断终止' : '执行异常'}
                 </Tag>
               )
             }
@@ -191,11 +192,13 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
                 const lineIsStep = line.includes('步骤') || line.includes('场次') || line.includes('阶段');
                 const lineIsSuccess = line.includes('成功') || line.includes('达成');
                 const lineIsError = line.includes('失败') || line.includes('异常') || line.includes('未成功') || line.includes('代码:');
+                const lineIsAborted = line.includes('中断') || line.includes('重启') || line.includes('终止');
                 const lineIsRunning = line.includes('正在') || line.includes('检测') || line.includes('预热') || line.includes('持续') || line.includes('嗅探');
 
                 let color = '#d4d4d4';
                 if (lineIsStep) color = '#79b8ff';
                 else if (lineIsSuccess) color = '#7ee787';
+                else if (lineIsAborted) color = '#e3b341';
                 else if (lineIsError) color = '#ff7b72';
                 else if (lineIsRunning) color = '#f9d770';
 

@@ -344,6 +344,18 @@ export const LogsView: React.FC = () => {
             </Tag>
           );
         }
+        if (st === 'aborted') {
+          return (
+            <Tag
+              color="amber"
+              size="small"
+              shape="circle"
+              prefixIcon={<IconAlertCircle />}
+            >
+              已中断
+            </Tag>
+          );
+        }
         return (
           <Tag
             color={st === 'success' ? 'green' : 'red'}
@@ -368,6 +380,8 @@ export const LogsView: React.FC = () => {
         if (record.status === 'running') {
           // 执行中时优先展示最后一行（即当前正在进行的检测、轮询或预热状态）
           keyLine = rawLines[rawLines.length - 1] || '任务正在自适应调度执行中...';
+        } else if (record.status === 'aborted') {
+          keyLine = rawLines.find(l => l.includes('中断') || l.includes('重启') || l.includes('自愈') || l.includes('超时')) || rawLines[rawLines.length - 1] || '系统服务重启，任务已自动中断';
         } else if (record.status === 'error') {
           // 优先抓取官方响应失败、异常或未成功原因
           keyLine = rawLines.find(l => l.includes('异常') || l.includes('返回失败') || l.includes('未成功') || l.includes('错误码')) || '';
@@ -390,12 +404,12 @@ export const LogsView: React.FC = () => {
             className="group cursor-pointer bg-semi-color-fill-0 hover:bg-semi-color-fill-1 border border-semi-color-border/70 hover:border-semi-color-primary-light-active px-2.5 py-1.5 rounded-lg flex items-center justify-between transition-all"
           >
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              <Tag color={record.status === 'error' ? 'red' : 'cyan'} size="small" shape="square" className="shrink-0 scale-90">
+              <Tag color={record.status === 'error' ? 'red' : record.status === 'aborted' ? 'amber' : 'cyan'} size="small" shape="square" className="shrink-0 scale-90">
                 {stepCount > 1 ? `${stepCount}步` : '结果'}
               </Tag>
               <Text
                 ellipsis={{ showTooltip: true }}
-                className={`font-mono text-xs flex-1 min-w-0 ${record.status === 'error' ? 'text-red-500 font-medium' : 'text-semi-color-text-1 group-hover:text-semi-color-text-0'}`}
+                className={`font-mono text-xs flex-1 min-w-0 ${record.status === 'error' ? 'text-red-500 font-medium' : record.status === 'aborted' ? 'text-amber-500 font-medium' : 'text-semi-color-text-1 group-hover:text-semi-color-text-0'}`}
               >
                 {keyLine}
               </Text>
