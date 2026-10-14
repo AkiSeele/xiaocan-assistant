@@ -3,26 +3,22 @@ import { useAppStore } from '../store/useAppStore';
 
 interface UseOnActivatedOptions {
   /**
-   * 触发节流时间（毫秒），默认 3000ms。在此时间内重复切入同一个 Tab 不会重复触发回调
+   * 触发节流时间（毫秒），默认 300ms。在此时间内重复切入或重复点击不会重复触发回调
    */
   throttleMs?: number;
   /**
    * 是否在组件首次挂载时也触发一次回调。默认为 false（首次挂载通常由组件自身的 initial useEffect 负责）
    */
   initial?: boolean;
-  /**
-   * 组件初次挂载后的保护静默期（毫秒），默认 2500ms。在此时间内切入不重复发包，防止与组件初始化请求冲突
-   */
-  skipInitialMs?: number;
 }
 
 /**
- * 页面激活监听 Hook (适配 Keep-Alive 页面保活架构)
- * 当指定的 targetTab 从未激活状态变为激活状态时自动执行刷新回调
+ * 页面激活监听 Hook (适配 Keep-Alive 页面保活架构与顶级导航重登)
+ * 当用户切入指定的 targetTab，或在当前 tab 重复点击顶级导航/Logo 时自动执行刷新回调
  *
  * @param targetTab 目标标签页标识 (如 'dashboard', 'logs', 'orders', 'automation', 'store', 'accounts')
  * @param callback 激活时要执行的刷新操作
- * @param options 配置项 (throttleMs, initial, skipInitialMs)
+ * @param options 配置项 (throttleMs, initial)
  */
 export function useOnActivated(
   targetTab: string,
@@ -30,27 +26,29 @@ export function useOnActivated(
   options?: UseOnActivatedOptions
 ) {
   const activeTab = useAppStore((state) => state.activeTab);
+  const tabActivationTick = useAppStore((state) => state.tabActivationTick);
   const lastActiveTabRef = useRef<string>(activeTab);
-  const mountedAtRef = useRef<number>(Date.now());
-  const lastTriggerTimeRef = useRef<number>(options?.initial ? 0 : Date.now());
+  const lastTickRef = useRef<number>(tabActivationTick);
+  const lastTriggerTimeRef = useRef<number>(0);
   const callbackRef = useRef(callback);
   callbackRef.current = callback;
 
-  const throttleMs = options?.throttleMs ?? 3000;
-  const skipInitialMs = options?.skipInitialMs ?? 2500;
+  // 默认节流 300ms，防止用户极快双击抖动，同时保证每次正规切页或点击导航都能立即触发刷新
+  const throttleMs = Math.min(options?.throttleMs ?? 300, 300);
 
   useEffect(() => {
     const prevTab = lastActiveTabRef.current;
+    const prevTick = lastTickRef.current;
     lastActiveTabRef.current = activeTab;
+    lastTickRef.current = tabActivationTick;
 
-    // 当且仅当 activeTab 变为 targetTab 且之前不是 targetTab 时触发
-    if (activeTab === targetTab && prevTab !== targetTab) {
+    // 判定 1: 跨 Tab 切入 targetTab (例如从 orders 切到 dashboard)
+    const isTabSwitch = activeTab === targetTab && prevTab !== targetTab;
+    // 判定 2: 在 targetTab 当前页内，重复点击顶级侧边导航项或 Logo
+    const isTopLevelReClick = activeTab === targetTab && prevTick !== tabActivationTick;
+
+    if (isTabSwitch || isTopLevelReClick) {
       const now = Date.now();
-      // 挂载保护期内且非强制 initial，跳过二次发包
-      if (!options?.initial && now - mountedAtRef.current < skipInitialMs) {
-        return;
-      }
-
       if (now - lastTriggerTimeRef.current >= throttleMs) {
         lastTriggerTimeRef.current = now;
         // 让出 80ms 确保页面进场动效 (180ms) 优先在 GPU 合成通道渲染，防止接口发包与数据解析阻塞主线程
@@ -64,5 +62,5 @@ export function useOnActivated(
         return () => clearTimeout(timer);
       }
     }
-  }, [activeTab, targetTab, throttleMs, skipInitialMs, options?.initial]);
+  }, [activeTab, tabActivationTick, targetTab, throttleMs]);
 }

@@ -58,6 +58,7 @@ const getStoredSidebarCollapsed = (): boolean => {
 
 interface AppState {
   activeTab: string;
+  tabActivationTick: number;
   accounts: Account[];
   currentAccountKey: string;
   isDarkMode: boolean;
@@ -86,6 +87,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
   return {
     activeTab: 'dashboard',
+    tabActivationTick: 0,
     accounts: initialAccounts,
     currentAccountKey: initialKey,
     isDarkMode: false,
@@ -94,7 +96,11 @@ export const useAppStore = create<AppState>((set, get) => {
     activeLocation: getStoredLocation(),
     isSidebarCollapsed: getStoredSidebarCollapsed(),
 
-  setActiveTab: (tab: string) => set({ activeTab: tab }),
+  setActiveTab: (tab: string) =>
+    set((state) => ({
+      activeTab: tab,
+      tabActivationTick: state.tabActivationTick + 1,
+    })),
 
   setSidebarCollapsed: (collapsed: boolean) => {
     try {

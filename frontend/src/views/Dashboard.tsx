@@ -412,6 +412,19 @@ export const Dashboard: React.FC = () => {
     if (!silent) setLoading(true);
     try {
       const logQueryKey = logFilterAccount === 'all' ? undefined : logFilterAccount;
+
+      // 强制刷新或切入首页时，同步当前主控账号官方资产与蚕豆，确保统计数据与资产卡片均为最新
+      if (force && effectiveKey) {
+        try {
+          const syncRes = await api.syncAccount(effectiveKey);
+          if (syncRes && syncRes.ok) {
+            await useAppStore.getState().loadAccounts();
+          }
+        } catch (e) {
+          // 静默降级，继续加载本地数据
+        }
+      }
+
       const [jobsRes, apptsRes, statsRes, chartRes, tasksRes] = await Promise.all([
         api.getJobs(logQueryKey, 8),
         api.getAppointments(effectiveKey || undefined),
@@ -449,12 +462,12 @@ export const Dashboard: React.FC = () => {
 
   // 页面切入激活时自动平滑拉取最新资产、任务与执行流水数据
   useOnActivated('dashboard', () => {
-    loadDashboardData(true, true);
-    fetchRecentLogs(logFilterAccount, true);
-    fetchMessages(selectedChannelId, true);
-    fetchPendingOrders(undefined, true);
-    fetchAccountTasks(undefined, true);
-  }, { throttleMs: 3000 });
+    loadDashboardData(true, false);
+    fetchRecentLogs(logFilterAccount, false);
+    fetchMessages(selectedChannelId, false);
+    fetchPendingOrders(undefined, false);
+    fetchAccountTasks(undefined, false);
+  }, { throttleMs: 300 });
 
   // 当日志账号筛选切换时拉取最新日志
   useEffect(() => {

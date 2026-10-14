@@ -42,7 +42,7 @@ export const SideNav: React.FC = () => {
         selectedKeys={[activeTab]}
         onSelect={(data) => {
           const nextKey = String(data.itemKey);
-          if (nextKey && nextKey !== activeTab) {
+          if (nextKey) {
             setActiveTab(nextKey);
           }
         }}

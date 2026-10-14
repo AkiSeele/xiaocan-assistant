@@ -160,10 +160,10 @@ export const OrdersView: React.FC = () => {
     fetchOrders();
   }, [currentAccountKey, activeStatusTab, platformFilter]);
 
-  // 页面切入激活时自动拉取最新订单数据
+  // 页面切入激活或顶级重复点击时立刻拉取最新订单数据
   useOnActivated('orders', () => {
-    fetchOrders(undefined, true, orders.length > 0);
-  }, { throttleMs: 3000 });
+    fetchOrders(undefined, true, false);
+  }, { throttleMs: 300 });
 
   // 筛选与 Tab 切换时的平滑微过渡 (遵循 Semi Design 高性能 GPU 合成通道，杜绝整体表格下坠位移)
   useGSAP(
