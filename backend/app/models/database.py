@@ -280,6 +280,25 @@ def init_db():
     except Exception:
         pass
 
+    try:
+        c.execute("""
+            DELETE FROM orders WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id, promotion_order_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY promotion_order_id 
+                               ORDER BY (platform_order_id != '') DESC, (status != 'pending') DESC, id DESC
+                           ) as rn
+                    FROM orders
+                    WHERE promotion_order_id > 0
+                ) WHERE rn = 1
+            ) AND promotion_order_id > 0 AND promotion_order_id IN (
+                SELECT promotion_order_id FROM orders WHERE promotion_order_id > 0 GROUP BY promotion_order_id HAVING COUNT(*) > 1
+            )
+        """)
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -768,13 +787,45 @@ def set_setting(key: str, value: Any):
 
 # ---------------- 霸王餐订单操作接口 ---------------- #
 
+def deduplicate_orders() -> int:
+    """
+    自动自愈历史重复订单记录：
+    若存在相同的 promotion_order_id > 0，保留已绑定单号或状态已流转的一条，删除未绑定单号的冗余 pending 幽灵记录。
+    """
+    cleaned = 0
+    try:
+        with get_conn() as conn:
+            dups = conn.execute("""
+                SELECT promotion_order_id FROM orders 
+                WHERE promotion_order_id > 0 
+                GROUP BY promotion_order_id HAVING COUNT(*) > 1
+            """).fetchall()
+            for d in dups:
+                pid = d["promotion_order_id"]
+                rows = conn.execute(
+                    "SELECT id, order_sn, platform_order_id, status FROM orders WHERE promotion_order_id = ? ORDER BY (platform_order_id != '') DESC, (status != 'pending') DESC, id DESC",
+                    (pid,)
+                ).fetchall()
+                if len(rows) > 1:
+                    keep_id = rows[0]["id"]
+                    conn.execute("DELETE FROM orders WHERE promotion_order_id = ? AND id != ?", (pid, keep_id))
+                    cleaned += (len(rows) - 1)
+            conn.commit()
+    except Exception:
+        pass
+    return cleaned
+
+
 def auto_cancel_expired_orders(account_key: Optional[str] = None) -> int:
     """
     自动检测并批量更新所有已超时的待处理订单为已取消 (cancelled)。
     判定规则：
     1. status == 'pending' 且 (timeout_time > 0 且 timeout_time < 当前时间戳)
     2. 或 status == 'pending' 且 (expire_time != '' 且 expire_time < 当前日期时间)
+    3. 或未设置 timeout_time / expire_time 但已超过 2 小时未同步且未绑定单号的待处理记录
     """
+    deduplicate_orders()
+
     now_str = time.strftime("%Y-%m-%d %H:%M:%S")
     now_ts = int(time.time())
     sql = """
@@ -782,7 +833,8 @@ def auto_cancel_expired_orders(account_key: Optional[str] = None) -> int:
         SET status = 'cancelled', updated_at = :now_str
         WHERE status = 'pending' AND (
             (timeout_time > 0 AND timeout_time < :now_ts) OR
-            (expire_time != '' AND expire_time < :now_str)
+            (expire_time != '' AND expire_time < :now_str) OR
+            ((timeout_time <= 0 OR timeout_time IS NULL) AND (expire_time = '' OR expire_time IS NULL) AND platform_order_id = '' AND order_time > 0 AND (:now_ts - order_time) > 7200)
         )
     """
     params: Dict[str, Any] = {"now_str": now_str, "now_ts": now_ts}
@@ -845,7 +897,86 @@ def get_order_by_id(order_id: int) -> Optional[Dict[str, Any]]:
 
 def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    promo_id = int(data.get("promotion_order_id") or 0)
+    sn = str(data.get("order_sn") or "")
     with get_conn() as conn:
+        existing = None
+        if promo_id > 0:
+            existing = conn.execute(
+                "SELECT id, order_sn, platform_order_id, status FROM orders WHERE promotion_order_id = ? ORDER BY (platform_order_id != '') DESC, (status != 'pending') DESC, id DESC LIMIT 1",
+                (promo_id,)
+            ).fetchone()
+        if not existing and sn:
+            existing = conn.execute(
+                "SELECT id, order_sn, platform_order_id, status FROM orders WHERE order_sn = ? LIMIT 1",
+                (sn,)
+            ).fetchone()
+
+        if existing:
+            target_id = existing["id"]
+            # 优先采用更长/更规范的官方订单号 (如 202610131541802692184 优于 802692184)
+            chosen_sn = sn if (len(sn) >= len(existing["order_sn"]) or existing["order_sn"].isdigit()) else existing["order_sn"]
+            chosen_plat_id = (data.get("platform_order_id") or "").strip() or existing["platform_order_id"] or ""
+            new_status = data.get("status", "pending")
+            if existing["status"] != "pending" and new_status == "pending":
+                new_status = existing["status"]
+
+            conn.execute("""
+            UPDATE orders SET
+                order_sn = :order_sn,
+                promotion_order_id = :promotion_order_id,
+                platform_order_id = :platform_order_id,
+                store_id = :store_id,
+                store_name = :store_name,
+                store_icon = :store_icon,
+                platform = :platform,
+                order_money = :order_money,
+                rebate_money = :rebate_money,
+                original_user_rebate = :original_user_rebate,
+                redpack_reward_num = :redpack_reward_num,
+                timeout_time = :timeout_time,
+                status = :status,
+                condition = :condition,
+                receipt_img = :receipt_img,
+                reject_reason = :reject_reason,
+                expire_time = :expire_time,
+                order_time = :order_time,
+                order_type = :order_type,
+                rebate_ratio = :rebate_ratio,
+                updated_at = :updated_at
+            WHERE id = :id
+            """, {
+                "id": target_id,
+                "order_sn": chosen_sn,
+                "promotion_order_id": promo_id or int(data.get("promotion_order_id") or 0),
+                "platform_order_id": chosen_plat_id,
+                "store_id": str(data.get("store_id", "")),
+                "store_name": data.get("store_name", ""),
+                "store_icon": data.get("store_icon", ""),
+                "platform": data.get("platform", "meituan"),
+                "order_money": float(data.get("order_money", 0)),
+                "rebate_money": float(data.get("rebate_money", 0)),
+                "original_user_rebate": float(data.get("original_user_rebate", 0)),
+                "redpack_reward_num": float(data.get("redpack_reward_num", 0)),
+                "timeout_time": int(data.get("timeout_time") or 0),
+                "status": new_status,
+                "condition": data.get("condition", "无需评价"),
+                "receipt_img": data.get("receipt_img", ""),
+                "reject_reason": data.get("reject_reason", ""),
+                "expire_time": data.get("expire_time", ""),
+                "updated_at": now,
+                "order_time": int(data.get("order_time") or 0),
+                "order_type": int(data.get("order_type") or 0),
+                "rebate_ratio": float(data.get("rebate_ratio") or 0)
+            })
+            if promo_id > 0:
+                conn.execute(
+                    "DELETE FROM orders WHERE promotion_order_id = ? AND id != ?",
+                    (promo_id, target_id)
+                )
+            conn.commit()
+            return get_order_by_id(target_id)
+
         cursor = conn.execute("""
         INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time, order_type, rebate_ratio)
         VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time, :order_type, :rebate_ratio)
