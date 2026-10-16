@@ -7,6 +7,7 @@
 4. 严格杜绝 Emoji，遵循 Semi Design 与企业级中文纯文本格式化输出；
 5. 必须在系统开启任意有效通知渠道后方可运行。
 """
+import asyncio
 import time
 import logging
 from datetime import datetime
@@ -241,7 +242,6 @@ async def run_dual_rebate_monitor(
             f"[{time.strftime('%H:%M:%S')}] 预警：检测到双返利商户数异常突降 ({len(prev_keys)} -> {len(curr_keys)})，"
             f"疑似官方接口暂时性抖动或限流，等待 2 秒后执行补偿复扫..."
         )
-        import asyncio
         await asyncio.sleep(2.0)
         try:
             retry_res = await scan_dual_rebate_stores(

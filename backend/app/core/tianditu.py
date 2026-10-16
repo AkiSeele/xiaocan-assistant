@@ -63,6 +63,56 @@ CITY_CODE_MAP: Dict[str, int] = {
 }
 
 
+CITY_COORDS: Dict[int, tuple] = {
+    420100: ("武汉", "114.305393", "30.593099"),
+    420900: ("孝感", "113.926655", "30.926423"),
+    420981: ("应城", "113.572458", "30.928236"),
+    440300: ("深圳", "114.057868", "22.543099"),
+    440100: ("广州", "113.264385", "23.129112"),
+    110100: ("北京", "116.407395", "39.904211"),
+    310100: ("上海", "121.473701", "31.230416"),
+    330100: ("杭州", "120.155070", "30.274085"),
+    510100: ("成都", "104.066541", "30.572269"),
+    320100: ("南京", "118.796877", "32.060255"),
+    430100: ("长沙", "112.938814", "28.228209"),
+    500100: ("重庆", "106.551556", "29.563009"),
+    610100: ("西安", "108.939770", "34.341574"),
+    320500: ("苏州", "120.585315", "31.298886"),
+    410100: ("郑州", "113.665412", "34.757975"),
+    340100: ("合肥", "117.283042", "31.86119"),
+    120100: ("天津", "117.190182", "39.125596"),
+    350100: ("福州", "119.306239", "26.075302"),
+    350200: ("厦门", "118.11022", "24.490474"),
+    370200: ("青岛", "120.382612", "36.067108"),
+    370100: ("济南", "117.000923", "36.675807"),
+    441900: ("东莞", "113.751765", "23.020673"),
+    440600: ("佛山", "113.122717", "23.028762"),
+    330200: ("宁波", "121.549792", "29.868388"),
+    150100: ("呼和浩特", "111.75199", "40.84149"),
+    360200: ("景德镇", "117.21466", "29.29256"),
+}
+
+
+def infer_city_from_coords(lat: float, lon: float) -> Optional[tuple]:
+    """根据经纬度反查最近的已知核心城市元组 (city_code, city_name)"""
+    best_match = None
+    min_dist_sq = 999999.0
+    for code, (cname, clng, clat) in CITY_COORDS.items():
+        try:
+            dlat = lat - float(clat)
+            dlon = lon - float(clng)
+            dist_sq = dlat * dlat + dlon * dlon
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                best_match = (code, cname)
+        except Exception:
+            pass
+    # 距离小于 0.8 度 (约 80 公里辐射圈内)
+    if min_dist_sq < 0.64 and best_match:
+        return best_match
+    return None
+
+
 def extract_city_code_from_admin(admin_code: Any, city_name: str = "") -> int:
     """从行政区划代码(包含天地图的 156 前缀)计算 6 位市级行政区编码"""
     if admin_code:
@@ -75,7 +125,7 @@ def extract_city_code_from_admin(admin_code: Any, city_name: str = "") -> int:
         clean = city_name.replace("市", "").strip()
         if clean in CITY_CODE_MAP:
             return CITY_CODE_MAP[clean]
-    return 420100
+    return 0
 
 
 class TiandituClient:
@@ -261,6 +311,9 @@ class TiandituClient:
                 # 2. POI 地标与商圈候选匹配
                 pois = data.get("pois", [])
                 if pois:
+                    sem = asyncio.Semaphore(2)
+                    coord_cache: Dict[str, Dict[str, Any]] = {}
+
                     async def process_single_poi(poi_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                         name = poi_item.get("name", "")
                         raw_addr = poi_item.get("address", "") or ""
@@ -268,41 +321,88 @@ class TiandituClient:
                         if len(lonlat) != 2:
                             return None
                         lon, lat = lonlat[0].strip(), lonlat[1].strip()
+                        try:
+                            f_lon, f_lat = float(lon), float(lat)
+                        except Exception:
+                            return None
 
-                        # 若原始地址信息不足（缺失省市或极短），并发调用天地图逆地理接口补全
+                        # 空间临近网格缓存（~1km 精度），临近 POI 直接复用城市/区县解析结果，杜绝重复调用
+                        cache_key = f"{round(f_lon, 2)}_{round(f_lat, 2)}"
+                        if cache_key in coord_cache:
+                            cached = coord_cache[cache_key]
+                            c_dist = cached.get("district_name", "")
+                            c_name = cached.get("city_name", "")
+                            c_code = cached.get("city_code", 0)
+                            prov = cached.get("province", "")
+                            return {
+                                "city_code": c_code,
+                                "city_name": c_name or "未知",
+                                "province": prov,
+                                "district_name": c_dist,
+                                "town_name": cached.get("town_name", ""),
+                                "poi": name,
+                                "short_name": f"{c_dist} · {name}" if (c_dist and name not in c_dist) else (name or clean_kw),
+                                "full_address": raw_addr or f"{prov}{c_name}{c_dist}{name}",
+                                "latitude": lat,
+                                "longitude": lon,
+                                "source": "tianditu"
+                            }
+
+                        # 若原始地址信息不足（缺失省市或过短），受控并发调用天地图逆地理接口补全
                         has_city_or_prov = bool(re.search(r"(省|市)", raw_addr))
+                        resolved_info = None
+
                         if not has_city_or_prov or len(raw_addr) < 4:
-                            try:
-                                geo_p = json.dumps({"lon": float(lon), "lat": float(lat), "ver": 1})
-                                gr = await client.get(
-                                    TIANDITU_GEOCODER_URL,
-                                    params={"postStr": geo_p, "type": "geocode", "tk": tk},
-                                    headers=headers
-                                )
-                                gd = gr.json()
-                                res = gd.get("result", {})
-                                comp = res.get("addressComponent", {})
-                                raw_c = comp.get("city") or comp.get("province", "")
-                                c_name = raw_c.replace("市", "").strip()
-                                c_dist = comp.get("county", "")
-                                admin_c = comp.get("county_code") or comp.get("city_code")
-                                c_code = extract_city_code_from_admin(admin_c, c_name)
-                                full_addr = res.get("formatted_address") or f"{raw_c}{c_dist}{raw_addr}"
-                                return {
-                                    "city_code": c_code,
-                                    "city_name": c_name or "未知",
-                                    "province": comp.get("province", ""),
-                                    "district_name": c_dist,
-                                    "town_name": comp.get("town", ""),
-                                    "poi": name,
-                                    "short_name": f"{c_dist} · {name}" if (c_dist and name not in c_dist) else name,
-                                    "full_address": full_addr,
-                                    "latitude": lat,
-                                    "longitude": lon,
-                                    "source": "tianditu"
-                                }
-                            except Exception:
-                                pass
+                            async with sem:
+                                for retry_idx in range(2):
+                                    try:
+                                        geo_p = json.dumps({"lon": f_lon, "lat": f_lat, "ver": 1})
+                                        gr = await client.get(
+                                            TIANDITU_GEOCODER_URL,
+                                            params={"postStr": geo_p, "type": "geocode", "tk": tk},
+                                            headers=headers
+                                        )
+                                        gd = gr.json()
+                                        if gd.get("status") == "0" or gd.get("result"):
+                                            res = gd.get("result", {})
+                                            comp = res.get("addressComponent", {})
+                                            raw_c = comp.get("city") or comp.get("province", "")
+                                            c_name = raw_c.replace("市", "").strip()
+                                            c_dist = comp.get("county", "")
+                                            admin_c = comp.get("county_code") or comp.get("city_code")
+                                            c_code = extract_city_code_from_admin(admin_c, c_name)
+                                            full_addr = res.get("formatted_address") or f"{raw_c}{c_dist}{raw_addr}"
+                                            resolved_info = {
+                                                "city_code": c_code,
+                                                "city_name": c_name,
+                                                "province": comp.get("province", ""),
+                                                "district_name": c_dist,
+                                                "town_name": comp.get("town", ""),
+                                                "full_address": full_addr
+                                            }
+                                            coord_cache[cache_key] = resolved_info
+                                            break
+                                        elif gd.get("code") == 302010 and retry_idx == 0:
+                                            # 官方限流退避重试
+                                            await asyncio.sleep(0.25)
+                                    except Exception:
+                                        pass
+
+                        if resolved_info:
+                            c_dist = resolved_info.get("district_name", "")
+                            return {
+                                "city_code": resolved_info.get("city_code", 0),
+                                "city_name": resolved_info.get("city_name", "") or "未知",
+                                "province": resolved_info.get("province", ""),
+                                "district_name": c_dist,
+                                "town_name": resolved_info.get("town_name", ""),
+                                "poi": name,
+                                "short_name": f"{c_dist} · {name}" if (c_dist and name not in c_dist) else (name or clean_kw),
+                                "full_address": resolved_info.get("full_address", raw_addr),
+                                "latitude": lat,
+                                "longitude": lon,
+                                "source": "tianditu"
+                            }
 
                         # 从地址字符串解析省、市、区
                         prov, city, dist = "", "", ""
@@ -335,13 +435,30 @@ class TiandituClient:
 
                         c_name = city.replace("市", "").strip() if city else ""
                         c_code = extract_city_code_from_admin(None, c_name)
+
+                        # 兜底：若逆地理被拦截且地址字符串中未包含城市名，通过经纬度距离推断已知城市
+                        if not c_name or c_name == "未知":
+                            inferred = infer_city_from_coords(f_lat, f_lon)
+                            if inferred:
+                                c_code, c_name = inferred
+
                         short_title = f"{dist} · {name}" if (dist and name not in dist) else (name or clean_kw)
+                        resolved_info = {
+                            "city_code": c_code,
+                            "city_name": c_name or "",
+                            "province": prov,
+                            "district_name": dist,
+                            "town_name": "",
+                            "full_address": raw_addr or f"{prov}{city}{dist}{name}"
+                        }
+                        coord_cache[cache_key] = resolved_info
 
                         return {
                             "city_code": c_code,
                             "city_name": c_name or "未知",
                             "province": prov,
                             "district_name": dist,
+                            "town_name": "",
                             "poi": name,
                             "short_name": short_title,
                             "full_address": raw_addr or f"{prov}{city}{dist}{name}",

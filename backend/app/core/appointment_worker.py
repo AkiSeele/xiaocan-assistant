@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any
 from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds
 from .notifier import send_system_notification
+from . import time_service
 
 logger = logging.getLogger("xiaocan.appointment_worker")
 
@@ -383,7 +384,6 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
 async def process_active_appointments() -> Tuple[bool, bool]:
     """单轮调度处理所有活跃的预约和监听任务，返回 (是否有临近 35 秒内的秒杀任务, 是否临近整分准点放单)"""
     global _cached_active_appointments, _last_fetch_active_ts, _cached_accounts
-    from . import time_service
     now_ts = time_service.now_ts()
 
     # 高频自旋保护：每秒最多向磁盘发起 1 次活跃任务检索

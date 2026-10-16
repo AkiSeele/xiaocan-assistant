@@ -293,7 +293,7 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
               return (
                 <Tooltip
                   key={acc.key}
-                  content={`${acc.nickname} · ${isAccEnabled ? '点击关闭此账号' : '点击开启此账号'}${isCurrent ? ' (当前主控)' : ''}`}
+                  content={`${acc.nickname} · ${isAccEnabled ? '点击关闭此账号' : '点击开启此账号'}${isCurrent ? ' · 当前主控' : ''}`}
                 >
                   <Tag
                     size="small"
@@ -320,7 +320,7 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
                       }}
                     />
                     {acc.nickname || '未命名'}
-                    {isCurrent ? ' (主控)' : ''}
+                    {isCurrent ? ' · 主控' : ''}
                   </Tag>
                 </Tooltip>
               );
@@ -638,7 +638,7 @@ export const Automation: React.FC = () => {
     if (!timeEditingTask) return;
     const val = (editingTimeValue || '').trim();
     if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(val)) {
-      Toast.warning('时间格式为 24小时制 HH:mm (例如: 09:30 或 22:05)');
+      Toast.warning('时间格式须为 HH:mm，如 09:30');
       return;
     }
     try {
@@ -1314,7 +1314,7 @@ export const Automation: React.FC = () => {
                   checked={drawerApplyAllAccounts}
                   onChange={(e) => setDrawerApplyAllAccounts(Boolean(e?.target?.checked))}
                 >
-                  <Text size="small">同时将此配置应用到所有托管账号 ({accounts.length} 个)</Text>
+                  <Text size="small">应用到全部托管账号（共 {accounts.length} 个）</Text>
                 </Checkbox>
               </div>
             )}
@@ -1335,7 +1335,7 @@ export const Automation: React.FC = () => {
       >
         <div style={{ padding: '8px 0' }}>
           <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
-            定时执行时间 (24小时制 HH:mm)
+            定时执行时间
           </Text>
           <Input
             value={editingTimeValue}
@@ -1381,18 +1381,18 @@ export const Automation: React.FC = () => {
             确认
           </Button>
         }
-        width={560}
+        width={640}
         centered
       >
         <div style={{ padding: '6px 0' }}>
           <Banner
             fullMode={false}
-            type="success"
+            type={batchResults.length > 0 && batchResults.every(r => r.ok) ? 'success' : 'warning'}
             bordered
             description={batchSummaryMessage}
             style={{ marginBottom: 14 }}
           />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 420, overflowY: 'auto' }}>
             {batchResults.map((r, idx) => (
               <div
                 key={idx}

@@ -661,23 +661,20 @@ export const Dashboard: React.FC = () => {
     return combined.slice(0, 4);
   }, [activePendingTasks]);
 
-  // 一键执行全部日常任务 (串行合辑)
+  // 一键执行全部账号日常任务 (全量打卡与领券)
   const handleBatchRunAll = async () => {
-    if (!currentAccountKey) {
-      Toast.warning('请先绑定并选择主控小蚕账号');
-      return;
-    }
     setBatchAllLoading(true);
     try {
-      const res = await api.batchRunDaily(currentAccountKey);
+      const res = await api.batchRunDaily(currentAccountKey || undefined);
       if (res.ok) {
         Notification.success({
-          title: '全部日常任务打卡完毕',
+          title: '全部账号日常打卡完毕',
           content: (
-            <div className="text-xs space-y-1 mt-1">
+            <div className="text-xs space-y-1.5 mt-1 max-h-60 overflow-y-auto">
+              <div className="text-semi-color-text-2 mb-1">{res.message}</div>
               {res.results?.map((r, i) => (
-                <div key={i} className="flex justify-between items-center">
-                  <span>{r.label}:</span>
+                <div key={i} className="flex justify-between items-center py-0.5 border-b border-semi-color-border/40">
+                  <span className="truncate pr-2 font-medium">{r.label}:</span>
                   <Tag size="small" color={r.ok ? 'green' : 'red'}>
                     {r.ok ? '完成' : '异常'}
                   </Tag>
@@ -685,7 +682,7 @@ export const Dashboard: React.FC = () => {
               ))}
             </div>
           ),
-          duration: 6,
+          duration: 8,
         });
         loadDashboardData(true);
       } else {
@@ -1176,7 +1173,7 @@ export const Dashboard: React.FC = () => {
                   <IconCheckCircleStroked className="text-emerald-500 shrink-0" size="small" />
                   <div className="text-xs min-w-0">
                     <span className="text-semi-color-text-1 font-medium">当前无待处理工单</span>
-                    <span className="text-semi-color-text-2 ml-1 hidden sm:inline">(官方限额 3 笔，抢单后请在小蚕APP回填外卖单号)</span>
+                    <span className="text-semi-color-text-2 ml-1 hidden sm:inline">· 限额 3 笔，抢单后需回填单号</span>
                   </div>
                 </div>
                 <Button

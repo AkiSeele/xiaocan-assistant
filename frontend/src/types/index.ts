@@ -24,6 +24,20 @@ export interface Account {
   notify_mode?: AccountNotifyMode;
   notify_config?: AccountNotifyConfig | Record<string, any> | string;
   client_mode?: string;
+  platform?: 'xiaocan' | 'meituan' | string;
+  saved_at?: number;
+  last_claimed_at?: number;
+  last_claimed_count?: number;
+  last_claimed_details?: MeituanCouponItem[];
+  history_pool?: string[];
+  meituan_token?: string;
+  meituan_nickname?: string;
+  meituan_saved_at?: number;
+  meituan_last_claimed_at?: number;
+  meituan_last_claimed_count?: number;
+  meituan_last_claimed_details?: MeituanCouponItem[];
+  meituan_history_pool?: string[];
+  meituan_is_active?: number;
   expires_at: string;
   is_active: number;
   created_at: string;
@@ -263,7 +277,7 @@ export interface JobLog {
   job_id: string;
   account_key: string;
   task_id: string;
-  status: 'success' | 'error' | 'running' | 'aborted';
+  status: 'success' | 'error' | 'failed' | 'running' | 'aborted' | string;
   output: string;
   created_at: string;
 }
@@ -307,11 +321,64 @@ export interface DashboardChartData {
   };
 }
 
+export interface MeituanCouponItem {
+  name: string;
+  discount_info: string;
+  valid_period: string;
+  priceLimit?: number;
+  couponValue?: number;
+  tabName?: string;
+}
+
+export interface MeituanAccount {
+  id?: number;
+  key: string;
+  nickname: string;
+  avatar?: string;
+  token: string;
+  saved_at?: number;
+  last_claimed_at?: number;
+  last_claimed_count?: number;
+  last_claimed_details?: MeituanCouponItem[];
+  is_active: number;
+  history_pool?: string[];
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface MeituanAuthStartResponse {
+  ok: boolean;
+  session_id?: string;
+  url?: string;
+  qrcode_base64?: string;
+  status?: string;
+  error?: string;
+  message?: string;
+}
+
+export interface MeituanAuthPollResponse {
+  ok: boolean;
+  session_id?: string;
+  status: 'pending' | 'success' | 'failed' | 'expired' | 'canceled' | 'not_found';
+  account?: MeituanAccount;
+  message?: string;
+  created_at?: number;
+}
+
 export interface BatchDailyResultItem {
   task_id: string;
+  account_key?: string;
+  account_nickname?: string;
   label: string;
   ok: boolean;
   output: string;
+}
+
+export interface BatchDailyAccountItem {
+  account_key: string;
+  nickname: string;
+  all_ok: boolean;
+  tasks: BatchDailyResultItem[];
 }
 
 export interface BatchDailyResult {
@@ -319,7 +386,23 @@ export interface BatchDailyResult {
   all_ok: boolean;
   results: BatchDailyResultItem[];
   message: string;
+  summary?: {
+    xiaocan_accounts_count: number;
+    meituan_accounts_count: number;
+    total_tasks: number;
+    success_tasks: number;
+  };
+  xiaocan_accounts?: BatchDailyAccountItem[];
+  meituan_accounts?: Array<{
+    account_key: string;
+    nickname: string;
+    status: string;
+    coupon_count: number;
+    message: string;
+    formatted_text?: string;
+  }>;
 }
+
 
 export interface XiaoCanMessageChannel {
   channel_id: number;

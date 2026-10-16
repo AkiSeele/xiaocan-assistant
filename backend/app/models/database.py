@@ -4,6 +4,7 @@ SQLite 数据库初始化与轻量 ORM 封装
 单文件零运维，自动建表
 """
 import sqlite3
+import datetime
 import json
 import os
 import time
@@ -84,6 +85,34 @@ def init_db():
         c.execute("ALTER TABLE accounts ADD COLUMN notify_config TEXT DEFAULT '{}'")
     if "client_mode" not in acc_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN client_mode TEXT DEFAULT 'app'")
+    if "platform" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN platform TEXT DEFAULT 'xiaocan'")
+    if "saved_at" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN saved_at INTEGER DEFAULT 0")
+    if "last_claimed_at" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN last_claimed_at INTEGER DEFAULT 0")
+    if "last_claimed_count" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN last_claimed_count INTEGER DEFAULT 0")
+    if "last_claimed_details" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN last_claimed_details TEXT DEFAULT '[]'")
+    if "history_pool" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN history_pool TEXT DEFAULT '[]'")
+    if "meituan_token" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_token TEXT DEFAULT ''")
+    if "meituan_nickname" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_nickname TEXT DEFAULT ''")
+    if "meituan_saved_at" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_saved_at INTEGER DEFAULT 0")
+    if "meituan_last_claimed_at" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_last_claimed_at INTEGER DEFAULT 0")
+    if "meituan_last_claimed_count" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_last_claimed_count INTEGER DEFAULT 0")
+    if "meituan_last_claimed_details" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_last_claimed_details TEXT DEFAULT '[]'")
+    if "meituan_history_pool" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_history_pool TEXT DEFAULT '[]'")
+    if "meituan_is_active" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN meituan_is_active INTEGER DEFAULT 0")
 
     # 2. 自动化任务开关与调度表
     c.execute("""
@@ -156,6 +185,24 @@ def init_db():
         created_at TEXT,
         updated_at TEXT,
         promotion_order_id INTEGER DEFAULT 0
+    )
+    """)
+
+    # 7. 美团官方账号表 (多账号独立管理，支持扫码登录与历史池)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS meituan_accounts (
+        key TEXT PRIMARY KEY,
+        nickname TEXT DEFAULT '美团用户',
+        avatar TEXT DEFAULT '',
+        token TEXT,
+        saved_at INTEGER DEFAULT 0,
+        last_claimed_at INTEGER DEFAULT 0,
+        last_claimed_count INTEGER DEFAULT 0,
+        last_claimed_details TEXT DEFAULT '[]',
+        is_active INTEGER DEFAULT 1,
+        history_pool TEXT DEFAULT '[]',
+        created_at TEXT,
+        updated_at TEXT
     )
     """)
 
@@ -312,6 +359,37 @@ def init_db():
     except Exception:
         pass
 
+    # 账号平台标识自愈：确保所有小蚕账号 (key LIKE 'acc_%') 的 platform 始终为 'xiaocan'，严禁被篡改
+    c.execute("UPDATE accounts SET platform = 'xiaocan' WHERE key LIKE 'acc_%'")
+
+    # 仅将独立美团账号 (key LIKE 'mt_%') 同步至 accounts 表（若不存在），绝不覆盖小蚕账号
+    try:
+        mt_rows = c.execute("SELECT * FROM meituan_accounts WHERE key LIKE 'mt_%'").fetchall()
+        for r in mt_rows:
+            m = dict(r)
+            m_key = m["key"]
+            chk = c.execute("SELECT key FROM accounts WHERE key = ?", (m_key,)).fetchone()
+            if not chk:
+                c.execute("""
+                    INSERT INTO accounts (key, nickname, avatar, token, platform, is_active, saved_at, last_claimed_at, last_claimed_count, last_claimed_details, history_pool, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'meituan', ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    m_key,
+                    m.get("nickname") or "美团用户",
+                    m.get("avatar") or "",
+                    m.get("token") or "",
+                    int(m.get("is_active", 1)),
+                    int(m.get("saved_at", 0)),
+                    int(m.get("last_claimed_at", 0)),
+                    int(m.get("last_claimed_count", 0)),
+                    m.get("last_claimed_details") or "[]",
+                    m.get("history_pool") or "[]",
+                    m.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S"),
+                    m.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S")
+                ))
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -322,16 +400,51 @@ init_db()
 
 # ---------------- 数据库便捷操作接口 ---------------- #
 
+def _format_account_row(d: Dict[str, Any]) -> Dict[str, Any]:
+    """统一解析账号字段中的 JSON 数据与默认平台标识"""
+    if isinstance(d.get("last_claimed_details"), str):
+        try:
+            d["last_claimed_details"] = json.loads(d["last_claimed_details"])
+        except Exception:
+            d["last_claimed_details"] = []
+    elif not d.get("last_claimed_details"):
+        d["last_claimed_details"] = []
+    if isinstance(d.get("history_pool"), str):
+        try:
+            d["history_pool"] = json.loads(d["history_pool"])
+        except Exception:
+            d["history_pool"] = []
+    elif not d.get("history_pool"):
+        d["history_pool"] = []
+    if isinstance(d.get("meituan_last_claimed_details"), str):
+        try:
+            d["meituan_last_claimed_details"] = json.loads(d["meituan_last_claimed_details"])
+        except Exception:
+            d["meituan_last_claimed_details"] = []
+    elif not d.get("meituan_last_claimed_details"):
+        d["meituan_last_claimed_details"] = []
+    if isinstance(d.get("meituan_history_pool"), str):
+        try:
+            d["meituan_history_pool"] = json.loads(d["meituan_history_pool"])
+        except Exception:
+            d["meituan_history_pool"] = []
+    elif not d.get("meituan_history_pool"):
+        d["meituan_history_pool"] = []
+    if not d.get("platform"):
+        d["platform"] = "xiaocan"
+    return d
+
+
 def get_all_accounts() -> List[Dict[str, Any]]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM accounts ORDER BY created_at DESC").fetchall()
-        return [dict(r) for r in rows]
+        rows = conn.execute("SELECT * FROM accounts WHERE platform != 'meituan' ORDER BY created_at DESC").fetchall()
+        return [_format_account_row(dict(r)) for r in rows]
 
 
 def get_account_by_key(key: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM accounts WHERE key = ?", (key,)).fetchone()
-        return dict(row) if row else None
+        return _format_account_row(dict(row)) if row else None
 
 
 get_account = get_account_by_key
@@ -536,7 +649,10 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         "silk", "withdrawing", "withdraw_total", "completed_number",
         "yb_point", "unreceived_points",
         "city_code", "city_name", "expires_at", "longitude", "latitude",
-        "notify_mode", "notify_config", "client_mode"
+        "notify_mode", "notify_config", "client_mode",
+        "meituan_token", "meituan_nickname", "meituan_saved_at",
+        "meituan_last_claimed_at", "meituan_last_claimed_count",
+        "meituan_last_claimed_details", "meituan_history_pool", "meituan_is_active"
     ]
     updates = []
     params = {"key": key, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -586,6 +702,7 @@ def set_account_notify_config(key: str, mode: str, config: Dict[str, Any]) -> bo
 def delete_account(key: str) -> bool:
     with get_conn() as conn:
         conn.execute("DELETE FROM accounts WHERE key = ?", (key,))
+        conn.execute("DELETE FROM meituan_accounts WHERE key = ?", (key,))
         conn.execute("DELETE FROM task_configs WHERE account_key = ?", (key,))
         conn.commit()
         return True
@@ -1124,7 +1241,6 @@ def get_order_stats(account_key: Optional[str] = None) -> Dict[str, Any]:
 
 def get_dashboard_chart_data(account_key: Optional[str] = None) -> Dict[str, Any]:
     auto_cancel_expired_orders(account_key=account_key)
-    import datetime
     with get_conn() as conn:
         sql = "SELECT status, platform, order_money, rebate_money, created_at, order_time FROM orders WHERE 1=1"
         params: Dict[str, Any] = {}
@@ -1245,5 +1361,362 @@ def get_dashboard_chart_data(account_key: Optional[str] = None) -> Dict[str, Any
             "today_savings_retail": today_savings_retail,
         }
     }
+
+
+# ---------------- 美团官方账号操作接口 ---------------- #
+
+def get_all_meituan_accounts() -> List[Dict[str, Any]]:
+    """
+    返回所有拥有美团领券凭证的账号列表：
+    优先收集已绑定美团的小蚕账号，其次兼容未关联的独立美团账号。
+    """
+    with get_conn() as conn:
+        result = []
+        # 1. 查询绑定了美团的小蚕账号
+        xiaocan_rows = conn.execute("""
+            SELECT * FROM accounts 
+            WHERE meituan_token IS NOT NULL AND meituan_token != '' AND platform != 'meituan'
+        """).fetchall()
+        for r in xiaocan_rows:
+            d = _format_account_row(dict(r))
+            result.append({
+                "key": d["key"],
+                "account_key": d["key"],
+                "nickname": d.get("meituan_nickname") or f"美团 ({d.get('nickname')})",
+                "token": d["meituan_token"],
+                "saved_at": d.get("meituan_saved_at") or 0,
+                "last_claimed_at": d.get("meituan_last_claimed_at") or 0,
+                "last_claimed_count": d.get("meituan_last_claimed_count") or 0,
+                "last_claimed_details": d.get("meituan_last_claimed_details") or [],
+                "is_active": d.get("meituan_is_active", 1),
+                "history_pool": d.get("meituan_history_pool") or [],
+                "is_bound_to_xiaocan": True,
+                "xiaocan_nickname": d.get("nickname")
+            })
+
+        # 2. 查询独立 meituan_accounts (未绑定的)
+        mt_rows = conn.execute("SELECT * FROM meituan_accounts ORDER BY created_at ASC").fetchall()
+        bound_keys = {item["key"] for item in result}
+        for r in mt_rows:
+            d = dict(r)
+            if d["key"] in bound_keys:
+                continue
+            if isinstance(d.get("last_claimed_details"), str):
+                try:
+                    d["last_claimed_details"] = json.loads(d["last_claimed_details"])
+                except Exception:
+                    d["last_claimed_details"] = []
+            if isinstance(d.get("history_pool"), str):
+                try:
+                    d["history_pool"] = json.loads(d["history_pool"])
+                except Exception:
+                    d["history_pool"] = []
+            d["is_bound_to_xiaocan"] = False
+            result.append(d)
+        return result
+
+
+def get_meituan_account(key: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM meituan_accounts WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if isinstance(d.get("last_claimed_details"), str):
+            try:
+                d["last_claimed_details"] = json.loads(d["last_claimed_details"])
+            except Exception:
+                d["last_claimed_details"] = []
+        elif not d.get("last_claimed_details"):
+            d["last_claimed_details"] = []
+        if isinstance(d.get("history_pool"), str):
+            try:
+                d["history_pool"] = json.loads(d["history_pool"])
+            except Exception:
+                d["history_pool"] = []
+        elif not d.get("history_pool"):
+            d["history_pool"] = []
+        return d
+
+
+def save_meituan_account(data: Dict[str, Any]) -> Dict[str, Any]:
+    key = str(data.get("key") or "").strip()
+    if not key:
+        key = f"mt_acc_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now_ts = int(time.time())
+    existing = get_meituan_account(key)
+
+    nickname = data.get("nickname") or (existing.get("nickname") if existing else f"美团账号 {key[-4:]}")
+    avatar = data.get("avatar") or (existing.get("avatar") if existing else "")
+    token = data.get("token") or (existing.get("token") if existing else "")
+    saved_at = int(data.get("saved_at") or now_ts)
+    last_claimed_at = int(data.get("last_claimed_at") or (existing.get("last_claimed_at") if existing else 0))
+    last_claimed_count = int(data.get("last_claimed_count") or (existing.get("last_claimed_count") if existing else 0))
+    is_active = int(data.get("is_active") if data.get("is_active") is not None else (existing.get("is_active") if existing else 1))
+
+    # 维护历史池 (最多保留 5 份历史 token)
+    pool = existing.get("history_pool") or [] if existing else []
+    if token and token not in pool:
+        pool.append(token)
+        pool = pool[-5:]
+    if data.get("history_pool") and isinstance(data["history_pool"], list):
+        for t in data["history_pool"]:
+            if t and t not in pool:
+                pool.append(t)
+        pool = pool[-5:]
+
+    details_str = json.dumps(data.get("last_claimed_details") or (existing.get("last_claimed_details") if existing else []), ensure_ascii=False)
+    pool_str = json.dumps(pool, ensure_ascii=False)
+
+    with get_conn() as conn:
+        conn.execute("""
+        INSERT INTO meituan_accounts (
+            key, nickname, avatar, token, saved_at, last_claimed_at, 
+            last_claimed_count, last_claimed_details, is_active, history_pool, created_at, updated_at
+        )
+        VALUES (:key, :nickname, :avatar, :token, :saved_at, :last_claimed_at, 
+                :last_claimed_count, :last_claimed_details, :is_active, :history_pool, :created_at, :updated_at)
+        ON CONFLICT(key) DO UPDATE SET
+            nickname = excluded.nickname,
+            avatar = CASE WHEN excluded.avatar != '' THEN excluded.avatar ELSE meituan_accounts.avatar END,
+            token = CASE WHEN excluded.token != '' THEN excluded.token ELSE meituan_accounts.token END,
+            saved_at = CASE WHEN excluded.token != '' THEN excluded.saved_at ELSE meituan_accounts.saved_at END,
+            last_claimed_at = CASE WHEN excluded.last_claimed_at > 0 THEN excluded.last_claimed_at ELSE meituan_accounts.last_claimed_at END,
+            last_claimed_count = CASE WHEN excluded.last_claimed_count > 0 THEN excluded.last_claimed_count ELSE meituan_accounts.last_claimed_count END,
+            last_claimed_details = CASE WHEN excluded.last_claimed_details != '[]' THEN excluded.last_claimed_details ELSE meituan_accounts.last_claimed_details END,
+            is_active = excluded.is_active,
+            history_pool = excluded.history_pool,
+            updated_at = excluded.updated_at
+        """, {
+            "key": key,
+            "nickname": nickname,
+            "avatar": avatar,
+            "token": token,
+            "saved_at": saved_at,
+            "last_claimed_at": last_claimed_at,
+            "last_claimed_count": last_claimed_count,
+            "last_claimed_details": details_str,
+            "is_active": is_active,
+            "history_pool": pool_str,
+            "created_at": existing.get("created_at") if existing else now,
+            "updated_at": now
+        })
+
+        # 仅对非小蚕账号 (如独立美团账号 mt_*) 同步写入 accounts 统一账号表 (标记 platform='meituan')
+        if not key.startswith("acc_"):
+            conn.execute("""
+            INSERT INTO accounts (
+                key, nickname, avatar, token, platform, saved_at, last_claimed_at, 
+                last_claimed_count, last_claimed_details, is_active, history_pool, created_at, updated_at
+            )
+            VALUES (:key, :nickname, :avatar, :token, 'meituan', :saved_at, :last_claimed_at, 
+                    :last_claimed_count, :last_claimed_details, :is_active, :history_pool, :created_at, :updated_at)
+            ON CONFLICT(key) DO UPDATE SET
+                nickname = excluded.nickname,
+                avatar = CASE WHEN excluded.avatar != '' THEN excluded.avatar ELSE accounts.avatar END,
+                token = CASE WHEN excluded.token != '' THEN excluded.token ELSE accounts.token END,
+                platform = 'meituan',
+                saved_at = CASE WHEN excluded.token != '' THEN excluded.saved_at ELSE accounts.saved_at END,
+                last_claimed_at = CASE WHEN excluded.last_claimed_at > 0 THEN excluded.last_claimed_at ELSE accounts.last_claimed_at END,
+                last_claimed_count = CASE WHEN excluded.last_claimed_count > 0 THEN excluded.last_claimed_count ELSE accounts.last_claimed_count END,
+                last_claimed_details = CASE WHEN excluded.last_claimed_details != '[]' THEN excluded.last_claimed_details ELSE accounts.last_claimed_details END,
+                is_active = excluded.is_active,
+                history_pool = excluded.history_pool,
+                updated_at = excluded.updated_at
+            """, {
+                "key": key,
+                "nickname": nickname,
+                "avatar": avatar,
+                "token": token,
+                "saved_at": saved_at,
+                "last_claimed_at": last_claimed_at,
+                "last_claimed_count": last_claimed_count,
+                "last_claimed_details": details_str,
+                "is_active": is_active,
+                "history_pool": pool_str,
+                "created_at": existing.get("created_at") if existing else now,
+                "updated_at": now
+            })
+        conn.commit()
+
+    return get_meituan_account(key)
+
+
+def delete_meituan_account(key: str) -> bool:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM meituan_accounts WHERE key = ?", (key,))
+        conn.execute("DELETE FROM accounts WHERE key = ?", (key,))
+        conn.execute("DELETE FROM task_configs WHERE account_key = ?", (key,))
+        conn.commit()
+        return True
+
+
+def bind_meituan_to_account(account_key: str, data: Dict[str, Any]) -> bool:
+    """为指定小蚕账号绑定美团凭证"""
+    token = (data.get("token") or "").strip()
+    nickname = (data.get("nickname") or f"美团账号 ({token[-4:] if token else '已绑定'})").strip()
+    saved_at = int(data.get("saved_at") or time.time())
+    
+    acc = get_account_by_key(account_key)
+    pool = acc.get("meituan_history_pool") or [] if acc else []
+    if token and token not in pool:
+        pool.append(token)
+        pool = pool[-5:]
+    if data.get("history_pool") and isinstance(data["history_pool"], list):
+        for t in data["history_pool"]:
+            if t and t not in pool:
+                pool.append(t)
+        pool = pool[-5:]
+    pool_str = json.dumps(pool, ensure_ascii=False)
+    
+    with get_conn() as conn:
+        conn.execute("""
+        UPDATE accounts
+        SET meituan_token = ?,
+            meituan_nickname = ?,
+            meituan_saved_at = ?,
+            meituan_is_active = 1,
+            meituan_history_pool = ?,
+            updated_at = ?
+        WHERE key = ?
+        """, (token, nickname, saved_at, pool_str, time.strftime("%Y-%m-%d %H:%M:%S"), account_key))
+        
+        # 同时在 meituan_accounts 中留存一份以保持数据对称
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("""
+        INSERT INTO meituan_accounts (key, nickname, token, saved_at, is_active, history_pool, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            nickname = excluded.nickname,
+            token = excluded.token,
+            saved_at = excluded.saved_at,
+            is_active = 1,
+            history_pool = excluded.history_pool,
+            updated_at = excluded.updated_at
+        """, (account_key, nickname, token, saved_at, pool_str, now_str, now_str))
+        conn.commit()
+    return True
+
+
+def unbind_meituan_from_account(account_key: str) -> bool:
+    """解除指定小蚕账号的美团凭证绑定"""
+    with get_conn() as conn:
+        conn.execute("""
+        UPDATE accounts
+        SET meituan_token = '',
+            meituan_nickname = '',
+            meituan_saved_at = 0,
+            meituan_is_active = 0,
+            meituan_last_claimed_count = 0,
+            meituan_last_claimed_details = '[]',
+            updated_at = ?
+        WHERE key = ?
+        """, (time.strftime("%Y-%m-%d %H:%M:%S"), account_key))
+        conn.execute("DELETE FROM meituan_accounts WHERE key = ?", (account_key,))
+        conn.commit()
+    return True
+
+
+def clear_all_meituan_data() -> bool:
+    """彻底清空全部美团凭证（清空 meituan_accounts、清理伪账号及小蚕账号美团字段）"""
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        conn.execute("DELETE FROM meituan_accounts")
+        conn.execute("DELETE FROM accounts WHERE (platform = 'meituan' AND key NOT LIKE 'acc_%') OR key LIKE 'mt_%'")
+        conn.execute("""
+        UPDATE accounts
+        SET meituan_token = '',
+            meituan_nickname = '',
+            meituan_saved_at = 0,
+            meituan_last_claimed_at = 0,
+            meituan_last_claimed_count = 0,
+            meituan_last_claimed_details = '[]',
+            meituan_history_pool = '[]',
+            meituan_is_active = 0,
+            updated_at = ?
+        """, (now,))
+        conn.commit()
+    return True
+
+
+def update_meituan_claim_stats(key: str, count: int, details: List[Dict[str, Any]], new_token: Optional[str] = None):
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now_ts = int(time.time())
+    acc = get_account_by_key(key) or get_meituan_account(key)
+    if not acc:
+        return
+
+    details_str = json.dumps(details, ensure_ascii=False)
+    
+    # 检查是否为绑定美团的小蚕账号
+    if acc.get("meituan_token"):
+        pool = acc.get("meituan_history_pool") or []
+        tok = (new_token or acc.get("meituan_token") or "").strip()
+        if tok and tok not in pool:
+            pool.append(tok)
+            pool = pool[-5:]
+        pool_str = json.dumps(pool, ensure_ascii=False)
+        with get_conn() as conn:
+            conn.execute("""
+            UPDATE accounts
+            SET meituan_last_claimed_at = ?,
+                meituan_last_claimed_count = ?,
+                meituan_last_claimed_details = ?,
+                meituan_token = ?,
+                meituan_history_pool = ?,
+                meituan_is_active = 1,
+                last_claimed_at = ?,
+                last_claimed_count = ?,
+                last_claimed_details = ?,
+                updated_at = ?
+            WHERE key = ?
+            """, (now_ts, count, details_str, tok, pool_str, now_ts, count, details_str, now, key))
+            conn.execute("""
+            UPDATE meituan_accounts
+            SET last_claimed_at = ?,
+                last_claimed_count = ?,
+                last_claimed_details = ?,
+                token = ?,
+                history_pool = ?,
+                is_active = 1,
+                updated_at = ?
+            WHERE key = ?
+            """, (now_ts, count, details_str, tok, pool_str, now, key))
+            conn.commit()
+    else:
+        # 兼容传统独立 meituan_accounts
+        pool = acc.get("history_pool") or []
+        tok = (new_token or acc.get("token") or "").strip()
+        if tok and tok not in pool:
+            pool.append(tok)
+            pool = pool[-5:]
+        pool_str = json.dumps(pool, ensure_ascii=False)
+        with get_conn() as conn:
+            conn.execute("""
+            UPDATE meituan_accounts
+            SET last_claimed_at = ?,
+                last_claimed_count = ?,
+                last_claimed_details = ?,
+                token = ?,
+                history_pool = ?,
+                is_active = 1,
+                updated_at = ?
+            WHERE key = ?
+            """, (now_ts, count, details_str, tok, pool_str, now, key))
+            conn.execute("""
+            UPDATE accounts
+            SET last_claimed_at = ?,
+                last_claimed_count = ?,
+                last_claimed_details = ?,
+                token = CASE WHEN platform = 'meituan' THEN ? ELSE token END,
+                history_pool = ?,
+                updated_at = ?
+            WHERE key = ?
+            """, (now_ts, count, details_str, tok, pool_str, now, key))
+            conn.commit()
+
+
 
 

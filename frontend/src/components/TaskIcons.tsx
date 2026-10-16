@@ -86,6 +86,16 @@ export const TaskIcon: React.FC<TaskIconProps> = ({ taskId, className = 'w-9 h-9
           <circle cx="33" cy="19" r="2" fill="#ef4444" />
         </svg>
       );
+    case 'meituan_coupon':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}>
+          <rect x="7" y="12" width="34" height="24" rx="4" fill="#ffc300" />
+          <path d="M7 21a3 3 0 0 1 0 6v7a2 2 0 0 0 2 2h30a2 2 0 0 0 2-2v-7a3 3 0 0 1 0-6v-7a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v7z" fill="#ffb300" />
+          <path d="M19 14v20" stroke="#fff" strokeWidth="2" strokeDasharray="3 3" opacity=".8" />
+          <path d="M26 21h10M26 27h6" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" />
+          <circle cx="13" cy="24" r="3" fill="#fff" />
+        </svg>
+      );
     default:
       return (
         <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}>

@@ -10,23 +10,17 @@ export interface ActiveLocation {
   latitude: string;
 }
 
-const getStoredLocation = (): ActiveLocation => {
+const getStoredLocation = (): ActiveLocation | null => {
   try {
     const raw = localStorage.getItem('xiaocan_active_location');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.longitude && parsed.latitude) {
+      if (parsed && parsed.longitude && parsed.latitude && parsed.cityName) {
         return parsed;
       }
     }
   } catch (e) {}
-  return {
-    cityCode: 420100,
-    cityName: '武汉',
-    addressName: '武昌首义 / 阅马场',
-    longitude: '114.305393',
-    latitude: '30.593099',
-  };
+  return null;
 };
 
 const getStoredCurrentAccountKey = (): string => {
@@ -64,13 +58,13 @@ interface AppState {
   isDarkMode: boolean;
   userInfo: UserInfo | null;
   loading: boolean;
-  activeLocation: ActiveLocation;
+  activeLocation: ActiveLocation | null;
   isSidebarCollapsed: boolean;
   
   setActiveTab: (tab: string) => void;
   setDarkMode: (dark: boolean) => void;
   setCurrentAccountKey: (key: string) => void;
-  setActiveLocation: (loc: Partial<ActiveLocation>) => void;
+  setActiveLocation: (loc: Partial<ActiveLocation> | null) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapse: () => void;
   loadAccounts: () => Promise<void>;
@@ -117,9 +111,22 @@ export const useAppStore = create<AppState>((set, get) => {
     set({ isSidebarCollapsed: next });
   },
 
-  setActiveLocation: (loc: Partial<ActiveLocation>) => {
-    const prev = get().activeLocation;
-    const updated = { ...prev, ...loc };
+  setActiveLocation: (loc: Partial<ActiveLocation> | null) => {
+    if (!loc) {
+      try {
+        localStorage.removeItem('xiaocan_active_location');
+      } catch (e) {}
+      set({ activeLocation: null });
+      return;
+    }
+    const prev = get().activeLocation || {
+      cityCode: 0,
+      cityName: '',
+      addressName: '',
+      longitude: '',
+      latitude: '',
+    };
+    const updated = { ...prev, ...loc } as ActiveLocation;
     try {
       localStorage.setItem('xiaocan_active_location', JSON.stringify(updated));
     } catch (e) {}

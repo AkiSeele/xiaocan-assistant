@@ -3,6 +3,7 @@
 负责与 gw.xiaocantech.com/rpc 进行通信
 """
 import asyncio
+import json
 import logging
 import re
 import time
@@ -176,7 +177,6 @@ class XiaoCanClient:
             err_msg = str(err_raw)
             if isinstance(err_raw, str) and err_raw.startswith("{"):
                 try:
-                    import json
                     parsed_err = json.loads(err_raw)
                     err_code = parsed_err.get("code", 500)
                     err_msg = parsed_err.get("detail") or parsed_err.get("status") or str(err_raw)
@@ -1059,7 +1059,6 @@ class XiaoCanClient:
         import base64
         import string
         import random
-        import time
 
         nonce = "".join(random.choice(string.ascii_lowercase) for _ in range(6))
         ts = int(time.time())
@@ -1726,16 +1725,16 @@ class XiaoCanClient:
             resolved_wm_poi_id = str(wm_poi_id or meta.get("wm_poi_id") or "").strip()
             resolved_pv_id = str(meta.get("meituan_pv_id") or "").strip()
 
-            if not resolved_wm_poi_id and store_name:
+            if not resolved_wm_poi_id and store_name and latitude and longitude:
                 try:
                     await self.search_shangjin_stores(
                         keyword=store_name,
-                        latitude=float(latitude or 22.54836),
-                        longitude=float(longitude or 114.13166),
+                        latitude=float(latitude),
+                        longitude=float(longitude),
                         token=token,
                         silk_id=silk_id,
                         user_id=user_id,
-                        city_code=int(city_code or 440303),
+                        city_code=int(city_code or 0),
                         sort_type=3
                     )
                     meta = _SHANGJIN_EVENT_META.get(clean_pid_str) or {}
@@ -1946,16 +1945,16 @@ class XiaoCanClient:
             meta = _SHANGJIN_EVENT_META.get(clean_pid_str) or {}
             kw = (store_name or meta.get("store_name") or "").strip()
             inv = 0
-            if kw:
+            if kw and latitude and longitude:
                 try:
                     sj_res = await self.search_shangjin_stores(
                         keyword=kw,
-                        latitude=float(latitude or 22.54836),
-                        longitude=float(longitude or 114.13166),
+                        latitude=float(latitude),
+                        longitude=float(longitude),
                         token=token,
                         silk_id=silk_id,
                         user_id=user_id,
-                        city_code=int(city_code or 440303),
+                        city_code=int(city_code or 0),
                         sort_type=3
                     )
                     for poi in (sj_res.get("poi_list") or []):

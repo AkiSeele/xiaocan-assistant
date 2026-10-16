@@ -38,7 +38,8 @@ import {
   IconFastForward,
   IconChevronRight,
   IconPlus,
-  IconCopy
+  IconCopy,
+  IconMapPin
 } from '@douyinfe/semi-icons';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -710,6 +711,10 @@ export const StoreSniping: React.FC = () => {
       Toast.warning('请先绑定或选择账号');
       return;
     }
+    if (!activeLocation || !activeLocation.longitude || !activeLocation.latitude) {
+      Toast.warning('未设置抢单定位，请先获取定位');
+      return;
+    }
     setDualScanLoading(true);
     const targetKw = customKw !== undefined ? customKw : dualSearchKeyword.trim();
     const targetMax = customMax !== undefined ? customMax : dualMaxStores;
@@ -754,8 +759,14 @@ export const StoreSniping: React.FC = () => {
       hasMoreRef.current = false;
       return;
     }
+    if (!activeLocation || !activeLocation.longitude || !activeLocation.latitude) {
+      setStores([]);
+      setHasMore(false);
+      hasMoreRef.current = false;
+      return;
+    }
     const keywordToSearch = kw !== undefined ? kw : activeSearchKeywordRef.current;
-    const querySignature = `${activeLocation.cityCode}_${activeLocation.longitude}_${activeLocation.latitude}_${currentAccountKey}_${platformFilter}_${conditionFilter}_${rebateTypeFilter}_${sortBy}_${keywordToSearch}`;
+    const querySignature = `${activeLocation?.cityCode}_${activeLocation?.longitude}_${activeLocation?.latitude}_${currentAccountKey}_${platformFilter}_${conditionFilter}_${rebateTypeFilter}_${sortBy}_${keywordToSearch}`;
 
     if (!force && lastStoresQuerySignatureRef.current === querySignature) {
       return;
@@ -818,10 +829,13 @@ export const StoreSniping: React.FC = () => {
       setLoading(false);
       loadingRef.current = false;
     }
-  }, [accounts.length, activeLocation.cityCode, activeLocation.latitude, activeLocation.longitude, conditionFilter, currentAccountKey, platformFilter, rebateTypeFilter, sortBy]);
+  }, [accounts.length, activeLocation?.cityCode, activeLocation?.latitude, activeLocation?.longitude, conditionFilter, currentAccountKey, platformFilter, rebateTypeFilter, sortBy]);
 
   const loadMoreStores = useCallback(async () => {
     if (loadingRef.current || loadingMoreRef.current || !hasMoreRef.current || accounts.length === 0) {
+      return;
+    }
+    if (!activeLocation || !activeLocation.longitude || !activeLocation.latitude) {
       return;
     }
 
@@ -831,9 +845,9 @@ export const StoreSniping: React.FC = () => {
 
     try {
       const res = await api.getStores({
-        city_code: activeLocation.cityCode,
-        longitude: activeLocation.longitude,
-        latitude: activeLocation.latitude,
+        city_code: activeLocation?.cityCode,
+        longitude: activeLocation?.longitude,
+        latitude: activeLocation?.latitude,
         account_key: currentAccountKey,
         platform: platformFilter,
         condition: conditionFilter,
@@ -996,7 +1010,7 @@ export const StoreSniping: React.FC = () => {
       setLoadingMore(false);
       loadingMoreRef.current = false;
     }
-  }, [accounts.length, activeLocation.cityCode, activeLocation.latitude, activeLocation.longitude, conditionFilter, currentAccountKey, platformFilter, rebateTypeFilter, sortBy, getStoreBranchIdentityKey]);
+  }, [accounts.length, activeLocation?.cityCode, activeLocation?.latitude, activeLocation?.longitude, conditionFilter, currentAccountKey, platformFilter, rebateTypeFilter, sortBy, getStoreBranchIdentityKey]);
 
   const scrollToTop = () => {
     const tableBody = tableContainerRef.current?.querySelector('.semi-table-body') as HTMLElement;
@@ -1457,7 +1471,7 @@ export const StoreSniping: React.FC = () => {
                   const pLeft = row.percent_left !== undefined ? row.percent_left : (dualPercentPlans.reduce((sum, p) => sum + Math.max(0, p.left_number ?? 0), 0) || (row.rebate_type === 'percent' ? Math.max(0, row.left_number ?? 0) : 0));
                   return (
                     <Tag color="amber" size="small" shape="square" className="flex-shrink-0">
-                      双返利 (实付剩{fLeft}单 · 比例剩{pLeft}单)
+                      双返利 · 实付剩{fLeft}单 / 比例剩{pLeft}单
                     </Tag>
                   );
                 })()}
@@ -1507,10 +1521,10 @@ export const StoreSniping: React.FC = () => {
                       >
                         <span>档{idx + 1}: {cleanDesc}</span>
                         {isOutOfStock ? (
-                          <span className="text-[11px] text-semi-color-text-3">(无票)</span>
+                          <span className="text-[11px] text-semi-color-text-3">无票</span>
                         ) : (
                           <span className={`text-[11px] ${isSelected ? 'text-semi-color-primary' : 'text-semi-color-success'}`}>
-                            (余{p.left_number})
+                            余{p.left_number}
                           </span>
                         )}
                       </button>
@@ -1595,13 +1609,13 @@ export const StoreSniping: React.FC = () => {
               <IconClock style={{ color: 'var(--semi-color-text-2)', fontSize: 12, flexShrink: 0 }} />
               <span>
                 {activePromo.start_time === '00:00' && (activePromo.end_time === '23:59' || !activePromo.end_time)
-                  ? '全天 (00:00~23:59)'
+                  ? '全天 00:00~23:59'
                   : `${activePromo.start_time || '全天'} ~ ${activePromo.end_time || '23:59'}`}
               </span>
             </div>
             {timeStat.status === 'before' ? (
               <Tag color="cyan" size="small" shape="square">
-                未开抢 ({timeStat.diffMinutes >= 60 ? `${Math.floor(timeStat.diffMinutes / 60)}小时${timeStat.diffMinutes % 60 > 0 ? `${timeStat.diffMinutes % 60}分` : ''}后` : `${timeStat.diffMinutes}分后`})
+                {timeStat.diffMinutes >= 60 ? `${Math.floor(timeStat.diffMinutes / 60)}小时${timeStat.diffMinutes % 60 > 0 ? `${timeStat.diffMinutes % 60}分` : ''}后开抢` : `${timeStat.diffMinutes}分后开抢`}
               </Tag>
             ) : timeStat.status === 'active' ? (
               <Tag color="green" size="small" shape="square">
@@ -1791,7 +1805,7 @@ export const StoreSniping: React.FC = () => {
       },
     },
     {
-      title: '实付满返方案 (满减返)',
+      title: '实付满返方案',
       dataIndex: 'fixed_plans',
       width: 390,
       render: (_: any, row?: StoreItem) => {
@@ -1949,7 +1963,7 @@ export const StoreSniping: React.FC = () => {
       },
     },
     {
-      title: '按比例返方案 (比例返)',
+      title: '按比例返方案',
       dataIndex: 'percent_plans',
       width: 390,
       render: (_: any, row?: StoreItem) => {
@@ -1980,7 +1994,7 @@ export const StoreSniping: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <Tag color="violet" size="small" shape="square">按比例返</Tag>
                 <span className="font-bold font-mono text-purple-600 dark:text-purple-400 text-sm">
-                  {cleanEmoji(activePercent.rebate_desc) || `返${activePercent.rebate_rate}% (最高¥${activePercent.rebate_price})`}
+                  {cleanEmoji(activePercent.rebate_desc) || `返${activePercent.rebate_rate}% · 最高¥${activePercent.rebate_price}`}
                 </span>
               </div>
               <div className="flex items-center gap-1">
@@ -2304,7 +2318,7 @@ export const StoreSniping: React.FC = () => {
           <div className="flex flex-col gap-1 text-xs">
             <div className="flex items-center gap-1 flex-wrap">
               {hasAdvance ? (
-                <Tag color="purple" size="small" shape="square">超前抢单 (提前30m)</Tag>
+                <Tag color="purple" size="small" shape="square">超前抢单 · 提前30分</Tag>
               ) : (
                 <Tag color="grey" size="small" shape="square">常规开抢</Tag>
               )}
@@ -2616,6 +2630,34 @@ export const StoreSniping: React.FC = () => {
         </div>
       </div>
 
+      {/* 未设置抢单定位提示条 */}
+      {!activeLocation && (
+        <Banner
+          type="warning"
+          closeIcon={null}
+          icon={<IconMapPin />}
+          title="尚未配置抢单定位"
+          description={
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mt-0.5">
+              <span>系统不设默认定位。抢单前请先获取本机真实定位或搜索目标商圈，以精确匹配周边霸王餐与满返商户名额。</span>
+              <Button
+                theme="solid"
+                type="warning"
+                size="small"
+                icon={<IconMapPin />}
+                onClick={() => {
+                  const btn = document.getElementById('header-location-btn');
+                  if (btn) btn.click();
+                }}
+              >
+                获取定位
+              </Button>
+            </div>
+          }
+          className="rounded-xl border border-amber-200"
+        />
+      )}
+
       {/* 主体卡片容器：撑满视口垂直空间，消除底部空白 */}
       <Card
         className="flex-1 min-h-0 flex flex-col rounded-xl border border-semi-color-border shadow-sm overflow-hidden"
@@ -2853,6 +2895,27 @@ export const StoreSniping: React.FC = () => {
                             </Button>
                           </Space>
                         </div>
+                      ) : !activeLocation ? (
+                        <div className="flex flex-col items-center justify-center">
+                          <IconMapPin size="extra-large" className="text-semi-color-primary mb-3" />
+                          <div className="mb-2 text-base font-medium text-semi-color-text-1">
+                            尚未配置抢单定位
+                          </div>
+                          <div className="text-xs mb-4 text-semi-color-text-2 max-w-sm">
+                            系统不设默认定位。请先获取定位以精准拉取周边的商户与活动名额。
+                          </div>
+                          <Button
+                            theme="solid"
+                            type="primary"
+                            icon={<IconMapPin />}
+                            onClick={() => {
+                              const btn = document.getElementById('header-location-btn');
+                              if (btn) btn.click();
+                            }}
+                          >
+                            获取抢单定位
+                          </Button>
+                        </div>
                       ) : (
                         <div>暂无符合条件的附近店铺，您可以尝试更换定位坐标或调整筛选条件</div>
                       )}
@@ -3005,8 +3068,8 @@ export const StoreSniping: React.FC = () => {
                       <Tag color="amber" size="small">美团外卖专享</Tag>
                       <Tag color="blue" size="small">距离最近</Tag>
                       <span className="text-semi-color-text-1">
-                        共检索 {dualTotalStores} 家商户（{dualTotalPromos} 个活动），筛选出 {dualStores.length} 家双返利店铺
-                        {dualStores.length !== displayedDualStores.length && `（搜索匹配 ${displayedDualStores.length} 家）`}
+                        共检索 {dualTotalStores} 家商户、{dualTotalPromos} 个活动，筛选出 {dualStores.length} 家双返利店铺
+                        {dualStores.length !== displayedDualStores.length && ` · 匹配 ${displayedDualStores.length} 家`}
                         {dualMaxStores > 0 && ` · 设定范围 ${dualMaxStores} 家`}
                       </span>
                     </div>
@@ -3033,14 +3096,37 @@ export const StoreSniping: React.FC = () => {
                       dualScanLoading ? (
                         <div className="py-24" />
                       ) : (
-                        <div className="py-16 text-center text-semi-color-text-3">
-                          <div>
-                            {(dualSearchKeyword || '').trim()
-                              ? `未发现包含「${dualSearchKeyword}」的美团同店双返利店铺`
-                              : `在检索的 ${dualTotalStores} 家美团商户中未发现同时开放双返利规则的店铺`}
+                        !activeLocation ? (
+                          <div className="py-16 flex flex-col items-center justify-center text-semi-color-text-3">
+                            <IconMapPin size="extra-large" className="text-semi-color-primary mb-3" />
+                            <div className="mb-2 text-base font-medium text-semi-color-text-1">
+                              尚未配置抢单定位
+                            </div>
+                            <div className="text-xs mb-4 text-semi-color-text-2 max-w-sm">
+                              双返利扫描需基于实际地理位置检索周边商户，请先获取定位。
+                            </div>
+                            <Button
+                              theme="solid"
+                              type="primary"
+                              icon={<IconMapPin />}
+                              onClick={() => {
+                                const btn = document.getElementById('header-location-btn');
+                                if (btn) btn.click();
+                              }}
+                            >
+                              获取抢单定位
+                            </Button>
                           </div>
-                          <div className="text-xs mt-2">您可以尝试清除搜索词或切换商圈定位后再次扫描</div>
-                        </div>
+                        ) : (
+                          <div className="py-16 text-center text-semi-color-text-3">
+                            <div>
+                              {(dualSearchKeyword || '').trim()
+                                ? `未发现包含「${dualSearchKeyword}」的美团同店双返利店铺`
+                                : `在检索的 ${dualTotalStores} 家美团商户中未发现同时开放双返利规则的店铺`}
+                            </div>
+                            <div className="text-xs mt-2">您可以尝试清除搜索词或切换商圈定位后再次扫描</div>
+                          </div>
+                        )
                       )
                     }
                   />
@@ -3072,7 +3158,7 @@ export const StoreSniping: React.FC = () => {
                   <Tag color="blue" size="small">抢单队列</Tag>
                   <span className="text-semi-color-text-1">
                     共 {appointments.length} 条任务
-                    {activeAppointCount > 0 && `（${activeAppointCount} 条执行中）`}
+                    {activeAppointCount > 0 && ` · ${activeAppointCount} 条执行中`}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3245,7 +3331,7 @@ export const StoreSniping: React.FC = () => {
                       <div className="pt-1.5 border-t border-semi-color-border-subtle flex items-center justify-between text-xs">
                         <span className="text-semi-color-text-2">实际开火时刻：</span>
                         <span className="font-bold font-mono text-purple-600 dark:text-purple-400">
-                          {calcAdvanceTime(selectedPromo?.start_time)} (原时段 {selectedPromo?.start_time})
+                          {calcAdvanceTime(selectedPromo?.start_time)} · 原时段 {selectedPromo?.start_time}
                         </span>
                       </div>
                     )}
@@ -3256,7 +3342,7 @@ export const StoreSniping: React.FC = () => {
                     <Col xs={24} sm={12}>
                       <Form.InputNumber
                         field="early_ms"
-                        label="提前抢单时间 (ms)"
+                        label="提前抢单毫秒"
                         initValue={500}
                         min={0}
                         max={5000}
@@ -3268,7 +3354,7 @@ export const StoreSniping: React.FC = () => {
                     <Col xs={24} sm={12}>
                       <Form.Input
                         field="until_time"
-                        label="自动监听截止时间 (HH:MM)"
+                        label="自动监听截止时间"
                         initValue={selectedPromo?.end_time || '15:00'}
                         placeholder="例如 14:00 或 15:30"
                         helpText="首轮名额若满，持续监听至此时间"
@@ -3277,7 +3363,7 @@ export const StoreSniping: React.FC = () => {
                     <Col xs={24} sm={12}>
                       <Form.InputNumber
                         field="check_interval"
-                        label="监听轮询间隔 (秒)"
+                        label="监听轮询间隔（秒）"
                         initValue={5}
                         min={3}
                         max={60}
@@ -3293,7 +3379,7 @@ export const StoreSniping: React.FC = () => {
                         helpText="若指定红包在端外已用将平滑自愈替换"
                         style={{ width: '100%' }}
                       >
-                        <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
+                        <Select.Option value={0}>自动匹配最优红包</Select.Option>
                         <Select.Option value={1}>指定具体可用红包</Select.Option>
                         <Select.Option value={2}>不使用红包</Select.Option>
                       </Form.Select>
@@ -3305,7 +3391,7 @@ export const StoreSniping: React.FC = () => {
                   <Col xs={24} sm={12}>
                     <Form.Input
                       field="until_time"
-                      label="监听截止时间 (HH:MM)"
+                      label="监听截止时间"
                       initValue={selectedPromo?.end_time || '15:00'}
                       placeholder="例如 14:00 或 15:30"
                       helpText="到达此时间后将自动停止监听"
@@ -3314,7 +3400,7 @@ export const StoreSniping: React.FC = () => {
                   <Col xs={24} sm={12}>
                     <Form.InputNumber
                       field="check_interval"
-                      label="轮询刷新频率 (秒)"
+                      label="轮询刷新间隔（秒）"
                       initValue={5}
                       min={3}
                       max={60}
@@ -3330,7 +3416,7 @@ export const StoreSniping: React.FC = () => {
                       helpText="捡漏抢单时使用的红包策略"
                       style={{ width: '100%' }}
                     >
-                      <Select.Option value={0}>自动匹配最优红包 (推荐)</Select.Option>
+                      <Select.Option value={0}>自动匹配最优红包</Select.Option>
                       <Select.Option value={1}>指定具体可用红包</Select.Option>
                       <Select.Option value={2}>不使用红包</Select.Option>
                     </Form.Select>
@@ -3714,23 +3800,23 @@ export const StoreSniping: React.FC = () => {
                 <Col xs={24} sm={12}>
                   <Form.InputNumber
                     field="min_rebate_price"
-                    label="最低返利金额门槛 (元)"
+                    label="最低返利金额门槛"
                     prefix="¥"
                     min={0}
                     step={1}
-                    placeholder="0 (不设门槛)"
+                    placeholder="不设门槛"
                     style={{ width: '100%' }}
                   />
                 </Col>
                 <Col xs={24} sm={12}>
                   <Form.InputNumber
                     field="min_rebate_rate"
-                    label="最低返利比例门槛 (%)"
+                    label="最低返利比例门槛"
                     suffix="%"
                     min={0}
                     max={100}
                     step={5}
-                    placeholder="0 (不设门槛)"
+                    placeholder="不设门槛"
                     style={{ width: '100%' }}
                   />
                 </Col>

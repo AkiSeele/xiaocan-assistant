@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   Typography,
@@ -7,7 +7,8 @@ import {
   Space,
   Avatar,
   Toast,
-  Descriptions
+  Descriptions,
+  Select
 } from '@douyinfe/semi-ui';
 import {
   IconCopy,
@@ -42,13 +43,17 @@ const TASK_LABELS: Record<string, string> = {
   step_reward: '阶段阶梯打卡进度领取',
   auto_withdraw: '账户佣金自动提现',
   check_assets: '全资产与明细轮询',
-  token_refresh: '多账号鉴权状态巡检'
+  token_refresh: '多账号鉴权状态巡检',
+  dual_rebate_monitor: '美团同店双返利监控',
+  meituan_coupon: '美团官方领券打卡',
+  meituan_auth: '美团官方扫码授权'
 };
 
 export interface LogDetailModalProps {
   visible: boolean;
   onClose: () => void;
   log?: JobLog | null;
+  logs?: JobLog[];
   // 支持手动传入非 JobLog 对象的参数
   customTitle?: string;
   customTaskId?: string;
@@ -62,6 +67,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   visible,
   onClose,
   log,
+  logs,
   customTitle,
   customTaskId,
   customAccountKey,
@@ -70,15 +76,21 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   customOutput
 }) => {
   const accounts = useAppStore((s) => s.accounts);
+  const [selectedLog, setSelectedLog] = useState<JobLog | null>(log || null);
 
-  const taskId = customTaskId || log?.task_id || '';
+  useEffect(() => {
+    setSelectedLog(log || null);
+  }, [log]);
+
+  const activeLog = selectedLog || log;
+  const taskId = customTaskId || activeLog?.task_id || '';
   const taskName = customTitle || TASK_LABELS[taskId] || (taskId ? `任务 [${taskId}]` : '调度任务');
-  const accountKey = customAccountKey || log?.account_key || '';
+  const accountKey = customAccountKey || activeLog?.account_key || '';
   const matchedAccount = accounts.find((a) => a.key === accountKey);
   const accountNickname = matchedAccount?.nickname || accountKey || '默认账号';
-  const createdAt = customCreatedAt || log?.created_at || '-';
-  const status = customStatus || log?.status || 'success';
-  const output = customOutput !== undefined ? customOutput : (log?.output || '');
+  const createdAt = customCreatedAt || activeLog?.created_at || '-';
+  const status = customStatus || activeLog?.status || 'success';
+  const output = customOutput !== undefined ? customOutput : (activeLog?.output || '');
 
   const handleCopy = () => {
     if (!output) {
@@ -133,6 +145,30 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
       centered
     >
       <div className="space-y-3 pt-1">
+        {/* 多条日志切换条 */}
+        {logs && logs.length > 1 && (
+          <div className="flex items-center justify-between bg-semi-color-fill-0 border border-semi-color-border rounded-lg p-2 px-3">
+            <Text size="small" type="secondary">
+              切换查看历史日志流水（共 {logs.length} 条）：
+            </Text>
+            <Select
+              size="small"
+              style={{ width: 280 }}
+              value={activeLog?.id}
+              onChange={(val) => {
+                const found = logs.find((l) => l.id === val);
+                if (found) setSelectedLog(found);
+              }}
+            >
+              {logs.map((l) => (
+                <Select.Option key={l.id} value={l.id}>
+                  [{l.created_at?.split(' ')[1] || l.created_at}] {TASK_LABELS[l.task_id] || l.task_id} ({l.status === 'success' ? '成功' : l.status === 'failed' ? '失败' : l.status})
+                </Select.Option>
+              ))}
+            </Select>
+          </div>
+        )}
+
         {/* 元信息条：采用官方 Descriptions 组件结构化展示 */}
         <Descriptions
           size="small"

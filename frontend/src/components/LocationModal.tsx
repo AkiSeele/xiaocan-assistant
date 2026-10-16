@@ -25,22 +25,29 @@ interface LocationModalProps {
   onClose: () => void;
 }
 
-const formatCityTag = (rawCity?: string) => {
-  if (!rawCity) return '未知';
-  return rawCity
-    .replace(/(特别行政区|自治区|自治州|地区|盟|市|省)$/, '')
-    .trim() || rawCity;
+const formatCityTag = (rawCity?: string, district?: string) => {
+  if (rawCity && rawCity !== '未知') {
+    return rawCity
+      .replace(/(特别行政区|自治区|自治州|地区|盟|市|省)$/, '')
+      .trim() || rawCity;
+  }
+  if (district) {
+    return district
+      .replace(/(特别行政区|自治区|自治州|地区|盟|市|省|区|县|街道|镇)$/, '')
+      .trim() || district;
+  }
+  return '地点';
 };
 
 export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }) => {
   const activeLocation = useAppStore((s) => s.activeLocation);
   const setActiveLocation = useAppStore((s) => s.setActiveLocation);
 
-  const [editLng, setEditLng] = useState<string>(activeLocation.longitude);
-  const [editLat, setEditLat] = useState<string>(activeLocation.latitude);
-  const [resolvedCityCode, setResolvedCityCode] = useState<number>(activeLocation.cityCode);
-  const [resolvedCityName, setResolvedCityName] = useState<string>(activeLocation.cityName);
-  const [resolvedAddress, setResolvedAddress] = useState<string>(activeLocation.addressName);
+  const [editLng, setEditLng] = useState<string>(activeLocation?.longitude || '');
+  const [editLat, setEditLat] = useState<string>(activeLocation?.latitude || '');
+  const [resolvedCityCode, setResolvedCityCode] = useState<number>(activeLocation?.cityCode || 0);
+  const [resolvedCityName, setResolvedCityName] = useState<string>(activeLocation?.cityName || '');
+  const [resolvedAddress, setResolvedAddress] = useState<string>(activeLocation?.addressName || '');
 
   const [resolving, setResolving] = useState<boolean>(false);
   const [locating, setLocating] = useState<boolean>(false);
@@ -66,11 +73,11 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
 
   useEffect(() => {
     if (visible) {
-      setEditLng(activeLocation.longitude);
-      setEditLat(activeLocation.latitude);
-      setResolvedCityCode(activeLocation.cityCode);
-      setResolvedCityName(activeLocation.cityName);
-      setResolvedAddress(activeLocation.addressName);
+      setEditLng(activeLocation?.longitude || '');
+      setEditLat(activeLocation?.latitude || '');
+      setResolvedCityCode(activeLocation?.cityCode || 0);
+      setResolvedCityName(activeLocation?.cityName || '');
+      setResolvedAddress(activeLocation?.addressName || '');
       setSearchKeyword('');
       setCandidates([]);
       setDropdownVisible(false);
@@ -245,7 +252,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
         const res = await api.resolveLocation(latVal, lngVal);
         if (res && res.ok && res.city_name) {
           cName = res.city_name;
-          cCode = res.city_code || 420100;
+          cCode = res.city_code || 0;
           addr = res.address_name || `${res.city_name}市`;
         }
       } catch {
@@ -254,7 +261,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     }
 
     const newLoc = {
-      cityCode: cCode || 420100,
+      cityCode: cCode || 0,
       cityName: cName || '未知城市',
       addressName: addr || '高精定位点',
       longitude: (editLng || '').trim(),
@@ -285,7 +292,9 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
             <div className="flex items-center justify-between w-full">
               <Space align="center" spacing="tight">
                 <Typography.Text strong size="small">当前位置</Typography.Text>
-                <Tag size="small" color="blue">{formatCityTag(resolvedCityName)}</Tag>
+                <Tag size="small" color={resolvedCityName ? "blue" : "grey"}>
+                  {resolvedCityName ? formatCityTag(resolvedCityName) : '未设置'}
+                </Tag>
               </Space>
               <Button
                 theme="solid"
@@ -305,10 +314,10 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
           style={{ backgroundColor: 'var(--semi-color-fill-0)', borderRadius: 'var(--semi-border-radius-medium)' }}
         >
           <Typography.Title heading={6} ellipsis={{ showTooltip: true }} style={{ margin: '0 0 4px' }}>
-            {resolvedAddress || '未解析地址'}
+            {resolvedAddress || '未获取位置，请点击右上角「获取本机定位」或在下方搜索地址'}
           </Typography.Title>
           <Typography.Text code size="small" type="secondary">
-            坐标: {editLng || '0.000000'}, {editLat || '0.000000'}
+            {editLng && editLat ? `坐标: ${editLng}, ${editLat}` : '经纬度未配置'}
           </Typography.Text>
         </Card>
 
@@ -332,7 +341,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
               }}
             >
               <Dropdown.Title className="text-xs text-semi-color-text-2 font-normal pb-1">
-                搜索候选地点 (找到 {candidates.length} 个匹配地点，点击切换)
+                候选地点（共 {candidates.length} 条结果）
               </Dropdown.Title>
               {candidates.map((cand, idx) => (
                 <Dropdown.Item
@@ -343,7 +352,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
                 >
                   <div className="flex items-center gap-3 py-0.5 w-full min-w-0">
                     <Tag size="small" color="blue" className="shrink-0 font-normal">
-                      {formatCityTag(cand.city_name)}
+                      {formatCityTag(cand.city_name, cand.district_name)}
                     </Tag>
                     <div className="flex flex-col flex-1 min-w-0">
                       <div className="text-xs text-semi-color-text-0 font-medium truncate">
@@ -365,7 +374,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
           <div ref={searchRowRef} className="flex gap-2 w-full">
             <Input
               value={searchKeyword}
-              placeholder="搜索其他地址或地标 (如: 荣生大厦 / 万象天地)"
+              placeholder="搜索地址或地标"
               prefix={<IconSearch />}
               showClear
               onChange={(val) => {

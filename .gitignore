@@ -38,8 +38,8 @@ backend/data/*
 !backend/data/.gitkeep
 backend/*.db
 
-# Node / Frontend
-frontend/node_modules/
+# Node / Dependencies
+node_modules/
 frontend/dist/
 frontend/dist-ssr/
 frontend/.eslintcache

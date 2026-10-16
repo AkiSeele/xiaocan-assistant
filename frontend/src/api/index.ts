@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -103,7 +103,20 @@ export const api = {
   getTasks: (accountKey: string) => client.get<{ ok: boolean; tasks: TaskItem[] }>(`/tasks?account_key=${accountKey}`).then(r => r.data),
   toggleTask: (data: { account_key: string; task_id: string; enabled: boolean; cron_time?: string; params?: Record<string, any> }) => client.post<{ ok: boolean; message: string }>('/tasks/toggle', data).then(r => r.data),
   runTaskNow: (accountKey: string, taskId: string) => client.post<{ ok: boolean; job_id?: string; output: string }>('/tasks/run', { account_key: accountKey, task_id: taskId }, { timeout: 60000 }).then(r => r.data),
-  batchRunDaily: (accountKey: string) => client.post<BatchDailyResult>('/tasks/batch-run-daily', { account_key: accountKey }, { timeout: 60000 }).then(r => r.data),
+  batchRunDaily: (accountKey?: string) => client.post<BatchDailyResult>('/tasks/batch-run-daily', { account_key: accountKey }, { timeout: 180000 }).then(r => r.data),
+
+  // 美团官方账号与神券领取
+  getMeituanAccounts: () => client.get<{ ok: boolean; accounts: MeituanAccount[] }>('/meituan/accounts').then(r => r.data),
+  saveMeituanAccount: (data: Partial<MeituanAccount>) => client.post<{ ok: boolean; account: MeituanAccount; message: string }>('/meituan/accounts', data).then(r => r.data),
+  deleteMeituanAccount: (key: string) => client.delete<{ ok: boolean; message: string }>(`/meituan/accounts/${key}`).then(r => r.data),
+  startMeituanAuth: (accountKey?: string, customNickname?: string) => client.post<MeituanAuthStartResponse>('/meituan/auth/start', { ...(accountKey ? { account_key: accountKey } : {}), ...(customNickname ? { custom_nickname: customNickname } : {}) }).then(r => r.data),
+  updateMeituanNickname: (accountKey: string, nickname: string) => client.post<{ ok: boolean; message: string; nickname?: string }>(`/accounts/${accountKey}/meituan-nickname`, { nickname }).then(r => r.data),
+  clearAllMeituan: () => client.post<{ ok: boolean; message: string }>('/meituan/clear-all').then(r => r.data),
+  unbindMeituan: (accountKey: string) => client.post<{ ok: boolean; message: string }>(`/accounts/${accountKey}/unbind-meituan`).then(r => r.data),
+  bindExistingMeituan: (accountKey: string, meituanKey: string) => client.post<{ ok: boolean; message: string }>(`/accounts/${accountKey}/bind-meituan`, { meituan_key: meituanKey }).then(r => r.data),
+  pollMeituanAuth: (sessionId: string) => client.get<MeituanAuthPollResponse>('/meituan/auth/poll', { params: { session_id: sessionId } }).then(r => r.data),
+  cancelMeituanAuth: (sessionId: string) => client.post<{ ok: boolean; message: string }>('/meituan/auth/cancel', { session_id: sessionId }).then(r => r.data),
+  runMeituanClaim: (data?: { account_key?: string; force?: boolean }) => client.post<{ ok: boolean; result?: any; results?: any[]; message?: string }>('/meituan/claim/run', data, { timeout: 150000 }).then(r => r.data),
 
   // 店铺与附近霸王餐 (支持经纬度、平台、搜索过滤、触底流式分页)
   getStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; keyword?: string; platform?: string; condition?: string; rebate_type?: string; sort_by?: string; limit?: number; offset?: number; page_pv_id?: string }, signal?: AbortSignal) => 

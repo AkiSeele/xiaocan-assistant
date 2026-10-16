@@ -65,7 +65,7 @@ export const RebateTrendChart: React.FC<RebateTrendChartProps> = ({ data, loadin
         },
       },
       legend: {
-        data: ['返现收益 (元)', '订单单量 (单)'],
+        data: ['返现收益', '订单单量'],
         top: 0,
         right: 12,
         textStyle: {
@@ -100,7 +100,7 @@ export const RebateTrendChart: React.FC<RebateTrendChartProps> = ({ data, loadin
       yAxis: [
         {
           type: 'value',
-          name: '金额 (元)',
+          name: '金额 / 元',
           nameTextStyle: {
             color: textColor,
             fontSize: 11,
@@ -121,7 +121,7 @@ export const RebateTrendChart: React.FC<RebateTrendChartProps> = ({ data, loadin
         },
         {
           type: 'value',
-          name: '单量 (单)',
+          name: '单量',
           minInterval: 1,
           nameTextStyle: {
             color: textColor,
@@ -139,7 +139,7 @@ export const RebateTrendChart: React.FC<RebateTrendChartProps> = ({ data, loadin
       ],
       series: [
         {
-          name: '返现收益 (元)',
+          name: '返现收益',
           type: 'line',
           yAxisIndex: 0,
           smooth: true,
@@ -161,7 +161,7 @@ export const RebateTrendChart: React.FC<RebateTrendChartProps> = ({ data, loadin
           data: rebates,
         },
         {
-          name: '订单单量 (单)',
+          name: '订单单量',
           type: 'line',
           yAxisIndex: 1,
           smooth: true,

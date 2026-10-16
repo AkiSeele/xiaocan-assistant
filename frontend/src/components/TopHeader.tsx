@@ -10,7 +10,8 @@ import {
   Avatar,
   Dropdown,
   Modal,
-  Tag
+  Tag,
+  UserGuide
 } from '@douyinfe/semi-ui';
 import {
   IconSun,
@@ -54,10 +55,26 @@ export const TopHeader: React.FC = () => {
   const setActiveTab = useAppStore((s) => s.setActiveTab);
 
   const [locModalVisible, setLocModalVisible] = useState(false);
+  const [guideVisible, setGuideVisible] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [ntpOffset, setNtpOffset] = useState<number>(0);
   const [ntpSynced, setNtpSynced] = useState<boolean>(false);
   const [nowTime, setNowTime] = useState<Date>(new Date());
+
+  // 初次使用无定位时自动启动 UserGuide 引导
+  useEffect(() => {
+    if (!activeLocation) {
+      const dismissed = sessionStorage.getItem('xiaocan_loc_guide_dismissed');
+      if (!dismissed) {
+        const timer = setTimeout(() => {
+          setGuideVisible(true);
+        }, 500);
+        return () => clearTimeout(timer);
+      }
+    } else {
+      setGuideVisible(false);
+    }
+  }, [activeLocation]);
 
   const currentAccount = useMemo(() => {
     return accounts.find(a => a.key === currentAccountKey) || accounts[0];
@@ -93,7 +110,7 @@ export const TopHeader: React.FC = () => {
         setNtpOffset(offset);
         setNtpSynced(true);
         const offsetDesc = `${offset >= 0 ? '+' : ''}${Math.round(offset)}ms`;
-        Toast.success(`时钟校准成功，北京时间已同步，本地时差: ${offsetDesc} (授时源: ${res.server || 'ntp.aliyun.com'})`);
+        Toast.success(`时钟校准成功，本地时差 ${offsetDesc}`);
       } else {
         Toast.warning('NTP 授时同步响应异常，已回退为本地时钟');
       }
@@ -148,23 +165,33 @@ export const TopHeader: React.FC = () => {
 
       {/* 右侧：位置展示、时间展示、明暗切换、最右侧用户头像区域 */}
       <Space spacing="medium" align="center">
-        {/* 1. 位置设置 (和时间一样的胶囊样式，无label前缀，悬浮提示完整地址) */}
+        {/* 1. 位置设置 */}
         <Tooltip
           content={
-            activeLocation.cityName
+            activeLocation?.cityName
               ? `${activeLocation.cityName} · ${activeLocation.addressName || '已选'}`
-              : '未设置抢单地址'
+              : '未设置抢单位置，点击立即获取或搜索'
           }
           position="bottom"
         >
           <div
+            id="header-location-btn"
             onClick={() => setLocModalVisible(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-semi-color-fill-0 border border-semi-color-border hover:bg-semi-color-fill-1 hover:border-semi-color-primary transition-colors text-xs select-none cursor-pointer"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-colors text-xs select-none cursor-pointer ${
+              !activeLocation
+                ? 'bg-amber-500/10 border-amber-400 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
+                : 'bg-semi-color-fill-0 border-semi-color-border hover:bg-semi-color-fill-1 hover:border-semi-color-primary'
+            }`}
           >
-            <IconMapPin className="text-semi-color-primary shrink-0" />
+            <IconMapPin className={!activeLocation ? 'text-amber-500 shrink-0' : 'text-semi-color-primary shrink-0'} />
             <span className="font-medium text-semi-color-text-0 text-[13px] truncate max-w-[150px] sm:max-w-[200px]">
-              {activeLocation.cityName ? `${activeLocation.cityName} · ${activeLocation.addressName || '已选'}` : '未选择位置'}
+              {activeLocation?.cityName ? `${activeLocation.cityName} · ${activeLocation.addressName || '已选'}` : '获取抢单定位'}
             </span>
+            {!activeLocation && (
+              <span className="text-[10px] bg-amber-500 text-white rounded px-1 py-0.5 font-normal shrink-0">
+                待设置
+              </span>
+            )}
           </div>
         </Tooltip>
 
@@ -354,6 +381,32 @@ export const TopHeader: React.FC = () => {
       <LocationModal
         visible={locModalVisible}
         onClose={() => setLocModalVisible(false)}
+      />
+
+      {/* 首次使用无定位引导 */}
+      <UserGuide
+        mode="popup"
+        theme="primary"
+        mask={true}
+        visible={guideVisible && !locModalVisible}
+        steps={[
+          {
+            target: () => document.getElementById('header-location-btn') || document.body,
+            title: '请先获取抢单定位',
+            description: '系统不设默认定位。抢单前请点击此处获取本机真实定位或搜索商圈，以精确匹配周边霸王餐与满返名额。',
+            position: 'bottom',
+          }
+        ]}
+        finishText="立即设置"
+        showSkipButton={true}
+        onFinish={() => {
+          setGuideVisible(false);
+          setLocModalVisible(true);
+        }}
+        onSkip={() => {
+          setGuideVisible(false);
+          sessionStorage.setItem('xiaocan_loc_guide_dismissed', '1');
+        }}
       />
     </Header>
   );

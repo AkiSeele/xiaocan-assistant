@@ -2,7 +2,9 @@
 小蚕霸王餐协议特征签名计算 (League of Legends 特征头)
 逆向提取自小蚕小程序与网关通讯 RPC 协议
 """
+import base64
 import hashlib
+import json
 import time
 import uuid
 from typing import Optional, Dict
@@ -109,8 +111,6 @@ def generate_headers(
         # 若未显式传入 user_id，自动尝试从 JWT 中解码
         if not user_id and clean_token.count(".") == 2:
             try:
-                import json
-                import base64
                 parts = clean_token.split(".")
                 padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
                 payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))

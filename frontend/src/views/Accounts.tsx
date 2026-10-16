@@ -27,7 +27,8 @@ import {
   Progress,
   RadioGroup,
   Radio,
-  Select
+  Select,
+  Dropdown
 } from '@douyinfe/semi-ui';
 import { useGSAP, gsap } from '../utils/animations';
 
@@ -55,7 +56,10 @@ import {
   IconKey,
   IconTick,
   IconSend,
-  IconBell
+  IconBell,
+  IconAlertCircle,
+  IconQrCode,
+  IconEdit
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
@@ -73,6 +77,26 @@ export const Accounts: React.FC = () => {
   const accountsRef = useRef<HTMLDivElement>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [activeTab, setActiveTab] = useState('sniffer');
+  const [refreshing, setRefreshing] = useState(false);
+
+  // 美团官方账号聚合与绑定状态
+  const [targetBindAccount, setTargetBindAccount] = useState<Account | null>(null);
+  const meituanAccounts = useMemo(() => accounts.filter((a) => Boolean(a.meituan_token || a.platform === 'meituan')), [accounts]);
+  const hasMeituanAccounts = meituanAccounts.length > 0;
+  const [meituanLoginModalVisible, setMeituanLoginModalVisible] = useState(false);
+  const [meituanAuthSessionId, setMeituanAuthSessionId] = useState<string>('');
+  const [meituanQrCode, setMeituanQrCode] = useState<string>('');
+  const [meituanAuthStatus, setMeituanAuthStatus] = useState<'idle' | 'loading' | 'pending' | 'success' | 'failed' | 'expired'>('idle');
+  const [meituanAuthMessage, setMeituanAuthMessage] = useState<string>('');
+  const meituanPollTimerRef = useRef<any>(null);
+  const [meituanClaimingKeys, setMeituanClaimingKeys] = useState<Record<string, boolean>>({});
+  const [couponModalVisible, setCouponModalVisible] = useState(false);
+  const [selectedCouponAccount, setSelectedCouponAccount] = useState<Account | null>(null);
+
+  const [editMeituanModalVisible, setEditMeituanModalVisible] = useState(false);
+  const [editingMeituanAccount, setEditingMeituanAccount] = useState<Account | null>(null);
+  const [newMeituanNickname, setNewMeituanNickname] = useState('');
+  const [savingMeituanNickname, setSavingMeituanNickname] = useState(false);
 
   // 页面切入激活时自动拉取最新账号列表与用户信息
   useOnActivated('accounts', () => {
@@ -83,9 +107,9 @@ export const Accounts: React.FC = () => {
   useGSAP(
     () => {
       if (accountsRef.current && accounts.length > 0) {
-        gsap.killTweensOf('.gsap-account-card');
+        gsap.killTweensOf('.gsap-account-card, .gsap-meituan-card');
         gsap.fromTo(
-          '.gsap-account-card',
+          '.gsap-account-card, .gsap-meituan-card',
           { autoAlpha: 0, y: 14, scale: 0.985 },
           {
             autoAlpha: 1,
@@ -600,24 +624,208 @@ export const Accounts: React.FC = () => {
     Toast.success('Token 已复制到剪贴板');
   };
 
+  const stopMeituanPolling = () => {
+    if (meituanPollTimerRef.current) {
+      clearInterval(meituanPollTimerRef.current);
+      meituanPollTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopMeituanPolling();
+    };
+  }, []);
+
+  const handleStartMeituanLogin = async (acc?: Account) => {
+    setTargetBindAccount(acc || null);
+    stopMeituanPolling();
+    setMeituanAuthStatus('loading');
+    setMeituanAuthMessage('正在向美团官方申请授权链接与二维码...');
+    setMeituanQrCode('');
+    setMeituanAuthSessionId('');
+    setMeituanLoginModalVisible(true);
+
+    try {
+      const res = await api.startMeituanAuth(acc?.key);
+      if (res.ok && res.session_id) {
+        setMeituanAuthSessionId(res.session_id);
+        setMeituanQrCode(res.qrcode_base64 || '');
+        setMeituanAuthStatus('pending');
+        setMeituanAuthMessage('请使用手机美团 App 扫码并在手机上点击授权登录');
+
+        meituanPollTimerRef.current = setInterval(async () => {
+          try {
+            const pollRes = await api.pollMeituanAuth(res.session_id!);
+            if (pollRes.status === 'success') {
+              stopMeituanPolling();
+              setMeituanAuthStatus('success');
+              const targetName = acc?.nickname || '指定账号';
+              setMeituanAuthMessage('美团官方账号绑定成功！');
+              Toast.success(pollRes.message || `账号【${targetName}】绑定美团官方账号成功！`);
+              await loadAccounts();
+              setTimeout(() => {
+                setMeituanLoginModalVisible(false);
+              }, 1200);
+            } else if (pollRes.status === 'expired') {
+              stopMeituanPolling();
+              setMeituanAuthStatus('expired');
+              setMeituanAuthMessage('二维码已过期，请重新获取');
+            } else if (pollRes.status === 'failed') {
+              stopMeituanPolling();
+              setMeituanAuthStatus('failed');
+              setMeituanAuthMessage(pollRes.message || '授权失败，请重新尝试');
+            }
+          } catch (_) {}
+        }, 2000);
+      } else {
+        setMeituanAuthStatus('failed');
+        setMeituanAuthMessage(res.message || '获取美团授权二维码失败');
+      }
+    } catch (e: any) {
+      setMeituanAuthStatus('failed');
+      setMeituanAuthMessage(`发起授权异常: ${e.message}`);
+    }
+  };
+
+
+  const handleOpenEditMeituanName = (acc: Account) => {
+    setEditingMeituanAccount(acc);
+    setNewMeituanNickname(acc.meituan_nickname || '');
+    setEditMeituanModalVisible(true);
+  };
+
+  const handleSaveMeituanNickname = async () => {
+    if (!editingMeituanAccount) return;
+    if (!newMeituanNickname.trim()) {
+      Toast.warning('美团账号名称不能为空');
+      return;
+    }
+    setSavingMeituanNickname(true);
+    try {
+      const res = await api.updateMeituanNickname(editingMeituanAccount.key, newMeituanNickname.trim());
+      if (res.ok) {
+        Toast.success('美团账号名称已更新');
+        setEditMeituanModalVisible(false);
+        await loadAccounts();
+      } else {
+        Toast.error(res.message || '更新失败');
+      }
+    } catch (e: any) {
+      Toast.error(`更新异常: ${e.message || e}`);
+    } finally {
+      setSavingMeituanNickname(false);
+    }
+  };
+
+  const handleClearAllMeituan = async () => {
+    try {
+      const res = await api.clearAllMeituan();
+      if (res.ok) {
+        Toast.success(res.message || '已清空全部美团凭证');
+        await loadAccounts();
+      } else {
+        Toast.error(res.message || '清空失败');
+      }
+    } catch (e: any) {
+      Toast.error(`清空异常: ${e.message || e}`);
+    }
+  };
+
+  const handleUnbindMeituan = async (accountKey: string) => {
+    try {
+      const res = await api.unbindMeituan(accountKey);
+      if (res.ok) {
+        Toast.success('已解除美团账号绑定');
+        await loadAccounts();
+      } else {
+        Toast.error(res.message || '解除绑定失败');
+      }
+    } catch (e: any) {
+      Toast.error(`解除美团绑定异常: ${e.message}`);
+    }
+  };
+
+  const handleCancelMeituanLogin = () => {
+    stopMeituanPolling();
+    if (meituanAuthSessionId) {
+      api.cancelMeituanAuth(meituanAuthSessionId).catch(() => {});
+    }
+    setMeituanLoginModalVisible(false);
+  };
+
+  const handleClaimMeituanSingle = async (key: string) => {
+    setMeituanClaimingKeys((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await api.runMeituanClaim({ account_key: key });
+      if (res.ok && res.result) {
+        const count = res.result.coupon_count || 0;
+        if (res.result.success) {
+          Toast.success(`领券成功！共获得 ${count} 张美团优惠券`);
+        } else if (res.result.code === 1014) {
+          Toast.info(res.result.formatted_text || '今日已领取过美团优惠券');
+        } else {
+          Toast.warning(res.result.formatted_text || '未能成功领取');
+        }
+      } else {
+        Toast.error(res.message || '领券失败');
+      }
+      await loadAccounts();
+    } catch (e: any) {
+      Toast.error(`领券异常: ${e.message}`);
+    } finally {
+      setMeituanClaimingKeys((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+
+
   return (
     <div className="w-full">
-      <div className="flex justify-between items-center mb-5">
+      <div className="flex justify-between items-center mb-4">
         <div>
           <Title heading={3}>账号管理</Title>
-          <Text type="secondary">多账号安全托管中心 · 电脑微信一键直连 · 自动同步官方等级</Text>
+          <Text type="secondary">多平台安全托管中心 · 电脑微信直连 · 美团官方扫码 · 自动领券打卡</Text>
         </div>
         <Space>
           <Button
             theme="light"
-            icon={<IconRefresh />}
+            icon={<IconRefresh spin={refreshing} />}
+            loading={refreshing}
             onClick={async () => {
-              await loadAccounts();
-              Toast.success('已刷新账号列表');
+              setRefreshing(true);
+              try {
+                await loadAccounts();
+                Toast.success('已刷新账号列表');
+              } finally {
+                setRefreshing(false);
+              }
             }}
           >
             刷新列表
           </Button>
+
+          {/* 清空凭证按钮（有美团账号时显示） */}
+          {hasMeituanAccounts && (
+            <Popconfirm
+              title="确定清空全部美团凭证？"
+              content="此操作将解除所有账号绑定的美团号，并清空本地美团授权凭证库。后续如需领券可重新扫码。"
+              okText="确定清空"
+              cancelText="取消"
+              okType="danger"
+              onConfirm={handleClearAllMeituan}
+            >
+              <Button
+                theme="light"
+                type="danger"
+                icon={<IconDelete />}
+              >
+                清空美团凭证
+              </Button>
+            </Popconfirm>
+          )}
+
+          {/* 添加小蚕账号 */}
           <Button
             theme="solid"
             type="primary"
@@ -631,8 +839,10 @@ export const Accounts: React.FC = () => {
 
       <div ref={accountsRef}>
         <Row gutter={[16, 16]}>
-          {accounts.map((acc: Account) => {
+          {accounts.filter((a) => a.platform !== 'meituan').map((acc: Account) => {
             const isSelected = acc.key === currentAccountKey;
+            const isMeituanBound = Boolean(acc.meituan_token);
+
             return (
               <Col xs={24} sm={12} lg={8} key={acc.key}>
                 <div
@@ -658,7 +868,7 @@ export const Accounts: React.FC = () => {
                       <Tag color={acc.is_plus ? "amber" : "blue"} size="small">
                         {acc.is_plus ? `SVIP${acc.vip_level || 1}` : `VIP${acc.vip_level || 1}`}
                       </Tag>
-                      <Tag color="green" size="small">在线</Tag>
+
                       {acc.notify_mode === 'custom' && (() => {
                         let ch = '';
                         try {
@@ -741,7 +951,7 @@ export const Accounts: React.FC = () => {
                   </div>
 
                   {/* 元宝与成长值 */}
-                  <div className="flex items-center justify-between text-xs text-semi-color-text-2 mb-3.5 px-0.5">
+                  <div className="flex items-center justify-between text-xs text-semi-color-text-2 mb-3 px-0.5">
                     <div className="flex items-center gap-1.5">
                       <Tag size="small" color="orange">{(acc.yb_point || 0).toLocaleString()} 元宝</Tag>
                       {Boolean(acc.unreceived_points) && (
@@ -754,6 +964,102 @@ export const Accounts: React.FC = () => {
                       </Text>
                     )}
                   </div>
+
+                  {/* 美团官方账号绑定状态与领券区 */}
+                  {isMeituanBound ? (
+                    <div
+                      className="bg-semi-color-fill-0 border border-semi-color-border rounded-lg p-2.5 mb-3.5 flex items-center justify-between text-xs transition-colors hover:border-amber-400/50"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 pr-1">
+                        <Avatar
+                          size="extra-extra-small"
+                          style={{ backgroundColor: '#ffc300', color: '#222', fontWeight: 600, fontSize: '10px' }}
+                        >
+                          美
+                        </Avatar>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <Text strong className="text-xs truncate max-w-[110px]" title={acc.meituan_nickname}>
+                              {acc.meituan_nickname || '美团官方账号'}
+                            </Text>
+                            <Tooltip content="修改美团备注">
+                              <Button
+                                theme="borderless"
+                                type="tertiary"
+                                size="small"
+                                icon={<IconEdit />}
+                                onClick={() => handleOpenEditMeituanName(acc)}
+                                style={{ padding: '0 2px', height: '16px', lineHeight: '16px' }}
+                              />
+                            </Tooltip>
+                            {typeof acc.meituan_last_claimed_count === 'number' && acc.meituan_last_claimed_count > 0 && (
+                              <Tag color="amber" size="small" style={{ fontSize: '10px', height: '18px', lineHeight: '18px', padding: '0 4px' }}>
+                                {acc.meituan_last_claimed_count} 张券
+                              </Tag>
+                            )}
+                          </div>
+                          {acc.meituan_last_claimed_at ? (
+                            <Text type="tertiary" className="text-[11px] block truncate">
+                              上次领券: {formatTimestamp(acc.meituan_last_claimed_at)}
+                            </Text>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <Space spacing="tight">
+                        <Button
+                          theme="light"
+                          type="warning"
+                          size="small"
+                          icon={<IconGift />}
+                          loading={Boolean(meituanClaimingKeys[acc.key])}
+                          onClick={() => handleClaimMeituanSingle(acc.key)}
+                        >
+                          领券
+                        </Button>
+                        {acc.meituan_last_claimed_details && acc.meituan_last_claimed_details.length > 0 && (
+                          <Button
+                            theme="borderless"
+                            type="tertiary"
+                            size="small"
+                            onClick={() => {
+                              setSelectedCouponAccount(acc);
+                              setCouponModalVisible(true);
+                            }}
+                          >
+                            明细
+                          </Button>
+                        )}
+                      </Space>
+                    </div>
+                  ) : (
+                    <div
+                      className="bg-semi-color-fill-0 border border-dashed border-semi-color-border rounded-lg p-2 mb-3.5 flex items-center justify-between text-xs"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Avatar
+                          size="extra-extra-small"
+                          style={{ backgroundColor: 'var(--semi-color-fill-2)', color: 'var(--semi-color-text-2)', fontSize: '10px' }}
+                        >
+                          美
+                        </Avatar>
+                        <Text type="tertiary" size="small">未绑定美团账号</Text>
+                      </div>
+                      <Space spacing="tight">
+                        <Button
+                          theme="light"
+                          type="warning"
+                          size="small"
+                          icon={<IconQrCode />}
+                          onClick={() => handleStartMeituanLogin(acc)}
+                        >
+                          绑定美团
+                        </Button>
+                      </Space>
+                    </div>
+                  )}
 
                   {/* 底部操作条 */}
                   <div
@@ -781,7 +1087,62 @@ export const Accounts: React.FC = () => {
                     </div>
 
                     <Space spacing="tight">
-                      <Tooltip content="配置该账号专属消息推送 (企业微信/飞书/钉钉/Bark/QQ等)">
+                      {/* 绑定/管理美团按钮：在账号card上明确体现 */}
+                      {!isMeituanBound ? (
+                        <Tooltip content="扫码绑定美团官方账号">
+                          <Button
+                            theme="light"
+                            type="warning"
+                            size="small"
+                            icon={<IconQrCode />}
+                            onClick={() => handleStartMeituanLogin(acc)}
+                          >
+                            绑定美团
+                          </Button>
+                        </Tooltip>
+                      ) : (
+                        <Dropdown
+                          trigger="click"
+                          position="topRight"
+                          render={
+                            <Dropdown.Menu>
+                              <Dropdown.Item icon={<IconQrCode />} onClick={() => handleStartMeituanLogin(acc)}>
+                                重新扫码授权
+                              </Dropdown.Item>
+                              <Dropdown.Item icon={<IconEdit />} onClick={() => handleOpenEditMeituanName(acc)}>
+                                修改美团备注
+                              </Dropdown.Item>
+                              <Dropdown.Divider />
+                              <Dropdown.Item
+                                type="danger"
+                                icon={<IconDelete />}
+                                onClick={() => {
+                                  Modal.confirm({
+                                    title: '确认解除美团绑定？',
+                                    content: `解除后小蚕账号【${acc.nickname}】将不再自动领取美团神券，可随时重新扫码绑定。`,
+                                    okText: '确认解除',
+                                    cancelText: '取消',
+                                    okType: 'danger',
+                                    onOk: () => handleUnbindMeituan(acc.key)
+                                  });
+                                }}
+                              >
+                                解除美团绑定
+                              </Dropdown.Item>
+                            </Dropdown.Menu>
+                          }
+                        >
+                          <Button
+                            theme="light"
+                            type="warning"
+                            size="small"
+                            icon={<IconQrCode />}
+                          >
+                            美团管理
+                          </Button>
+                        </Dropdown>
+                      )}
+                      <Tooltip content="配置消息推送">
                         <Button
                           theme="light"
                           type="tertiary"
@@ -856,19 +1217,29 @@ export const Accounts: React.FC = () => {
             <Col span={24}>
               <Card className="text-center py-16 rounded-xl border border-dashed border-semi-color-border shadow-xs">
                 <Empty
-                  title="暂未接入小蚕账号"
-                  description="电脑端打开微信【小蚕霸王餐】小程序后，即可一键直连提取凭据并完成托管绑定。"
+                  title="暂未接入任何账号"
+                  description="支持小蚕微信小程序直连绑定与美团官方 App 扫码绑定，实现全自动化日常打卡与领券！"
                 >
-                  <Button
-                    theme="solid"
-                    type="primary"
-                    icon={<IconPlus />}
-                    size="large"
-                    onClick={handleOpenModal}
-                    className="mt-4"
-                  >
-                    添加小蚕账号
-                  </Button>
+                  <Space className="mt-4">
+                    <Button
+                      theme="solid"
+                      type="primary"
+                      icon={<IconPlus />}
+                      size="large"
+                      onClick={handleOpenModal}
+                    >
+                      添加小蚕账号
+                    </Button>
+                    <Button
+                      theme="solid"
+                      type="warning"
+                      icon={<IconQrCode />}
+                      size="large"
+                      onClick={() => handleStartMeituanLogin()}
+                    >
+                      扫码绑定美团号
+                    </Button>
+                  </Space>
                 </Empty>
               </Card>
             </Col>
@@ -944,7 +1315,7 @@ export const Accounts: React.FC = () => {
                     icon={<IconStop />}
                     onClick={handleStopWechatListener}
                   >
-                    停止监听 (剩余 {listenCountdown}s)
+                    停止监听 · 剩余 {listenCountdown}s
                   </Button>
                 ) : (
                   <Button
@@ -1014,7 +1385,7 @@ export const Accounts: React.FC = () => {
                 rows={4}
                 value={rawText}
                 onChange={(v) => setRawText(v)}
-                placeholder="请粘贴抓包获取的原始请求头、cURL 命令或 JWT Token 字符串（例如包含 x-Sivir 或 x-vayne 的内容）..."
+                placeholder="请粘贴抓包请求头、cURL 命令或 Token 字符串"
               />
             </div>
 
@@ -1035,7 +1406,7 @@ export const Accounts: React.FC = () => {
                   row
                   size="small"
                   data={[
-                    { key: 'Silk ID', value: customSilkId || parsedInfo.silk_id || '未能解析（请手动输入）' },
+                    { key: 'Silk ID', value: customSilkId || parsedInfo.silk_id || '未解析，请手动输入' },
                     { key: '凭据有效期', value: parsedInfo.exp_date }
                   ]}
                 />
@@ -1045,7 +1416,7 @@ export const Accounts: React.FC = () => {
                 <div className="space-y-3">
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <Text size="small" type="secondary">Silk ID (小蚕官方全局唯一数字 ID，用于 RPC 鉴权与识别)：</Text>
+                      <Text size="small" type="secondary">Silk ID：</Text>
                       {customSilkId ? (
                         <Tag color="green" size="small">已自动捕获/解析</Tag>
                       ) : (
@@ -1056,7 +1427,7 @@ export const Accounts: React.FC = () => {
                       className="w-full h-8 rounded border border-semi-color-border px-2.5 bg-transparent text-semi-color-text-0 focus:outline-none focus:border-semi-color-primary text-[13px]"
                       value={customSilkId}
                       onChange={(e) => setCustomSilkId(e.target.value)}
-                      placeholder="例如: 1334646（已自动补全，亦可手动核对修改）"
+                      placeholder="例如: 1334646"
                     />
                   </div>
 
@@ -1104,7 +1475,7 @@ export const Accounts: React.FC = () => {
                     <IconDesktop size="small" />
                   </div>
                   <Text strong className="text-[14px]">
-                    方式一：电脑微信一键直连（首选推荐）
+                    方式一：电脑微信一键直连
                   </Text>
                   <Tag color="green" size="small">免抓包</Tag>
                 </div>
@@ -1125,12 +1496,12 @@ export const Accounts: React.FC = () => {
                     <IconCode size="small" />
                   </div>
                   <Text strong className="text-[14px]">
-                    方式二：电脑抓包工具提取（进阶 / 手动）
+                    方式二：电脑抓包工具提取
                   </Text>
                   <Tag color="blue" size="small">通用方案</Tag>
                 </div>
                 <Paragraph type="secondary" className="mb-2">
-                  推荐使用 <b>Reqable</b>（轻量高效）、<b>Fiddler Everywhere</b> 或 <b>Charles</b>。
+                  推荐使用 <b>Reqable</b>、<b>Fiddler Everywhere</b> 或 <b>Charles</b>。
                 </Paragraph>
                 <div className="bg-semi-color-fill-0 rounded-lg p-2.5 text-xs text-semi-color-text-1 space-y-1.5">
                   <div>
@@ -1140,7 +1511,7 @@ export const Accounts: React.FC = () => {
                     <b>2. 触发请求：</b>在电脑微信中打开小蚕霸王餐小程序并任意浏览店铺或点击个人中心；
                   </div>
                   <div>
-                    <b>3. 复制凭证：</b>选中任意请求，在 Request Headers（请求头）中找到 <code>x-Sivir</code> 或 <code>token</code> 字段并复制完整字符串；
+                    <b>3. 复制凭证：</b>选中任意请求，在 Request Headers 中找到 <code>x-Sivir</code> 或 <code>token</code> 字段并复制完整字符串；
                   </div>
                   <div>
                     <b>4. 录入系统：</b>切换至「手动粘贴导入」标签，直接粘贴并点击保存。
@@ -1155,12 +1526,12 @@ export const Accounts: React.FC = () => {
                     <IconSmartphoneStroked size="small" />
                   </div>
                   <Text strong className="text-[14px]">
-                    方式三：手机抓包工具提取（移动端）
+                    方式三：手机抓包工具提取
                   </Text>
                   <Tag color="amber" size="small">手机抓包</Tag>
                 </div>
                 <Paragraph type="secondary" className="mb-2">
-                  Android 推荐使用 <b>HttpCanary</b>（小黄鸟），iOS 推荐使用 <b>Stream</b> 或 <b>Thor</b>。
+                  Android 推荐使用 <b>HttpCanary</b>，iOS 推荐使用 <b>Stream</b> 或 <b>Thor</b>。
                 </Paragraph>
                 <div className="bg-semi-color-fill-0 rounded-lg p-2.5 text-xs text-semi-color-text-1 space-y-1">
                   <div>1. 手机启动抓包后，打开微信【小蚕霸王餐】小程序并下拉刷新；</div>
@@ -1173,10 +1544,10 @@ export const Accounts: React.FC = () => {
               <div className="border border-dashed border-semi-color-border rounded-xl p-3.5 bg-semi-color-fill-0">
                 <div className="flex items-center gap-2 mb-1.5">
                   <IconInfoCircle size="small" className="text-semi-color-primary" />
-                  <Text strong className="text-xs">凭据格式与特别说明（Linux 服务器与大牌神券）</Text>
+                  <Text strong className="text-xs">凭据格式与说明</Text>
                 </div>
                 <div className="text-xs text-semi-color-text-2 space-y-1">
-                  <div>• 凭据为标准的 JWT 字符串（以 <code>eyJhbGciOi...</code> 开头），通常具有约 30 天有效期。</div>
+                  <div>• 凭据为标准 JWT 字符串，通常具有约 30 天有效期。</div>
                   <div>• <b>Linux 服务器便捷导入</b>：支持直接粘贴整段 cURL 命令或 HTTP 原始报文，系统内置引擎将自动提取 Token 并直连官方自动补齐真实 Silk ID 与账号档案。</div>
                   <div>• <b>突破大牌券 App 端限制</b>：针对官方限制 09:30 SVIP 大牌券仅限 App 端领取的问题，系统已内置原生独立 App 协议环境（appid: 10 / X-Platform: app），默认全自动穿透风控抢领大牌券。</div>
                 </div>
@@ -1655,9 +2026,9 @@ export const Accounts: React.FC = () => {
                           {
                             key: '官方极速审核',
                             value: detailData?.user_info?.if_auto_audit ? (
-                              <Tag color="green" prefixIcon={<IconTick />} size="small">已开通 (秒级极速核验)</Tag>
+                              <Tag color="green" prefixIcon={<IconTick />} size="small">已开通 · 极速核验</Tag>
                             ) : (
-                              <Tag color="amber" size="small">未开通 (人工审核)</Tag>
+                              <Tag color="amber" size="small">未开通 · 人工审核</Tag>
                             ),
                           },
                           {
@@ -1788,15 +2159,15 @@ export const Accounts: React.FC = () => {
               >
                 <Radio
                   value="global"
-                  extra="使用系统全局设置中统一配置的默认通道（所有账号消息统一广播到全局通道）。"
+                  extra="使用系统全局设置中统一配置的默认通道，所有账号消息统一广播。"
                 >
-                  <div className="font-medium text-sm text-semi-color-text-0">跟随系统全局设置 (默认)</div>
+                  <div className="font-medium text-sm text-semi-color-text-0">跟随系统全局设置</div>
                 </Radio>
                 <Radio
                   value="custom"
                   extra="为该账号绑定独立的个人通道，中签、抢单、免单券变动等仅向本人定向派发。"
                 >
-                  <div className="font-medium text-sm text-semi-color-text-0">绑定个人专属独立通道 (推荐)</div>
+                  <div className="font-medium text-sm text-semi-color-text-0">绑定个人专属独立通道</div>
                 </Radio>
                 <Radio
                   value="disabled"
@@ -1818,12 +2189,12 @@ export const Accounts: React.FC = () => {
                       onChange={(val) => setNotifyChannel(val as string)}
                       style={{ width: 240 }}
                     >
-                      <Select.Option value="clawbot">微信官方 ClawBot (iLink) (首选·推荐)</Select.Option>
+                      <Select.Option value="clawbot">微信官方 ClawBot</Select.Option>
                       <Select.Option value="wecom">企业微信群机器人</Select.Option>
                       <Select.Option value="dingtalk">钉钉群机器人</Select.Option>
                       <Select.Option value="feishu">飞书群机器人</Select.Option>
                       <Select.Option value="bark">iOS Bark 推送</Select.Option>
-                      <Select.Option value="qq_bot">QQ 机器人 (私聊/群聊)</Select.Option>
+                      <Select.Option value="qq_bot">QQ 机器人</Select.Option>
                       <Select.Option value="telegram">Telegram Bot</Select.Option>
                     </Select>
                   </div>
@@ -1850,12 +2221,12 @@ export const Accounts: React.FC = () => {
                         </Text>
                       </div>
                       <Text size="small" type="tertiary" className="block mt-1">
-                        默认模式：若该账号负责人即系统已绑定的微信，下方输入框保持留空即可直接复用（零配置直推）。
+                        默认模式：若与系统全局配置微信相同，留空即可复用。
                       </Text>
                     </div>
 
                     <div className="space-y-1">
-                      <Text strong className="text-xs">个人独立微信凭证路径 (多用户分流可选)：</Text>
+                      <Text strong className="text-xs">个人独立微信凭证路径（选填）：</Text>
                       <Input
                         placeholder="留空则自动复用系统微信，或填写个人 clawbot-auth.json 绝对路径"
                         value={notifyConfig.clawbot_auth_path || ''}
@@ -1864,7 +2235,7 @@ export const Accounts: React.FC = () => {
                     </div>
 
                     <div className="space-y-1">
-                      <Text strong className="text-xs">或直接粘贴凭证 JSON 密文 (多用户分流可选)：</Text>
+                      <Text strong className="text-xs">或直接粘贴凭证 JSON 密文（选填）：</Text>
                       <TextArea
                         placeholder='例如: {"token": "...", "userId": "..."}'
                         rows={2}
@@ -1907,9 +2278,9 @@ export const Accounts: React.FC = () => {
                       />
                     </div>
                     <div className="space-y-1">
-                      <Text strong className="text-xs">加签安全密钥 Secret (可选)：</Text>
+                      <Text strong className="text-xs">加签安全密钥 Secret（选填）：</Text>
                       <Input
-                        placeholder="SECxxxx (若钉钉机器人开启了加签鉴权请填写)"
+                        placeholder="SECxxxx"
                         value={notifyConfig.dingtalk_secret || ''}
                         onChange={(val) => setNotifyConfig({ ...notifyConfig, dingtalk_secret: val })}
                       />
@@ -1967,7 +2338,7 @@ export const Accounts: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <Text strong className="text-xs">接收人 QQ 号 (私聊定向)：</Text>
+                        <Text strong className="text-xs">接收人 QQ 号：</Text>
                         <Input
                           placeholder="例如: 10001"
                           value={notifyConfig.qq_bot_user_id || ''}
@@ -1975,7 +2346,7 @@ export const Accounts: React.FC = () => {
                         />
                       </div>
                       <div className="space-y-1">
-                        <Text strong className="text-xs">接收群号 (可选，优先私聊)：</Text>
+                        <Text strong className="text-xs">接收群号（选填）：</Text>
                         <Input
                           placeholder="例如: 954658571"
                           value={(notifyConfig as any).qq_bot_group_id || ''}
@@ -1984,7 +2355,7 @@ export const Accounts: React.FC = () => {
                       </div>
                     </div>
                     <div className="space-y-1">
-                      <Text strong className="text-xs">API 访问 Token (可选)：</Text>
+                      <Text strong className="text-xs">API 访问 Token（选填）：</Text>
                       <Input
                         placeholder="若 OneBot 服务端开启了 Authorization 则填写"
                         value={notifyConfig.qq_bot_token || ''}
@@ -2033,6 +2404,174 @@ export const Accounts: React.FC = () => {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* 美团官方扫码登录 Modal */}
+      <Modal
+        title={targetBindAccount ? `绑定美团账号 - ${targetBindAccount.nickname}` : '扫码绑定美团账号'}
+        visible={meituanLoginModalVisible}
+        onCancel={handleCancelMeituanLogin}
+        footer={null}
+        width={420}
+        centered
+      >
+        <div className="flex flex-col items-center py-2 text-center">
+          {targetBindAccount && (
+            <div className="w-full mb-3 text-left bg-semi-color-fill-0 border border-semi-color-border rounded-lg p-2.5 flex items-center">
+              <div className="flex items-center gap-2">
+                <Avatar size="extra-extra-small" style={{ backgroundColor: '#ffc300', color: '#222', fontSize: '10px', fontWeight: 600 }}>美</Avatar>
+                <Text size="small">
+                  正在为账号【<Text strong>{targetBindAccount.nickname}</Text>】绑定美团
+                </Text>
+              </div>
+            </div>
+          )}
+
+          {meituanAuthStatus === 'pending' && (
+            <Banner
+              fullMode={false}
+              type="info"
+              bordered
+              description="请打开手机美团 App【扫一扫】扫描下方二维码，并在手机上点击授权登录。授权成功后将自动关闭此窗口。"
+              style={{ textAlign: 'left', width: '100%' }}
+              className="mb-3"
+            />
+          )}
+
+          {meituanAuthStatus === 'loading' && (
+            <div className="py-12 flex flex-col items-center gap-3">
+              <Spin size="large" />
+              <Text type="secondary">正在向美团申请授权链接与二维码...</Text>
+            </div>
+          )}
+
+          {meituanAuthStatus === 'pending' && (
+            <div className="flex flex-col items-center w-full">
+              {meituanQrCode ? (
+                <div className="p-3 bg-white rounded-2xl shadow-xs border border-semi-color-border mb-3">
+                  <img
+                    src={meituanQrCode}
+                    alt="美团登录授权二维码"
+                    style={{ width: 220, height: 220, display: 'block' }}
+                  />
+                </div>
+              ) : (
+                <div className="w-56 h-56 flex items-center justify-center bg-semi-color-fill-0 rounded-2xl mb-3">
+                  <Spin />
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 text-xs text-semi-color-text-2">
+                <Spin size="small" />
+                <Text strong style={{ color: 'var(--semi-color-primary)' }}>
+                  等待美团 App 确认授权中...
+                </Text>
+              </div>
+            </div>
+          )}
+
+          {meituanAuthStatus === 'expired' && (
+            <div className="py-8 flex flex-col items-center gap-3">
+              <IconAlertCircle style={{ fontSize: 48, color: 'var(--semi-color-warning)' }} />
+              <Text strong>二维码已过期</Text>
+              <Text type="tertiary" className="text-xs mb-2">二维码有效时间约为2分钟，请重新获取最新二维码扫码</Text>
+              <Button theme="solid" type="primary" icon={<IconRefresh />} onClick={() => handleStartMeituanLogin(targetBindAccount || undefined)}>
+                重新获取二维码
+              </Button>
+            </div>
+          )}
+
+          {meituanAuthStatus === 'failed' && (
+            <div className="py-8 flex flex-col items-center gap-3">
+              <IconAlertCircle style={{ fontSize: 48, color: 'var(--semi-color-danger)' }} />
+              <Text strong>授权未成功</Text>
+              <Text type="tertiary" className="text-xs mb-2">{meituanAuthMessage || '未检测到有效授权结果'}</Text>
+              <Button theme="solid" type="primary" icon={<IconRefresh />} onClick={() => handleStartMeituanLogin(targetBindAccount || undefined)}>
+                重新尝试
+              </Button>
+            </div>
+          )}
+
+          {meituanAuthStatus === 'success' && (
+            <div className="py-8 flex flex-col items-center gap-3">
+              <IconCheckCircleStroked style={{ fontSize: 48, color: 'var(--semi-color-success)' }} />
+              <Text strong style={{ fontSize: 16 }}>授权成功！</Text>
+              <Text type="secondary" className="text-xs">
+                {targetBindAccount ? `账号【${targetBindAccount.nickname}】美团已成功关联并激活，窗口即将自动关闭...` : '美团账号已成功关联并激活，窗口即将自动关闭...'}
+              </Text>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* 美团优惠券明细 Modal */}
+      <Modal
+        title={`美团领券明细 - ${selectedCouponAccount?.nickname || ''}`}
+        visible={couponModalVisible}
+        onCancel={() => setCouponModalVisible(false)}
+        footer={
+          <Button theme="solid" type="primary" onClick={() => setCouponModalVisible(false)}>
+            确认
+          </Button>
+        }
+        width={560}
+        centered
+      >
+        <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+          {(() => {
+            const list = selectedCouponAccount?.meituan_last_claimed_details || selectedCouponAccount?.last_claimed_details || [];
+            if (!list || list.length === 0) {
+              return <Empty title="暂无优惠券明细" description="该账号尚未记录领券明细或今日领券未返回具体明细。" />;
+            }
+            return (
+              <div className="space-y-2">
+                {list.map((c, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 bg-semi-color-fill-0 rounded-lg border border-semi-color-border flex items-center justify-between"
+                  >
+                    <div className="min-w-0 pr-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Tag color="orange" size="small">{c.tabName || '优惠券'}</Tag>
+                        <Text strong className="text-sm truncate">{c.name || (c as any).couponName}</Text>
+                      </div>
+                      <Text type="tertiary" className="text-xs">{c.valid_period || (c as any).validPeriod || '在有效期内'}</Text>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <Text strong style={{ color: 'var(--semi-color-danger)', fontSize: 14 }}>
+                        {c.discount_info || (c as any).discountDesc}
+                      </Text>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      </Modal>
+
+      {/* 修改美团备注名称 Modal */}
+      <Modal
+        title={`修改美团账号备注 - ${editingMeituanAccount?.nickname || ''}`}
+        visible={editMeituanModalVisible}
+        onCancel={() => setEditMeituanModalVisible(false)}
+        onOk={handleSaveMeituanNickname}
+        confirmLoading={savingMeituanNickname}
+        okText="保存"
+        cancelText="取消"
+        width={400}
+        centered
+      >
+        <div className="py-2">
+          <Text size="small" type="secondary" className="mb-2 block">
+            请输入美团账号名称：
+          </Text>
+          <Input
+            value={newMeituanNickname}
+            onChange={(val) => setNewMeituanNickname(val)}
+            placeholder="例如：我的美团号 / 张三"
+            autoFocus
+          />
+        </div>
       </Modal>
 
     </div>

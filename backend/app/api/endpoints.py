@@ -8,8 +8,10 @@ import uuid
 import re
 import math
 import json
+import urllib.request
 import logging
 import asyncio
+import random
 from typing import Dict, Any, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query, Body
 from fastapi.responses import HTMLResponse
@@ -39,6 +41,7 @@ TASK_META = {
     "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "晚间睡前自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
     "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
     "flash_sale": {"id": "flash_sale", "label": "元宝秒杀抢券", "tip": "元宝商城限量秒杀抢券，支持自定义商品ID", "category": "daily", "default_time": "10:00"},
+    "meituan_coupon": {"id": "meituan_coupon", "label": "美团神券每日一键领", "tip": "全量美团官方账号轮流领取大额神券（外卖/美食/闪购/生活服务），支持401自动自愈与24小时滚动窗口冷却防刷", "category": "daily", "default_time": "08:15"},
 
     # --- 会员秒杀与特权抢券 (member) ---
     "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "member", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
@@ -109,9 +112,12 @@ TASK_PARAM_DEFS = {
 
 @router.get("/accounts")
 async def get_accounts():
-    """获取所有托管小蚕账号 (无车位上限，自动增量补齐未同步账号资产与 Silk ID)"""
+    """获取所有托管账号 (包含小蚕与美团官方账号)"""
     accounts = db.get_all_accounts()
     for acc in accounts:
+        # 如果是美团官方账号，跳过小蚕官方 RPC 资产抓取
+        if acc.get("platform") == "meituan":
+            continue
         # 自愈修复：若账号缺少 silk_id，自动直连小蚕官方拉取并补全
         if acc.get("token") and not acc.get("silk_id"):
             try:
@@ -229,10 +235,17 @@ async def test_account_notify_endpoint(key: str, data: Dict[str, Any] = Body(...
 
 @router.post("/accounts/{key}/sync")
 async def sync_account_endpoint(key: str):
-    """一键同步指定小蚕账号的官方档案与钱包资产"""
+    """一键同步指定账号的官方档案与钱包资产"""
     acc = db.get_account_by_key(key)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
+
+    if acc.get("platform") == "meituan":
+        from ..meituan.worker import claim_single_account
+        claim_res = await asyncio.to_thread(claim_single_account, key)
+        updated = db.get_account_by_key(key)
+        return {"ok": True, "account": updated, "message": claim_res.get("formatted_text") or "美团账号领券执行完毕"}
+
     try:
         updated = await _enrich_and_save_account(acc)
         return {"ok": True, "account": updated, "message": "账号资产与官方档案已成功同步！"}
@@ -243,10 +256,25 @@ async def sync_account_endpoint(key: str):
 
 @router.get("/accounts/{key}/detail")
 async def get_account_detail_endpoint(key: str):
-    """获取指定小蚕账号的全面详情（包含个人信息、元宝状态、特权卡券列表与可用红包列表）"""
+    """获取指定账号的全面详情（包含个人信息、元宝状态、特权卡券列表与可用红包列表）"""
     acc = db.get_account_by_key(key)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
+
+    if acc.get("platform") == "meituan":
+        return {
+            "ok": True,
+            "account": acc,
+            "card_stats": {"can_use_number": acc.get("last_claimed_count", 0), "expiring_soon_number": 0},
+            "cards": [],
+            "redpack_stats": {"num": 0},
+            "redpacks": [],
+            "user_info": {
+                "nickname": acc.get("nickname"),
+                "avatar": acc.get("avatar"),
+            },
+            "task_info": {}
+        }
 
     token = acc.get("token")
     silk_id = acc.get("silk_id")
@@ -607,10 +635,10 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
         "yb_point": yb_point,
         "unreceived_points": unreceived_points,
         "client_mode": cred.get("client_mode") or "app",
-        "city_code": cred.get("city_code") or 440303,
-        "city_name": cred.get("city_name") or "深圳",
-        "longitude": cred.get("longitude") or "114.13166",
-        "latitude": cred.get("latitude") or "22.548361",
+        "city_code": cred.get("city_code") or 0,
+        "city_name": cred.get("city_name") or "",
+        "longitude": cred.get("longitude") or "",
+        "latitude": cred.get("latitude") or "",
         "expires_at": expires_at
     }
     saved = db.save_account(acc_payload)
@@ -645,7 +673,6 @@ async def sync_account_endpoint(key: str):
 
 def _save_scanned_account_sync(cred: Dict[str, Any]) -> Dict[str, Any]:
     """供后台线程安全同步调用的保存账号方法 (保证自动调用官方接口同步真实微信资料)"""
-    import asyncio
     try:
         try:
             loop = asyncio.get_running_loop()
@@ -668,10 +695,10 @@ def _save_scanned_account_sync(cred: Dict[str, Any]) -> Dict[str, Any]:
         "avatar": cred.get("avatar") or "",
         "token": token,
         "vip_level": 1,
-        "city_code": cred.get("city_code") or 440303,
-        "city_name": cred.get("city_name") or "深圳",
-        "longitude": cred.get("longitude") or "114.13166",
-        "latitude": cred.get("latitude") or "22.548361",
+        "city_code": cred.get("city_code") or 0,
+        "city_name": cred.get("city_name") or "",
+        "longitude": cred.get("longitude") or "",
+        "latitude": cred.get("latitude") or "",
         "expires_at": cred.get("expires_at") or "长期有效"
     })
 
@@ -899,45 +926,298 @@ async def run_task_immediately(data: Dict[str, Any] = Body(...)):
 
 
 @router.post("/tasks/batch-run-daily")
-async def batch_run_daily_tasks(data: Dict[str, Any] = Body(...)):
-    """一键执行当前账号的高频日常任务 (元宝签到 + 领天天赚元宝 + 会员打卡 + 极速抽奖开红包)"""
-    account_key = data.get("account_key")
-    if not account_key:
-        return {"ok": False, "message": "未指定执行账号"}
-
-    account = db.get_account_by_key(account_key)
-    if not account:
-        return {"ok": False, "message": "账号不存在或未托管"}
+async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
+    """一键执行全部已托管账号的高频日常任务 (小蚕全账号日常打卡 + 美团全账号神券领取)"""
+    if hasattr(data, "default"):
+        data = None
+    data = data or {}
+    specified_key = data.get("account_key")
+    
+    # 1. 获取所有待执行的小蚕账号 (排除美团账号，美团账号由美团专属引擎执行)
+    all_accounts = [a for a in db.get_all_accounts() if a.get("is_active", 1) and a.get("platform") != "meituan"]
+    if not all_accounts and specified_key:
+        single = db.get_account_by_key(specified_key)
+        if single and single.get("platform") != "meituan":
+            all_accounts = [single]
 
     daily_task_ids = ["yb_sign", "yb_task", "vip_expand", "group_lottery"]
-    results = []
-    
-    for tid in daily_task_ids:
-        label = TASK_META.get(tid, {}).get("label", tid)
-        try:
-            res = await scheduler.execute_task_job(account_key, tid, trigger_type="batch_daily")
-            results.append({
-                "task_id": tid,
-                "label": label,
-                "ok": res.get("ok", False),
-                "output": res.get("output", "")
-            })
-        except Exception as e:
-            results.append({
-                "task_id": tid,
-                "label": label,
-                "ok": False,
-                "output": f"执行失败: {str(e)}"
-            })
+    xiaocan_accounts_res = []
+    flattened_results = []
+    total_tasks = 0
+    success_tasks = 0
 
-    all_ok = all(r["ok"] for r in results)
-    nick = account.get("nickname") or "当前账号"
+    # 2. 串行/错峰轮询执行小蚕全账号打卡，并严格添加单任务 15s 超时熔断保护
+    for acc in all_accounts:
+        acc_key = acc.get("key")
+        nick = acc.get("nickname") or acc_key
+        acc_task_results = []
+
+        for tid in daily_task_ids:
+            label = TASK_META.get(tid, {}).get("label", tid)
+            total_tasks += 1
+            try:
+                res = await asyncio.wait_for(
+                    scheduler.execute_task_job(acc_key, tid, trigger_type="batch_daily"),
+                    timeout=15.0
+                )
+                is_ok = bool(res.get("ok", False))
+                out_msg = res.get("output", "")
+                if is_ok:
+                    success_tasks += 1
+                acc_task_results.append({
+                    "task_id": tid,
+                    "label": label,
+                    "ok": is_ok,
+                    "output": out_msg
+                })
+                flattened_results.append({
+                    "task_id": tid,
+                    "account_key": acc_key,
+                    "account_nickname": nick,
+                    "label": f"[{nick}] {label}",
+                    "ok": is_ok,
+                    "output": out_msg
+                })
+            except asyncio.TimeoutError:
+                out_msg = f"任务 [{label}] 执行超时 (15秒熔断保护)"
+                acc_task_results.append({
+                    "task_id": tid,
+                    "label": label,
+                    "ok": False,
+                    "output": out_msg
+                })
+                flattened_results.append({
+                    "task_id": tid,
+                    "account_key": acc_key,
+                    "account_nickname": nick,
+                    "label": f"[{nick}] {label}",
+                    "ok": False,
+                    "output": out_msg
+                })
+            except Exception as e:
+                out_msg = f"执行异常: {str(e)}"
+                acc_task_results.append({
+                    "task_id": tid,
+                    "label": label,
+                    "ok": False,
+                    "output": out_msg
+                })
+                flattened_results.append({
+                    "task_id": tid,
+                    "account_key": acc_key,
+                    "account_nickname": nick,
+                    "label": f"[{nick}] {label}",
+                    "ok": False,
+                    "output": out_msg
+                })
+
+        acc_all_ok = all(t["ok"] for t in acc_task_results)
+        xiaocan_accounts_res.append({
+            "account_key": acc_key,
+            "nickname": nick,
+            "all_ok": acc_all_ok,
+            "tasks": acc_task_results
+        })
+
+        # 账号间随机等待 0.3~0.6s，防止高频突发并发
+        await asyncio.sleep(random.uniform(0.3, 0.6))
+
+    # 3. 轮询执行美团全账号神券领取（自动受24小时滚动窗口冷却保护）
+    meituan_results = []
+    try:
+        from ..meituan.worker import claim_all_meituan_accounts
+        mt_res = await asyncio.wait_for(
+            asyncio.to_thread(claim_all_meituan_accounts, force=False),
+            timeout=90.0
+        )
+        meituan_results = mt_res or []
+        for mr in meituan_results:
+            m_nick = mr.get("nickname") or mr.get("account_key", "美团账号")
+            m_ok = bool(mr.get("success") or mr.get("status") == "skipped")
+            m_out = mr.get("detailed_log") or mr.get("formatted_text") or mr.get("message") or ""
+            total_tasks += 1
+            if m_ok:
+                success_tasks += 1
+            flattened_results.append({
+                "task_id": "meituan_coupon",
+                "account_key": mr.get("account_key"),
+                "account_nickname": m_nick,
+                "label": f"[{m_nick}] 美团神券领取",
+                "ok": m_ok,
+                "output": m_out
+            })
+    except asyncio.TimeoutError:
+        flattened_results.append({
+            "task_id": "meituan_coupon",
+            "account_key": "all",
+            "account_nickname": "美团账号",
+            "label": "美团全量领券",
+            "ok": False,
+            "output": "美团领券总流程超时 (90秒熔断保护)"
+        })
+    except Exception as e:
+        flattened_results.append({
+            "task_id": "meituan_coupon",
+            "account_key": "all",
+            "account_nickname": "美团账号",
+            "label": "美团全量领券",
+            "ok": False,
+            "output": f"美团领券异常: {str(e)}"
+        })
+
+    all_ok = (total_tasks > 0) and (success_tasks == total_tasks)
+    summary_msg = f"已完成全部账号日常打卡！共处理 {len(all_accounts)} 个小蚕账号、{len(meituan_results)} 个美团账号 (成功 {success_tasks}/{total_tasks})"
+
     return {
         "ok": True,
         "all_ok": all_ok,
-        "results": results,
-        "message": f"账号【{nick}】已完成全部日常打卡任务！" if all_ok else f"账号【{nick}】部分日常任务已执行，请查看执行结果"
+        "message": summary_msg,
+        "summary": {
+            "xiaocan_accounts_count": len(all_accounts),
+            "meituan_accounts_count": len(meituan_results),
+            "total_tasks": total_tasks,
+            "success_tasks": success_tasks
+        },
+        "xiaocan_accounts": xiaocan_accounts_res,
+        "meituan_accounts": meituan_results,
+        "results": flattened_results
     }
+
+
+# ── 美团账号管理与扫码登录接口 ──────────────────────────────────────
+
+@router.get("/meituan/accounts")
+def get_meituan_accounts_list():
+    """获取所有已托管的美团官方账号列表"""
+    accounts = db.get_all_meituan_accounts()
+    return {"ok": True, "accounts": accounts}
+
+
+@router.post("/meituan/accounts")
+def save_or_update_meituan_account(data: Dict[str, Any] = Body(...)):
+    """保存或更新美团账号信息"""
+    key = data.get("key")
+    if not key and not data.get("token"):
+        return {"ok": False, "message": "参数错误，必须包含 key 或 token"}
+    saved = db.save_meituan_account(data)
+    return {"ok": True, "account": saved, "message": "美团账号信息已更新"}
+
+
+@router.delete("/meituan/accounts/{key}")
+def delete_meituan_account_by_key(key: str):
+    """删除指定美团账号"""
+    db.delete_meituan_account(key)
+    return {"ok": True, "message": "美团账号已成功移除"}
+
+
+@router.post("/meituan/clear-all")
+def clear_all_meituan_endpoint():
+    """彻底清空全部美团凭证（仓库、主账号绑定及本地凭据文件）"""
+    db.clear_all_meituan_data()
+    from ..meituan.runner import clear_current_token
+    clear_current_token()
+    return {"ok": True, "message": "已成功清空全部美团凭证"}
+
+
+@router.post("/meituan/auth/start")
+def start_meituan_auth(data: Optional[Dict[str, Any]] = Body(None)):
+    """发起美团 App 扫码登录授权，返回二维码 Base64 DataURL 与会话 ID"""
+    if hasattr(data, "default"):
+        data = None
+    account_key = (data or {}).get("account_key")
+    custom_nickname = (data or {}).get("custom_nickname")
+    from ..meituan.runner import auth_manager
+    res = auth_manager.start_auth_session(account_key=account_key, custom_nickname=custom_nickname)
+    return res
+
+
+@router.post("/accounts/{key}/meituan-nickname")
+def update_meituan_nickname(key: str, data: Dict[str, Any] = Body(...)):
+    """更新指定账号的美团自定义备注名称（支持自定义美团名）"""
+    nickname = (data.get("nickname") or "").strip()
+    if not nickname:
+        return {"ok": False, "message": "美团账号名称不能为空"}
+    updated = db.update_account_profile(key, {"meituan_nickname": nickname})
+    return {"ok": bool(updated), "message": "美团账号名称已成功更新", "nickname": nickname}
+
+
+@router.post("/accounts/{key}/unbind-meituan")
+def unbind_account_meituan(key: str):
+    """解除小蚕账号绑定的美团官方账号凭证"""
+    ok = db.unbind_meituan_from_account(key)
+    return {"ok": ok, "message": "美团账号绑定已解除"}
+
+
+@router.post("/accounts/{key}/bind-meituan")
+def bind_existing_meituan(key: str, data: Dict[str, Any] = Body(...)):
+    """将已有美团账号凭证绑定到指定小蚕账号"""
+    meituan_key = data.get("meituan_key")
+    if not meituan_key:
+        return {"ok": False, "message": "缺少 meituan_key 参数"}
+    mt_acc = db.get_meituan_account(meituan_key)
+    if not mt_acc or not mt_acc.get("token"):
+        return {"ok": False, "message": "未找到对应的有效美团凭证"}
+    db.bind_meituan_to_account(key, {
+        "token": mt_acc.get("token"),
+        "nickname": mt_acc.get("nickname") or f"美团账号 ({mt_acc['token'][-4:]})",
+        "saved_at": mt_acc.get("saved_at") or int(time.time()),
+        "is_active": 1,
+        "history_pool": mt_acc.get("history_pool") or []
+    })
+    return {"ok": True, "message": "成功关联美团凭证"}
+
+
+@router.get("/meituan/auth/poll")
+def poll_meituan_auth(session_id: str = Query(...)):
+    """轮询美团 App 扫码授权登录结果"""
+    from ..meituan.runner import auth_manager
+    res = auth_manager.get_session_status(session_id)
+    return res
+
+
+@router.post("/meituan/auth/cancel")
+def cancel_meituan_auth(data: Dict[str, Any] = Body(...)):
+    """取消美团扫码授权会话"""
+    session_id = data.get("session_id")
+    if session_id:
+        from ..meituan.runner import auth_manager
+        auth_manager.cancel_session(session_id)
+    return {"ok": True, "message": "授权会话已取消"}
+
+
+@router.post("/meituan/claim/run")
+async def run_meituan_claim(data: Optional[Dict[str, Any]] = Body(None)):
+    """手动触发美团领券（支持单个账号或全量账号轮流领取）"""
+    if hasattr(data, "default"):
+        data = None
+    data = data or {}
+    account_key = data.get("account_key")
+    force = bool(data.get("force", False))
+    from ..meituan.worker import claim_single_account, claim_all_meituan_accounts
+
+    if account_key:
+        try:
+            res = await asyncio.wait_for(
+                asyncio.to_thread(claim_single_account, account_key),
+                timeout=45.0
+            )
+            return {"ok": True, "result": res}
+        except asyncio.TimeoutError:
+            return {"ok": False, "message": "单账号领券超时 (45秒熔断保护)"}
+        except Exception as e:
+            return {"ok": False, "message": f"领券异常: {str(e)}"}
+    else:
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(claim_all_meituan_accounts, force=force),
+                timeout=120.0
+            )
+            return {"ok": True, "results": results}
+        except asyncio.TimeoutError:
+            return {"ok": False, "message": "全量领券执行超时 (120秒熔断保护)"}
+        except Exception as e:
+            return {"ok": False, "message": f"全量领券异常: {str(e)}"}
+
 
 
 
@@ -1520,9 +1800,9 @@ def _get_store_branch_key(splat: str, name: str) -> str:
 
 @router.get("/store/list")
 async def get_stores(
-    city_code: int = Query(440303),
-    longitude: str = Query("114.13166"),
-    latitude: str = Query("22.548361"),
+    city_code: Optional[int] = Query(None),
+    longitude: Optional[str] = Query(None),
+    latitude: Optional[str] = Query(None),
     account_key: Optional[str] = Query(None),
     keyword: Optional[str] = Query(None),
     platform: Optional[str] = Query("all"),
@@ -1539,9 +1819,9 @@ async def get_stores(
        通过携带 page_pv_id 维持翻页会话，支持连续触底无缝流式翻页
     2. 当未传关键词时：并发拉取官方商圈推荐 Feed，支持「距离最近」(sort=1, 默认) 与「综合排序」(sort=0) 原生排序
     """
-    city_code = _safe_val(city_code, 440303)
-    longitude = _safe_val(longitude, "114.13166")
-    latitude = _safe_val(latitude, "22.548361")
+    city_code = _safe_val(city_code, None)
+    longitude = _safe_val(longitude, None)
+    latitude = _safe_val(latitude, None)
     account_key = _safe_val(account_key, None)
     keyword = _safe_val(keyword, None)
     platform = _safe_val(platform, "all")
@@ -1579,21 +1859,35 @@ async def get_stores(
     user_id = target_acc.get("user_id")
 
     if target_acc:
-        if target_acc.get("longitude") and (not longitude or longitude in ("114.305393", "114.13166", "")):
+        if not longitude and target_acc.get("longitude"):
             longitude = target_acc.get("longitude")
-        if target_acc.get("latitude") and (not latitude or latitude in ("30.593099", "22.548361", "")):
+        if not latitude and target_acc.get("latitude"):
             latitude = target_acc.get("latitude")
-        if target_acc.get("city_code") and (not city_code or city_code in (420100, 440303)):
+        if not city_code and target_acc.get("city_code"):
             city_code = target_acc.get("city_code")
+
+    if not longitude or not latitude:
+        return {
+            "ok": True,
+            "stores": [],
+            "total": 0,
+            "source": "empty",
+            "has_more": False,
+            "message": "请先配置抢单定位以获取周边商户"
+        }
 
     try:
         lat = float(latitude)
-    except Exception:
-        lat = 22.548361
-    try:
         lon = float(longitude)
     except Exception:
-        lon = 114.13166
+        return {
+            "ok": True,
+            "stores": [],
+            "total": 0,
+            "source": "empty",
+            "has_more": False,
+            "message": "抢单定位坐标格式无效，请重新设置定位"
+        }
 
     stores = []
     source = "feed"
@@ -2158,9 +2452,9 @@ def _extract_all_promos_from_raw(
 
 @router.get("/store/dual-rebate-scan")
 async def scan_dual_rebate_stores(
-    city_code: int = Query(440303),
-    longitude: str = Query("114.13166"),
-    latitude: str = Query("22.548361"),
+    city_code: Optional[int] = Query(None),
+    longitude: Optional[str] = Query(None),
+    latitude: Optional[str] = Query(None),
     account_key: Optional[str] = Query(None),
     platform: Optional[str] = Query("meituan"),
     keyword: Optional[str] = Query(None),
@@ -2174,9 +2468,9 @@ async def scan_dual_rebate_stores(
     4. 将同一店铺的名下双返利方案深度整合为一个统一模型，支持一键/分别抢单；
     5. 支持搜索关键词过滤与最大商户筛选数量配置（默认300家，支持100-800家）。
     """
-    city_code = _safe_val(city_code, 440303)
-    longitude = _safe_val(longitude, "114.13166")
-    latitude = _safe_val(latitude, "22.548361")
+    city_code = _safe_val(city_code, None)
+    longitude = _safe_val(longitude, None)
+    latitude = _safe_val(latitude, None)
     account_key = _safe_val(account_key, None)
     keyword = _safe_val(keyword, None)
     try:
@@ -2223,21 +2517,35 @@ async def scan_dual_rebate_stores(
     user_id = target_acc.get("user_id")
 
     if target_acc:
-        if target_acc.get("longitude") and (not longitude or longitude in ("114.305393", "114.13166", "")):
+        if not longitude and target_acc.get("longitude"):
             longitude = target_acc.get("longitude")
-        if target_acc.get("latitude") and (not latitude or latitude in ("30.593099", "22.548361", "")):
+        if not latitude and target_acc.get("latitude"):
             latitude = target_acc.get("latitude")
-        if target_acc.get("city_code") and (not city_code or city_code in (420100, 440303)):
+        if not city_code and target_acc.get("city_code"):
             city_code = target_acc.get("city_code")
+
+    if not longitude or not latitude:
+        return {
+            "ok": False,
+            "total_scanned_promotions": 0,
+            "total_scanned_stores": 0,
+            "dual_rebate_count": 0,
+            "stores": [],
+            "message": "请先配置抢单定位以获取周边商户"
+        }
 
     try:
         lat = float(latitude)
-    except Exception:
-        lat = 22.548361
-    try:
         lon = float(longitude)
     except Exception:
-        lon = 114.13166
+        return {
+            "ok": False,
+            "total_scanned_promotions": 0,
+            "total_scanned_stores": 0,
+            "dual_rebate_count": 0,
+            "stores": [],
+            "message": "抢单定位坐标格式无效，请重新设置定位"
+        }
 
     logger.info(f"开始执行美团同店双返利/多活动高精度扫描: city={city_code}, lon={lon}, lat={lat}, 目标商户范围={max_stores}, 关键词={keyword}")
 
@@ -2501,7 +2809,6 @@ async def scan_dual_rebate_stores(
         offset += batch_size * page_size
         round_idx += 1
         # 防 WAF 频次风控：微批次之间增加平滑随机延时 (350ms ~ 650ms)
-        import random
         await asyncio.sleep(random.uniform(0.35, 0.65))
 
     # 赏金按比例返现池深度保障：
@@ -2514,7 +2821,6 @@ async def scan_dual_rebate_stores(
             if is_waf_blocked():
                 break
             try:
-                import random
                 await asyncio.sleep(random.uniform(0.3, 0.5))
                 sj_extra = await client.search_shangjin_stores(
                     keyword="",
@@ -3042,7 +3348,6 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
         req_parts.append(f"门槛≤¥{max_order_money:.1f}")
     req_str = "、".join(req_parts) if req_parts else "不设额外门槛"
 
-    from ..core import time_service
     t_now_init = time_service.format_now_ms()
 
     s_log = (
@@ -3472,9 +3777,8 @@ async def get_beijing_time_endpoint(force: bool = False):
 @router.get("/scheduler/jobs")
 async def get_live_scheduler_jobs():
     """获取当前调度中心实时注册的任务与下次触发时间"""
-    from ..core.scheduler import scheduler
     jobs = []
-    for j in scheduler.get_jobs():
+    for j in scheduler.scheduler.get_jobs():
         jobs.append({
             "id": j.id,
             "name": j.name,
@@ -3487,8 +3791,7 @@ async def get_live_scheduler_jobs():
 @router.post("/scheduler/reload")
 async def reload_scheduler_jobs_endpoint():
     """动态重新装载调度中心任务"""
-    from ..core.scheduler import reload_schedules
-    reload_schedules()
+    scheduler.reload_schedules()
     return {"ok": True, "message": "调度中心任务已重新装载"}
 
 
@@ -4039,13 +4342,10 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
         logger.warning(f"天地图逆地理编码异常，切换降级通道: {e}")
 
     # 2. 降级备用通道 (BigDataCloud)
-    import urllib.request
-    import json
-
     city_name = "武汉"
     locality = ""
     province = ""
-    addr = "电脑本机高精定位点"
+    addr = "本机定位点"
 
     try:
         url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={latitude}&longitude={longitude}&localityLanguage=zh"
@@ -4060,12 +4360,12 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
         if locality and city_name:
             addr = f"{city_name} · {locality}"
         elif city_name:
-            addr = f"{city_name} (本机定位)"
+            addr = f"{city_name}定位点"
     except Exception as e:
         logger.warning(f"备用逆地理编码解析异常: {e}")
 
     # 匹配 city_code
-    city_code = CITY_CODE_MAP.get(city_name) or CITY_CODE_MAP.get(f"{city_name}市") or 420100
+    city_code = CITY_CODE_MAP.get(city_name) or CITY_CODE_MAP.get(f"{city_name}市") or 0
 
     return {
         "ok": True,
@@ -4084,9 +4384,6 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
 @router.get("/location/ip")
 async def get_ip_location():
     """网络 IP 粗略定位兜底：通过 IP 归属地获取城市并结合天地图逆地理补全坐标"""
-    import urllib.request
-    import json
-
     try:
         req = urllib.request.Request("https://whois.pconline.com.cn/ipJson.jsp?json=true", headers={"User-Agent": "Mozilla/5.0"})
         res = urllib.request.urlopen(req, timeout=3.0)
@@ -4094,85 +4391,37 @@ async def get_ip_location():
         data = json.loads(raw)
         c_code_str = data.get("cityCode", "")
         raw_city = data.get("city", "").replace("市", "")
-        addr_text = data.get("addr", "") or f"{raw_city} (网络IP定位)"
+        addr_text = data.get("addr", "") or f"{raw_city}网络定位"
 
-        code_int = int(c_code_str) if c_code_str and c_code_str.isdigit() else (CITY_CODE_MAP.get(raw_city, 420100))
+        code_int = int(c_code_str) if c_code_str and c_code_str.isdigit() else (CITY_CODE_MAP.get(raw_city, 0))
 
         # 查找对应城市的预设经纬度
         c_tuple = CITY_COORDS.get(code_int)
-        if not c_tuple:
+        if not c_tuple and raw_city:
             for code, (cname, clng, clat) in CITY_COORDS.items():
                 if cname in raw_city or raw_city in cname:
                     code_int = code
                     c_tuple = (cname, clng, clat)
                     break
 
-        if not c_tuple:
-            c_tuple = ("武汉", "114.305393", "30.593099")
-
-        return {
-            "ok": True,
-            "city_code": code_int,
-            "city_name": c_tuple[0],
-            "address_name": addr_text,
-            "latitude": c_tuple[2],
-            "longitude": c_tuple[1],
-            "source": "ip",
-            "is_ip": True
-        }
+        if c_tuple:
+            return {
+                "ok": True,
+                "city_code": code_int,
+                "city_name": c_tuple[0],
+                "address_name": addr_text,
+                "latitude": c_tuple[2],
+                "longitude": c_tuple[1],
+                "source": "ip",
+                "is_ip": True
+            }
     except Exception as e:
         logger.warning(f"备用 IP 定位异常: {e}")
 
-    # 2. 降级备用通道 (PConline)
-    import urllib.request
-    import json
-
-    try:
-        req = urllib.request.Request("https://whois.pconline.com.cn/ipJson.jsp?json=true", headers={"User-Agent": "Mozilla/5.0"})
-        res = urllib.request.urlopen(req, timeout=3.0)
-        raw = res.read().decode("gbk", errors="ignore")
-        data = json.loads(raw)
-        c_code_str = data.get("cityCode", "")
-        raw_city = data.get("city", "").replace("市", "")
-        addr_text = data.get("addr", "") or f"{raw_city} (网络IP定位)"
-
-        code_int = int(c_code_str) if c_code_str and c_code_str.isdigit() else (CITY_CODE_MAP.get(raw_city, 420100))
-
-        # 查找对应城市的预设经纬度
-        c_tuple = CITY_COORDS.get(code_int)
-        if not c_tuple:
-            # 模糊匹配
-            for code, (cname, clng, clat) in CITY_COORDS.items():
-                if cname in raw_city or raw_city in cname:
-                    code_int = code
-                    c_tuple = (cname, clng, clat)
-                    break
-
-        if not c_tuple:
-            c_tuple = ("武汉", "114.305393", "30.593099")
-
-        return {
-            "ok": True,
-            "city_code": code_int,
-            "city_name": c_tuple[0],
-            "address_name": addr_text,
-            "latitude": c_tuple[2],
-            "longitude": c_tuple[1],
-            "source": "fallback",
-            "is_ip": True
-        }
-    except Exception as e:
-        logger.warning(f"备用 IP 定位异常: {e}")
-        return {
-            "ok": True,
-            "city_code": 420100,
-            "city_name": "武汉",
-            "address_name": "武汉市 (默认)",
-            "latitude": "30.593099",
-            "longitude": "114.305393",
-            "source": "default",
-            "is_ip": True
-        }
+    return {
+        "ok": False,
+        "message": "未能自动获取当前网络 IP 定位，请点击搜索框输入目标商圈或手动选择"
+    }
 
 
 # ---------------- 消息中心 API ---------------- #

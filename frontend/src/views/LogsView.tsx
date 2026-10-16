@@ -58,6 +58,8 @@ const TASK_LABELS: Record<string, string> = {
   expire_remind: '凭据/JWT到期预警',
   coupon_remind: '卡券/红包到期提醒',
   dual_rebate_monitor: '美团同店双返利监控',
+  meituan_coupon: '美团官方领券打卡',
+  meituan_auth: '美团官方扫码授权',
 };
 
 const STORE_TASK_KEYS = new Set([
@@ -369,7 +371,7 @@ export const LogsView: React.FC = () => {
       },
     },
     {
-      title: '执行步骤与摘要 (点击展开详情流水)',
+      title: '执行步骤与摘要',
       dataIndex: 'output',
       render: (out: string, record: JobLog) => {
         const rawLines = (out || '').split('\n').map(l => (l || '').trim()).filter(Boolean);
@@ -541,10 +543,11 @@ export const LogsView: React.FC = () => {
                 );
               }
               const acc = accounts.find(a => a.key === val);
+              const isMt = acc?.platform === 'meituan';
               return (
                 <div className="flex items-center gap-1.5 text-xs truncate">
-                  <Avatar size="extra-extra-small" src={acc?.avatar || undefined} color="orange">
-                    {acc?.nickname?.[0] || '蚕'}
+                  <Avatar size="extra-extra-small" src={acc?.avatar || undefined} style={isMt ? { backgroundColor: '#ffc300', color: '#222' } : undefined} color="orange">
+                    {isMt ? '美' : (acc?.nickname?.[0] || '蚕')}
                   </Avatar>
                   <span className="truncate">{acc?.nickname || val}</span>
                 </div>
@@ -554,19 +557,27 @@ export const LogsView: React.FC = () => {
             <Select.Option value="">
               <div className="flex items-center gap-2 py-0.5">
                 <Avatar size="extra-extra-small" color="blue" shape="square">全</Avatar>
-                <span className="text-xs font-medium">全部账号 (汇总)</span>
+                <span className="text-xs font-medium">全部账号</span>
               </div>
             </Select.Option>
-            {accounts.map(a => (
-              <Select.Option key={a.key} value={a.key}>
-                <div className="flex items-center gap-2 py-0.5">
-                  <Avatar size="extra-extra-small" src={a.avatar || undefined} color="orange">
-                    {a.nickname?.[0] || '蚕'}
-                  </Avatar>
-                  <span className="truncate flex-1 text-xs">{a.nickname}</span>
-                </div>
-              </Select.Option>
-            ))}
+            {accounts.map(a => {
+              const isMt = a.platform === 'meituan';
+              return (
+                <Select.Option key={a.key} value={a.key}>
+                  <div className="flex items-center gap-2 py-0.5">
+                    <Avatar size="extra-extra-small" src={a.avatar || undefined} style={isMt ? { backgroundColor: '#ffc300', color: '#222' } : undefined} color="orange">
+                      {isMt ? '美' : (a.nickname?.[0] || '蚕')}
+                    </Avatar>
+                    <span className="truncate flex-1 text-xs">{a.nickname}</span>
+                    {isMt && (
+                      <Tag size="small" color="amber" shape="circle" style={{ transform: 'scale(0.85)' }}>
+                        美团
+                      </Tag>
+                    )}
+                  </div>
+                </Select.Option>
+              );
+            })}
           </Select>
 
           <Select

@@ -294,7 +294,7 @@ const ClawBotLoginModal: React.FC<ClawBotLoginModalProps> = ({ visible, onClose,
                 <div className="font-semibold text-semi-color-text-0 mb-1">关键激活步骤提示：</div>
                 腾讯官方 iLink 灰度接口要求首条会话必须由微信用户主动发起。
                 <br />
-                请在手机微信中打开<strong>「微信 ClawBot」</strong>，并向它发送一条任意消息（如<strong>你好</strong>或<strong>1</strong>）。
+                请在手机微信中打开<strong>「微信 ClawBot」</strong>，并向其发送一条测试消息。
               </div>
 
               <div className="flex items-center justify-between flex-wrap gap-2 pt-1">
@@ -488,7 +488,7 @@ export const SettingsView: React.FC = () => {
   const handleTestTianditu = async () => {
     const key = formApiRef.current?.getValue('tianditu_key') || '';
     if (!String(key).trim()) {
-      Toast.warning('请先填写天地图服务密钥 (Token / tk)');
+      Toast.warning('请先填写天地图服务密钥');
       return;
     }
     setTestingTianditu(true);
@@ -524,7 +524,7 @@ export const SettingsView: React.FC = () => {
     { key: '授权状态', value: <Tag color="cyan" size="small">终身免费开放 · 零车位与商业化限制</Tag> },
     { key: '前端技术栈', value: <Tag color="blue" size="small">React 19 + TypeScript + Semi Design + Tailwind CSS v4 + GSAP</Tag> },
     { key: '后端技术栈', value: <Tag color="purple" size="small">FastAPI + APScheduler + 逆向 RPC 驱动 + 腾讯 iLink 灰度协议 + OneBot V11</Tag> },
-    { key: '多项目联动', value: '支持原生内嵌微信 ClawBot (腾讯 iLink 直连) 与本地 mystool-bot (QQ 机器人)' },
+    { key: '多项目联动', value: '支持原生内嵌微信 ClawBot 与本地 mystool-bot 机器人联动' },
     { key: '数据持久化', value: '本地 SQLite 独立存储，纯私有化运行，零外部数据上报' },
     { key: '部署形态', value: 'Windows 单机 / 局域网内网穿透 / 软路由 / NAS / Linux 服务器自托管' },
   ];
@@ -710,7 +710,7 @@ export const SettingsView: React.FC = () => {
                           onClick={() => setAdvancedClawbotOpen(!advancedClawbotOpen)}
                           className="!text-semi-color-text-2"
                         >
-                          {advancedClawbotOpen ? '收起高级导入选项' : '展开高级导入选项 (手动配置凭证)'}
+                          {advancedClawbotOpen ? '收起高级导入选项' : '展开高级导入选项'}
                         </Button>
 
                         <Space>
@@ -739,13 +739,13 @@ export const SettingsView: React.FC = () => {
                       <Collapsible isOpen={advancedClawbotOpen}>
                         <div className="p-3.5 rounded-lg bg-semi-color-fill-0 border border-semi-color-border space-y-3 mt-2">
                           <div className="text-xs font-semibold text-semi-color-text-1">
-                            高级凭证配置（适合从老版本或多机迁移凭证）
+                            高级凭据配置
                           </div>
                           <Form.Input
                             field="clawbot_auth_path"
-                            label="外部凭证路径 (clawbot-auth.json)"
-                            placeholder="如需从外部已有文件加载凭据可在此填写文件绝对路径，留空则默认使用系统内嵌凭据"
-                            helpText="留空时系统默认优先从项目内置 SQLite 数据库与 backend/data/clawbot-auth.json 读取。"
+                            label="外部凭证路径"
+                            placeholder="填写外部凭据文件绝对路径，留空则使用系统默认凭据"
+                            helpText="留空时系统默认从本地数据库与 backend/data/clawbot-auth.json 读取"
                           />
                           <Form.TextArea
                             field="clawbot_auth_json"
@@ -784,14 +784,14 @@ export const SettingsView: React.FC = () => {
                       <Banner
                         type="info"
                         closeIcon={null}
-                        description="小蚕助手已支持直连本地 mystool-bot (NoneBot2 8080端口) 或 SnowLuma (3000端口)。当外卖霸王餐抢单中签或秒杀成功时，机器人将在群内或私聊实时推送提醒。"
+                        description="支持直连本地 mystool-bot 或 SnowLuma。当抢单中签或秒杀成功时，机器人将在群聊或私聊推送提醒。"
                       />
 
                       <Form.Input
                         field="qq_bot_api"
                         label="OneBot V11 HTTP 接口地址"
                         placeholder="http://127.0.0.1:8080"
-                        helpText="支持 NoneBot2 内部路由 (http://127.0.0.1:8080) 或 SnowLuma HTTP 服务 (http://127.0.0.1:3000)。"
+                        helpText="支持 NoneBot2 内部路由或 SnowLuma HTTP 服务"
                       />
 
                       <Form.RadioGroup
@@ -816,7 +816,7 @@ export const SettingsView: React.FC = () => {
                         <Col span={12}>
                           <Form.Input
                             field="qq_bot_user_id"
-                            label="管理员 QQ 号 (私聊目标)"
+                            label="管理员 QQ 号"
                             placeholder="2371445972"
                             helpText="接收私聊提醒的管理员 QQ 号"
                           />
@@ -825,7 +825,7 @@ export const SettingsView: React.FC = () => {
 
                       <Form.Input
                         field="qq_bot_token"
-                        label="OneBot Access Token (可选)"
+                        label="OneBot Access Token（选填）"
                         placeholder="若协议端配置了访问令牌请输入，默认留空"
                       />
 
@@ -1053,7 +1053,7 @@ export const SettingsView: React.FC = () => {
                             <Tag color="orange" size="small">限时秒杀</Tag>
                           </div>
                           <div className="text-xs text-semi-color-text-2">
-                            会员秒杀场次（如 10:00 / 14:00 大牌秒杀活动）成功抢中或获得大额券包时触发提醒
+                            会员秒杀场次成功抢中或获得大额券包时触发提醒
                           </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -1110,14 +1110,14 @@ export const SettingsView: React.FC = () => {
                       <Banner
                         type="info"
                         closeIcon={null}
-                        description="天地图 (tianditu.gov.cn) 是国家测绘地理信息局建设的权威国家地理信息公共服务平台。配置服务密钥 (Token / tk) 后，全平台店铺抢单基准位置搜索、高精逆地理编码与商圈检索将由天地图官方服务直连驱动，无调用量配额与频次阻碍。"
+                        description="天地图是国家测绘地理信息局建设的国家地理信息公共服务平台。配置服务密钥后，店铺抢单基准位置搜索、高精逆地理编码与商圈检索将由天地图官方服务直连驱动，无配额与频次限制。"
                       />
 
                       <Form.Input
                         field="tianditu_key"
-                        label="天地图服务密钥 (Token / tk)"
+                        label="天地图服务密钥"
                         placeholder="例如: 109fd484f999e3c0472ab15fa38fe2ac"
-                        extraText="国家地理信息公共服务平台控制台生成的 Web API 专属 Token (tk)"
+                        extraText="国家地理信息公共服务平台控制台生成的 Web API 专属密钥"
                       />
 
                       <div className="flex items-center justify-between pt-2 border-t border-semi-color-border">
@@ -1126,7 +1126,7 @@ export const SettingsView: React.FC = () => {
                           icon={<IconExternalOpen />}
                           onClick={() => window.open('https://www.tianditu.gov.cn/', '_blank')}
                         >
-                          前往国家地理信息公共服务平台 (天地图)
+                          前往天地图控制台
                         </Button>
                         <Button
                           type="primary"

@@ -757,7 +757,7 @@ export const OrdersView: React.FC = () => {
           />
           <div>
             <Text size="small" type="secondary" className="block mb-1">
-              请输入外卖平台 (美团/饿了么/京东) 订单号：
+              请输入外卖平台订单号：
             </Text>
             <Input
               placeholder="例如：3002311852210111003"

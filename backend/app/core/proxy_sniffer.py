@@ -7,6 +7,7 @@
 4. 捕获凭据后毫秒级自动还原系统代理并安全退出守护进程，杜绝断网
 """
 import asyncio
+import json
 import logging
 import os
 import ssl
@@ -207,7 +208,6 @@ class SnifferManager:
             idx = text_data.find("{")
             json_str = text_data[idx:]
             if any(k in json_str for k in ["nickname", "nick_name", "nickName", "vip_level", "avatar"]):
-                import json
                 end_idx = json_str.rfind("}")
                 if end_idx > 0:
                     data = json.loads(json_str[:end_idx+1])

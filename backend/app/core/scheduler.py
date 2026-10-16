@@ -15,6 +15,8 @@ from apscheduler.triggers.combining import OrTrigger
 
 from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError
+from . import time_service
+from .notifier import send_system_notification
 
 logger = logging.getLogger("xiaocan.scheduler")
 
@@ -60,7 +62,6 @@ async def prepare_warmup_and_wait(
         return ""
 
     # 接入阿里云 NTP 授时校准，避免宿主机时钟偏差导致提前/延后抢单
-    from . import time_service
     await time_service.async_sync_ntp(force=True)
     ntp_now = time_service.now_ts()
     ntp_dt = datetime.fromtimestamp(ntp_now)
@@ -138,6 +139,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
         "expire_remind": "登录凭据到期巡检",
         "coupon_remind": "卡券到期提醒",
         "dual_rebate_monitor": "美团同店双返利监控",
+        "meituan_coupon": "美团神券每日一键领",
         "store_grab": "霸王餐即时抢单",
         "store_appoint": "倒计时预约抢单",
         "store_monitor": "实时名额监听",
@@ -439,7 +441,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     evt_status = event_info.get("status", 0)
                     begin_str = time.strftime('%H:%M:%S', time.localtime(begin_ts)) if begin_ts else "待定"
                     end_str = time.strftime('%H:%M:%S', time.localtime(end_ts)) if end_ts else "待定"
-                    from . import time_service
                     now_ts = int(time_service.now_ts())
                     log_output += f"[{time.strftime('%H:%M:%S')}] 探测到红包雨场次 #{event_id}: 营业时间 {begin_str} - {end_str} (状态: {evt_status})\n"
 
@@ -551,7 +552,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                             p_details.append(p_name)
                                     p_str = "、".join(p_details)
                                     log_output += f"[{ts_fmt}] [公共红包雨] 结算成功！上报点击 {actual_clicks} 次，斩获 {len(items)} 个红包：{p_str}\n"
-                                    from .notifier import send_system_notification
                                     await send_system_notification(
                                         title="整点红包雨中奖提醒",
                                         content=f"账号【{nickname}】在场次 #{event_id} ({begin_str}场) 斩获 {len(items)} 个红包：{p_str}！",
@@ -567,7 +567,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                     break
                                 elif ge.code == 200001:
                                     log_output += f"[{ts_fmt}] [公共红包雨] 风险拦截: 触发风控安全校验 (代码: 200001: {ge.msg})\n"
-                                    from .notifier import send_system_notification
                                     await send_system_notification(
                                         title="红包雨风控安全拦截",
                                         content=f"账号【{nickname}】参与场次 #{event_id} 红包雨触发安全风控，请在微信小程序完成一次人机验证。",
@@ -597,7 +596,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "brand_flash":
             # 抢每日09:30 SVIP额外放量大牌券 (绝不消耗每月保底大牌券配额 - 极速直射模式)
-            from . import time_service
             log_output += f"[{time_service.format_now()}] 正在预热探测今日 09:30 SVIP 额外大牌放量券实时配置 (微服务 VipRightsService.ExtraBrandCardPool)...\n"
             log_output += f"[{time_service.format_now()}] 配额保护模式: 仅抢每日放量券，严禁触发消耗账号每月保底大牌券额度\n"
 
@@ -651,7 +649,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     try:
                         grab_res = await client.grab_extra_brand_card(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, card_type=pool_type)
                         log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求: 抢券成功！已成功领取【{pool_desc}】\n"
-                        from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢SVIP大牌券成功",
                             content=f"账号【{nickname}】在 09:30 场次成功抢到每日大牌券【{pool_desc}】",
@@ -826,7 +823,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "svip_rebate":
             # 抢SVIP专属返利券 (每日 09:00:00 准点秒杀 - 极速直射模式)
-            from . import time_service
             log_output += f"[{time_service.format_now()}] 正在预热检索今日 09:00 SVIP 专属返利券档位与资格 (官方独立App原生协议 VipRightsService)...\n"
             try:
                 rebate_res = await client.get_plus_vip_rebate_card_infos(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
@@ -850,7 +846,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 try:
                     claim_res = await client.grab_rebate_card_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                     log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求 抢券成功！已领取SVIP专属大额返利券\n"
-                    from .notifier import send_system_notification
                     await send_system_notification(
                         title="抢SVIP返利券成功",
                         content=f"账号【{nickname}】成功领取今日 09:00 SVIP 专属大额返利券！",
@@ -867,7 +862,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "free_order":
             # 抢每月免单券 (每日 14:00:00 准点开抢 - 极速直射模式)
-            from . import time_service
             log_output += f"[{time_service.format_now()}] 正在预热检索每月免单券 14:00 专属通道状态与账户资格 (官方独立App原生协议 VipRightsService)...\n"
             can_grab_free = True
             try:
@@ -899,7 +893,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     try:
                         lottery_res = await client.grab_free_order_quota(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                         log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求 抢券成功！已抢到每月外卖免单券\n"
-                        from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢每月免单券成功",
                             content=f"账号【{nickname}】成功抢到每月外卖全额免单券！",
@@ -950,7 +943,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     try:
                         ex_res = await client.today_exchange(exchange_id=eid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                         log_output += f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [自动抢元宝秒杀] 兑换成功！已斩获【{ename}】\n"
-                        from .notifier import send_system_notification
                         await send_system_notification(
                             title="元宝秒杀抢券成功",
                             content=f"账号【{nickname}】成功兑换【{ename}】！",
@@ -967,7 +959,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "media_vip":
             # 抢每月影音VIP (每日 10:00 / 17:00 / 20:00 三场 - 极速直射模式)
-            from . import time_service
             now_dt = time_service.now_dt()
             target_h = 10 if now_dt.hour < 10 or (now_dt.hour == 9 and now_dt.minute >= 50) else (17 if now_dt.hour < 17 or (now_dt.hour == 16 and now_dt.minute >= 50) else 20)
             log_output += f"[{time_service.format_now()}] 正在预热检索 {target_h}:00 影音会员周卡专属通道与资格 (官方独立App原生协议 VipRightsService)...\n"
@@ -1040,7 +1031,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
                         cdk_suffix = f" (券码CDK: {cdk_code})" if cdk_code else ""
                         log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求: 抢券成功！斩获【{benefit_name}】{cdk_suffix}\n"
-                        from .notifier import send_system_notification
                         await send_system_notification(
                             title="抢影音会员周卡成功",
                             content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{benefit_name}】！{cdk_suffix}",
@@ -1078,7 +1068,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_ts))
                 if days_left <= 0:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 凭据已过期！已于 {exp_str} 失效，请在电脑微信中重新直连提取\n"
-                    from .notifier import send_system_notification
                     await send_system_notification(
                         title="小蚕账号凭据已过期",
                         content=f"账号【{nickname}】登录凭据已过期（失效时间: {exp_str}），请重新在微信小程序直连提取更新！",
@@ -1086,7 +1075,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     )
                 elif days_left <= warn_days:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 凭据即将到期预警: 剩余 {days_left:.1f} 天（到期时间: {exp_str}，阈值: {warn_days}天）\n"
-                    from .notifier import send_system_notification
                     await send_system_notification(
                         title="小蚕凭据即将到期预警",
                         content=f"账号【{nickname}】凭据将在 {days_left:.1f} 天后失效（到期时间: {exp_str}），请提前更新避免掉线！",
@@ -1120,7 +1108,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 if expiring:
                     sample = "、".join(expiring[:3])
                     log_output += f"[{time.strftime('%H:%M:%S')}] 发现 {len(expiring)} 张卡券即将在 {warn_hours} 小时内过期: {sample}\n"
-                    from .notifier import send_system_notification
                     await send_system_notification(
                         title="小蚕特权卡券到期提醒",
                         content=f"账号【{nickname}】有 {len(expiring)} 张卡券即将过期（{sample}），请尽快使用！",
@@ -1137,6 +1124,26 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             log_output += out
             if not monitor_ok:
                 status = "error"
+
+        elif task_id == "meituan_coupon":
+            from ..meituan.worker import claim_single_account, claim_all_meituan_accounts
+            mt_acc = db.get_meituan_account(account_key)
+            acc_record = db.get_account_by_key(account_key)
+            has_mt = bool(mt_acc or (acc_record and acc_record.get("meituan_token")))
+            if has_mt:
+                claim_res = await asyncio.to_thread(claim_single_account, account_key)
+                detail_out = claim_res.get("detailed_log") or claim_res.get("formatted_text", "")
+                log_output += detail_out + "\n"
+                if not claim_res.get("success") and claim_res.get("code") != 1014:
+                    status = "error"
+            else:
+                claim_results = await asyncio.to_thread(claim_all_meituan_accounts, force=False)
+                if not claim_results:
+                    log_output += f"[{time.strftime('%H:%M:%S')}] 未找到已绑定的美团官方账号，请前往【账号管理】扫码绑定。\n"
+                else:
+                    for cr in claim_results:
+                        detail_out = cr.get("detailed_log") or cr.get("formatted_text", "")
+                        log_output += detail_out + "\n"
 
         else:
             log_output += f"[{time.strftime('%H:%M:%S')}] 【{task_label}】执行完成 (无异常)\n"
