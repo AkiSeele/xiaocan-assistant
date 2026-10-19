@@ -47,19 +47,57 @@ export interface Account {
 export type AccountNotifyMode = 'global' | 'custom' | 'disabled';
 
 export interface AccountNotifyConfig {
-  channel?: 'wecom' | 'feishu' | 'dingtalk' | 'bark' | 'telegram' | 'qq_bot' | 'clawbot' | string;
-  wecom_webhook?: string;
-  feishu_webhook?: string;
-  dingtalk_webhook?: string;
-  dingtalk_secret?: string;
-  bark_url?: string;
-  tg_bot_token?: string;
-  tg_chat_id?: string;
-  qq_bot_api?: string;
-  qq_bot_user_id?: string;
-  qq_bot_token?: string;
+  channel?: 'clawbot' | 'serverchan' | 'wxpusher' | 'wecom' | 'dingtalk' | 'feishu' | 'bark' | 'telegram' | 'webhook' | 'email' | 'gotify' | 'discord' | 'qq_bot' | string;
+  // 微信 ClawBot
   clawbot_auth_path?: string;
   clawbot_auth_json?: string;
+  // Server酱
+  serverchan_sendkey?: string;
+  // WxPusher
+  wxpusher_app_token?: string;
+  wxpusher_uids?: string;
+  // 企业微信
+  wecom_webhook?: string;
+  // 钉钉
+  dingtalk_webhook?: string;
+  dingtalk_secret?: string;
+  // 飞书
+  feishu_webhook?: string;
+  feishu_secret?: string;
+  // iOS Bark
+  bark_url?: string;
+  bark_group?: string;
+  bark_sound?: string;
+  bark_icon?: string;
+  // Telegram
+  tg_bot_token?: string;
+  tg_chat_id?: string;
+  tg_proxy_url?: string;
+  tg_api_base_url?: string;
+  // 通用 Webhook
+  webhook_url?: string;
+  webhook_method?: 'POST' | 'GET' | string;
+  webhook_headers?: string;
+  // 邮件
+  email_host?: string;
+  email_port?: number;
+  email_ssl?: boolean;
+  email_user?: string;
+  email_pass?: string;
+  email_from?: string;
+  email_to?: string;
+  // Gotify
+  gotify_url?: string;
+  gotify_token?: string;
+  gotify_priority?: number;
+  // Discord
+  discord_webhook?: string;
+  discord_username?: string;
+  // QQ 机器人
+  qq_bot_api?: string;
+  qq_bot_user_id?: string;
+  qq_bot_group_id?: string;
+  qq_bot_token?: string;
 }
 
 export interface AccountNotifyResponse {
@@ -487,6 +525,59 @@ export interface SystemSettings {
   clawbot_auth_path?: string;
   clawbot_auth_json?: string;
   clawbot_status?: ClawBotStatus;
+  // Server酱 (Turbo / 3)
+  serverchan_enabled: boolean;
+  serverchan_sendkey: string;
+  // WxPusher 微信推送
+  wxpusher_enabled: boolean;
+  wxpusher_app_token: string;
+  wxpusher_uids: string;
+  // 企业微信
+  wecom_enabled: boolean;
+  wecom_webhook: string;
+  // 钉钉自定义机器人
+  dingtalk_enabled: boolean;
+  dingtalk_webhook: string;
+  dingtalk_secret?: string;
+  // 飞书自定义机器人
+  feishu_enabled: boolean;
+  feishu_webhook: string;
+  feishu_secret?: string;
+  // iOS Bark
+  bark_enabled: boolean;
+  bark_url: string;
+  bark_group?: string;
+  bark_sound?: string;
+  bark_icon?: string;
+  // Telegram
+  telegram_enabled: boolean;
+  tg_bot_token: string;
+  tg_chat_id: string;
+  tg_proxy_url?: string;
+  tg_api_base_url?: string;
+  // 通用 HTTP Webhook
+  webhook_enabled: boolean;
+  webhook_url: string;
+  webhook_method?: 'POST' | 'GET' | string;
+  webhook_headers?: string;
+  // SMTP 邮件
+  email_enabled: boolean;
+  email_host: string;
+  email_port: number;
+  email_ssl: boolean;
+  email_user: string;
+  email_pass: string;
+  email_from?: string;
+  email_to: string;
+  // Gotify
+  gotify_enabled: boolean;
+  gotify_url: string;
+  gotify_token: string;
+  gotify_priority?: number;
+  // Discord
+  discord_enabled: boolean;
+  discord_webhook: string;
+  discord_username?: string;
   // QQ 机器人 (OneBot V11)
   qq_bot_enabled: boolean;
   qq_bot_api: string;
@@ -494,20 +585,14 @@ export interface SystemSettings {
   qq_bot_user_id: string;
   qq_bot_target_type: 'group' | 'private' | 'both';
   qq_bot_token?: string;
-  // 企业微信
-  wecom_enabled: boolean;
-  wecom_webhook: string;
-  // iOS Bark
-  bark_enabled: boolean;
-  bark_url: string;
-  // Telegram
-  telegram_enabled: boolean;
-  tg_bot_token: string;
-  tg_chat_id: string;
-  // 触发策略
+  // 触发策略 (对标 BetterGI 事件订阅)
   notify_on_grab: boolean;
-  notify_on_appoint: boolean;
   notify_on_spike: boolean;
+  notify_on_meituan: boolean;
+  notify_on_appoint: boolean;
+  notify_on_token_warn: boolean;
+  notify_on_coupon_expire: boolean;
+  notify_on_task_fail: boolean;
   // 位置服务与天地图 Web API (tianditu.gov.cn)
   tianditu_key?: string;
 }

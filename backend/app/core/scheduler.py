@@ -17,6 +17,7 @@ from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError
 from . import time_service
 from .notifier import send_system_notification
+from .notification import NotificationEvent, NotificationLevel
 
 logger = logging.getLogger("xiaocan.scheduler")
 
@@ -555,7 +556,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                     await send_system_notification(
                                         title="整点红包雨中奖提醒",
                                         content=f"账号【{nickname}】在场次 #{event_id} ({begin_str}场) 斩获 {len(items)} 个红包：{p_str}！",
-                                        account_key=account_key
+                                        account_key=account_key,
+                                        event=NotificationEvent.SPIKE_SUCCESS,
+                                        level=NotificationLevel.SUCCESS
                                     )
                                 else:
                                     log_output += f"[{ts_fmt}] [公共红包雨] 抓取结算完成 (上报点击 {actual_clicks} 次)，但本场未分配到有效红包 (可能名额已发完或限额)\n"
@@ -570,7 +573,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                     await send_system_notification(
                                         title="红包雨风控安全拦截",
                                         content=f"账号【{nickname}】参与场次 #{event_id} 红包雨触发安全风控，请在微信小程序完成一次人机验证。",
-                                        account_key=account_key
+                                        account_key=account_key,
+                                        event=NotificationEvent.TOKEN_WARN,
+                                        level=NotificationLevel.WARNING
                                     )
                                     break
                                 else:
@@ -658,7 +663,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         await send_system_notification(
                             title="抢SVIP大牌券成功",
                             content=f"账号【{nickname}】在 09:30 场次成功抢到每日大牌券【{pool_desc}】",
-                            account_key=account_key
+                            account_key=account_key,
+                            event=NotificationEvent.SPIKE_SUCCESS,
+                            level=NotificationLevel.SUCCESS
                         )
                         break
                     except XiaoCanRPCError as e:
@@ -869,7 +876,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     await send_system_notification(
                         title="抢SVIP返利券成功",
                         content=f"账号【{nickname}】成功领取今日 09:00 SVIP 专属大额返利券！",
-                        account_key=account_key
+                        account_key=account_key,
+                        event=NotificationEvent.SPIKE_SUCCESS,
+                        level=NotificationLevel.SUCCESS
                     )
                     break
                 except XiaoCanRPCError as ce:
@@ -916,7 +925,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         await send_system_notification(
                             title="抢每月免单券成功",
                             content=f"账号【{nickname}】成功抢到每月外卖全额免单券！",
-                            account_key=account_key
+                            account_key=account_key,
+                            event=NotificationEvent.SPIKE_SUCCESS,
+                            level=NotificationLevel.SUCCESS
                         )
                         break
                     except XiaoCanRPCError as ce:
@@ -966,7 +977,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         await send_system_notification(
                             title="元宝秒杀抢券成功",
                             content=f"账号【{nickname}】成功兑换【{ename}】！",
-                            account_key=account_key
+                            account_key=account_key,
+                            event=NotificationEvent.SPIKE_SUCCESS,
+                            level=NotificationLevel.SUCCESS
                         )
                     except XiaoCanRPCError as e:
                         log_output += f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [自动抢元宝秒杀] 提示: {e.msg} (代码: {e.code})\n"
@@ -1054,7 +1067,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         await send_system_notification(
                             title="抢影音会员周卡成功",
                             content=f"账号【{nickname}】在 {target_h}:00 场次成功抢到【{benefit_name}】！{cdk_suffix}",
-                            account_key=account_key
+                            account_key=account_key,
+                            event=NotificationEvent.SPIKE_SUCCESS,
+                            level=NotificationLevel.SUCCESS
                         )
                         break
                     except XiaoCanRPCError as ce:
@@ -1091,14 +1106,18 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     await send_system_notification(
                         title="小蚕账号凭据已过期",
                         content=f"账号【{nickname}】登录凭据已过期（失效时间: {exp_str}），请重新在微信小程序直连提取更新！",
-                        account_key=account_key
+                        account_key=account_key,
+                        event=NotificationEvent.TOKEN_WARN,
+                        level=NotificationLevel.ERROR
                     )
                 elif days_left <= warn_days:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 凭据即将到期预警: 剩余 {days_left:.1f} 天（到期时间: {exp_str}，阈值: {warn_days}天）\n"
                     await send_system_notification(
                         title="小蚕凭据即将到期预警",
                         content=f"账号【{nickname}】凭据将在 {days_left:.1f} 天后失效（到期时间: {exp_str}），请提前更新避免掉线！",
-                        account_key=account_key
+                        account_key=account_key,
+                        event=NotificationEvent.TOKEN_WARN,
+                        level=NotificationLevel.WARNING
                     )
                 else:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 凭据状态良好: 剩余有效时间 {days_left:.1f} 天（到期时间: {exp_str}）\n"
@@ -1131,7 +1150,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     await send_system_notification(
                         title="小蚕特权卡券到期提醒",
                         content=f"账号【{nickname}】有 {len(expiring)} 张卡券即将过期（{sample}），请尽快使用！",
-                        account_key=account_key
+                        account_key=account_key,
+                        event=NotificationEvent.COUPON_EXPIRE,
+                        level=NotificationLevel.WARNING
                     )
                 else:
                     log_output += f"[{time.strftime('%H:%M:%S')}] 卡券核验完成: 暂无即将在 {warn_hours} 小时内过期的特权券\n"
@@ -1154,6 +1175,14 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 claim_res = await asyncio.to_thread(claim_single_account, account_key)
                 detail_out = claim_res.get("detailed_log") or claim_res.get("formatted_text", "")
                 log_output += detail_out + "\n"
+                if claim_res.get("success") and claim_res.get("coupon_count", 0) > 0:
+                    await send_system_notification(
+                        title="美团外卖券自动领取成功",
+                        content=f"账号【{nickname}】成功领取 {claim_res.get('coupon_count')} 张美团外卖优惠券！",
+                        account_key=account_key,
+                        event=NotificationEvent.MEITUAN_COUPON,
+                        level=NotificationLevel.SUCCESS
+                    )
                 if not claim_res.get("success") and claim_res.get("code") != 1014:
                     status = "error"
             else:
@@ -1164,6 +1193,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     for cr in claim_results:
                         detail_out = cr.get("detailed_log") or cr.get("formatted_text", "")
                         log_output += detail_out + "\n"
+                        if cr.get("success") and cr.get("coupon_count", 0) > 0:
+                            cr_nick = cr.get("nickname") or cr.get("account_key")
+                            await send_system_notification(
+                                title="美团外卖券自动领取成功",
+                                content=f"账号【{cr_nick}】成功领取 {cr.get('coupon_count')} 张美团外卖优惠券！",
+                                account_key=cr.get("account_key"),
+                                event=NotificationEvent.MEITUAN_COUPON,
+                                level=NotificationLevel.SUCCESS
+                            )
 
         else:
             log_output += f"[{time.strftime('%H:%M:%S')}] 【{task_label}】执行完成 (无异常)\n"

@@ -4081,6 +4081,59 @@ async def get_settings():
             "has_context_token": bool(clawbot_auth.get("contextToken")) if clawbot_auth else False,
             "saved_at": clawbot_auth.get("savedAt", "") if clawbot_auth else ""
         },
+        # Server酱 (Turbo / 3)
+        "serverchan_enabled": db.get_setting("serverchan_enabled", False),
+        "serverchan_sendkey": db.get_setting("serverchan_sendkey", ""),
+        # WxPusher 微信推送服务
+        "wxpusher_enabled": db.get_setting("wxpusher_enabled", False),
+        "wxpusher_app_token": db.get_setting("wxpusher_app_token", ""),
+        "wxpusher_uids": db.get_setting("wxpusher_uids", ""),
+        # 企业微信群机器人
+        "wecom_enabled": db.get_setting("wecom_enabled", False),
+        "wecom_webhook": db.get_setting("wecom_webhook", ""),
+        # 钉钉自定义群机器人
+        "dingtalk_enabled": db.get_setting("dingtalk_enabled", False),
+        "dingtalk_webhook": db.get_setting("dingtalk_webhook", ""),
+        "dingtalk_secret": db.get_setting("dingtalk_secret", ""),
+        # 飞书群机器人
+        "feishu_enabled": db.get_setting("feishu_enabled", False),
+        "feishu_webhook": db.get_setting("feishu_webhook", ""),
+        "feishu_secret": db.get_setting("feishu_secret", ""),
+        # iOS Bark
+        "bark_enabled": db.get_setting("bark_enabled", False),
+        "bark_url": db.get_setting("bark_url", ""),
+        "bark_group": db.get_setting("bark_group", "小蚕小帮手"),
+        "bark_sound": db.get_setting("bark_sound", "minuet"),
+        "bark_icon": db.get_setting("bark_icon", ""),
+        # Telegram Bot
+        "telegram_enabled": db.get_setting("telegram_enabled", False),
+        "tg_bot_token": db.get_setting("tg_bot_token", ""),
+        "tg_chat_id": db.get_setting("tg_chat_id", ""),
+        "tg_proxy_url": db.get_setting("tg_proxy_url", ""),
+        "tg_api_base_url": db.get_setting("tg_api_base_url", ""),
+        # 通用 HTTP Webhook
+        "webhook_enabled": db.get_setting("webhook_enabled", False),
+        "webhook_url": db.get_setting("webhook_url", ""),
+        "webhook_method": db.get_setting("webhook_method", "POST"),
+        "webhook_headers": db.get_setting("webhook_headers", ""),
+        # SMTP 邮件服务
+        "email_enabled": db.get_setting("email_enabled", False),
+        "email_host": db.get_setting("email_host", ""),
+        "email_port": db.get_setting("email_port", 465),
+        "email_ssl": db.get_setting("email_ssl", True),
+        "email_user": db.get_setting("email_user", ""),
+        "email_pass": db.get_setting("email_pass", ""),
+        "email_from": db.get_setting("email_from", ""),
+        "email_to": db.get_setting("email_to", ""),
+        # Gotify 推送
+        "gotify_enabled": db.get_setting("gotify_enabled", False),
+        "gotify_url": db.get_setting("gotify_url", ""),
+        "gotify_token": db.get_setting("gotify_token", ""),
+        "gotify_priority": db.get_setting("gotify_priority", 5),
+        # Discord Webhook
+        "discord_enabled": db.get_setting("discord_enabled", False),
+        "discord_webhook": db.get_setting("discord_webhook", ""),
+        "discord_username": db.get_setting("discord_username", "小蚕小帮手"),
         # QQ 机器人 (OneBot V11 / mystool-bot)
         "qq_bot_enabled": db.get_setting("qq_bot_enabled", True),
         "qq_bot_api": db.get_setting("qq_bot_api", "http://127.0.0.1:8080"),
@@ -4088,20 +4141,14 @@ async def get_settings():
         "qq_bot_user_id": db.get_setting("qq_bot_user_id", "2371445972"),
         "qq_bot_target_type": db.get_setting("qq_bot_target_type", "group"),
         "qq_bot_token": db.get_setting("qq_bot_token", ""),
-        # 企业微信群机器人
-        "wecom_enabled": db.get_setting("wecom_enabled", False),
-        "wecom_webhook": db.get_setting("wecom_webhook", ""),
-        # iOS Bark
-        "bark_enabled": db.get_setting("bark_enabled", False),
-        "bark_url": db.get_setting("bark_url", ""),
-        # Telegram Bot
-        "telegram_enabled": db.get_setting("telegram_enabled", False),
-        "tg_bot_token": db.get_setting("tg_bot_token", ""),
-        "tg_chat_id": db.get_setting("tg_chat_id", ""),
-        # 触发策略
+        # 触发策略 (对标 BetterGI 事件订阅)
         "notify_on_grab": db.get_setting("notify_on_grab", True),
-        "notify_on_appoint": db.get_setting("notify_on_appoint", True),
         "notify_on_spike": db.get_setting("notify_on_spike", True),
+        "notify_on_meituan": db.get_setting("notify_on_meituan", True),
+        "notify_on_appoint": db.get_setting("notify_on_appoint", True),
+        "notify_on_token_warn": db.get_setting("notify_on_token_warn", True),
+        "notify_on_coupon_expire": db.get_setting("notify_on_coupon_expire", True),
+        "notify_on_task_fail": db.get_setting("notify_on_task_fail", False),
         # 位置服务与天地图 Web API (tianditu.gov.cn)
         "tianditu_key": db.get_setting("tianditu_key", "109fd484f999e3c0472ab15fa38fe2ac")
     }

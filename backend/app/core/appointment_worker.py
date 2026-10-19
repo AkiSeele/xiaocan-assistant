@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any
 from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds
 from .notifier import send_system_notification
+from .notification import NotificationEvent, NotificationLevel
 from . import time_service
 
 logger = logging.getLogger("xiaocan.appointment_worker")
@@ -329,9 +330,11 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
 
         # 发送系统通知
         await send_system_notification(
-            title="小蚕霸王餐抢单成功！",
-            content=f"账号【{account.get('nickname')}】已成功抢到【{apt['store_name']}】({apt.get('rebate_desc', '')})，订单号 #{order_id}，请及时在平台下单！",
-            account_key=apt.get("account_key")
+            title="小蚕霸王餐抢单成功",
+            content=f"账号【{account.get('nickname')}】已成功抢到【{apt['store_name']}】({apt.get('rebate_desc', '')})，订单号 #{order_id}，请及时在平台下单",
+            account_key=apt.get("account_key"),
+            event=NotificationEvent.GRAB_SUCCESS,
+            level=NotificationLevel.SUCCESS
         )
 
         if aid > 0:
@@ -810,7 +813,9 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     await send_system_notification(
                         title="霸王餐开抢预热提醒",
                         content=f"你预约的【{apt['store_name']}】({apt.get('rebate_desc', '')}) 还有 31 分钟即将开抢 {adv_prefix}（执行时间: {eff_time_str}），抢单通道已就绪",
-                        account_key=apt.get("account_key")
+                        account_key=apt.get("account_key"),
+                        event=NotificationEvent.APPOINT_EVENT,
+                        level=NotificationLevel.INFO
                     )
                 except Exception as ne:
                     logger.warning(f"发送系统预热通知失败: {ne}")

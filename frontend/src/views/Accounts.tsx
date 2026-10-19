@@ -28,7 +28,9 @@ import {
   RadioGroup,
   Radio,
   Select,
-  Dropdown
+  Dropdown,
+  Checkbox,
+  InputNumber
 } from '@douyinfe/semi-ui';
 import { useGSAP, gsap } from '../utils/animations';
 
@@ -2187,15 +2189,29 @@ export const Accounts: React.FC = () => {
                     <Select
                       value={notifyChannel}
                       onChange={(val) => setNotifyChannel(val as string)}
-                      style={{ width: 240 }}
+                      style={{ width: 260 }}
                     >
-                      <Select.Option value="clawbot">微信官方 ClawBot</Select.Option>
-                      <Select.Option value="wecom">企业微信群机器人</Select.Option>
-                      <Select.Option value="dingtalk">钉钉群机器人</Select.Option>
-                      <Select.Option value="feishu">飞书群机器人</Select.Option>
-                      <Select.Option value="bark">iOS Bark 推送</Select.Option>
-                      <Select.Option value="qq_bot">QQ 机器人</Select.Option>
-                      <Select.Option value="telegram">Telegram Bot</Select.Option>
+                      <Select.OptGroup label="微信生态直推">
+                        <Select.Option value="clawbot">微信官方 ClawBot (iLink)</Select.Option>
+                        <Select.Option value="serverchan">Server酱 (Turbo / 3)</Select.Option>
+                        <Select.Option value="wxpusher">WxPusher 微信推送</Select.Option>
+                      </Select.OptGroup>
+                      <Select.OptGroup label="办公协同机器人">
+                        <Select.Option value="wecom">企业微信群机器人</Select.Option>
+                        <Select.Option value="dingtalk">钉钉群机器人</Select.Option>
+                        <Select.Option value="feishu">飞书群机器人</Select.Option>
+                      </Select.OptGroup>
+                      <Select.OptGroup label="移动与极客推送">
+                        <Select.Option value="bark">iOS Bark 推送</Select.Option>
+                        <Select.Option value="telegram">Telegram Bot</Select.Option>
+                        <Select.Option value="gotify">Gotify 自建推送</Select.Option>
+                        <Select.Option value="discord">Discord 频道 Webhook</Select.Option>
+                        <Select.Option value="qq_bot">QQ 机器人 (OneBot V11)</Select.Option>
+                      </Select.OptGroup>
+                      <Select.OptGroup label="通用服务与基础设施">
+                        <Select.Option value="webhook">通用自定义 Webhook</Select.Option>
+                        <Select.Option value="email">SMTP 邮件服务</Select.Option>
+                      </Select.OptGroup>
                     </Select>
                   </div>
                 }
@@ -2249,7 +2265,49 @@ export const Accounts: React.FC = () => {
                   </div>
                 )}
 
-                {/* 2. 企业微信 */}
+                {/* 2. Server酱 */}
+                {notifyChannel === 'serverchan' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Server酱 SendKey：</Text>
+                      <Input
+                        placeholder="例如: SCTxxxxxxxxxxxxxxxx 或 s3.key"
+                        value={notifyConfig.serverchan_sendkey || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, serverchan_sendkey: val })}
+                      />
+                    </div>
+                    <Text type="tertiary" size="small">
+                      前往 sct.ftqq.com 微信扫码登入即可获取专属 SendKey，支持免微信登录长效接收。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 3. WxPusher */}
+                {notifyChannel === 'wxpusher' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">WxPusher AppToken：</Text>
+                      <Input
+                        placeholder="AT_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        value={notifyConfig.wxpusher_app_token || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, wxpusher_app_token: val })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">接收人 UID（单个或英文逗号隔开）：</Text>
+                      <Input
+                        placeholder="UID_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        value={notifyConfig.wxpusher_uids || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, wxpusher_uids: val })}
+                      />
+                    </div>
+                    <Text type="tertiary" size="small">
+                      前往 wxpusher.zjiecode.com 创建应用并扫码关注获取用户专属 UID。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 4. 企业微信 */}
                 {notifyChannel === 'wecom' && (
                   <div className="space-y-2">
                     <div className="flex justify-between items-center">
@@ -2266,7 +2324,7 @@ export const Accounts: React.FC = () => {
                   </div>
                 )}
 
-                {/* 3. 钉钉 */}
+                {/* 5. 钉钉 */}
                 {notifyChannel === 'dingtalk' && (
                   <div className="space-y-3">
                     <div className="space-y-1">
@@ -2291,41 +2349,265 @@ export const Accounts: React.FC = () => {
                   </div>
                 )}
 
-                {/* 4. 飞书 */}
+                {/* 6. 飞书 */}
                 {notifyChannel === 'feishu' && (
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
+                  <div className="space-y-3">
+                    <div className="space-y-1">
                       <Text strong className="text-xs">飞书自定义机器人 Webhook 地址：</Text>
+                      <Input
+                        placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+                        value={notifyConfig.feishu_webhook || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, feishu_webhook: val })}
+                      />
                     </div>
-                    <Input
-                      placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
-                      value={notifyConfig.feishu_webhook || ''}
-                      onChange={(val) => setNotifyConfig({ ...notifyConfig, feishu_webhook: val })}
-                    />
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">签名校验 Secret（选填）：</Text>
+                      <Input
+                        placeholder="若机器人勾选了安全设置签名校验则填写"
+                        value={notifyConfig.feishu_secret || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, feishu_secret: val })}
+                      />
+                    </div>
                     <Text type="tertiary" size="small">
                       飞书群设置 - 群机器人 - 添加自定义机器人，将获取到的 Webhook 填入此处。
                     </Text>
                   </div>
                 )}
 
-                {/* 5. Bark */}
+                {/* 7. Bark */}
                 {notifyChannel === 'bark' && (
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
+                  <div className="space-y-3">
+                    <div className="space-y-1">
                       <Text strong className="text-xs">Bark Key 或完整推送 URL：</Text>
+                      <Input
+                        placeholder="例如: 2b8fxxxx 或 https://api.day.app/2b8fxxxx"
+                        value={notifyConfig.bark_url || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, bark_url: val })}
+                      />
                     </div>
-                    <Input
-                      placeholder="例如: 2b8fxxxx 或 https://api.day.app/2b8fxxxx"
-                      value={notifyConfig.bark_url || ''}
-                      onChange={(val) => setNotifyConfig({ ...notifyConfig, bark_url: val })}
-                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">推送铃声（选填）：</Text>
+                        <Input
+                          placeholder="例如: bell, alarm"
+                          value={notifyConfig.bark_sound || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, bark_sound: val })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">消息分组（选填）：</Text>
+                        <Input
+                          placeholder="小蚕小帮手"
+                          value={notifyConfig.bark_group || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, bark_group: val })}
+                        />
+                      </div>
+                    </div>
                     <Text type="tertiary" size="small">
                       支持 iOS Bark App，输入个人设备 Key 或自建 Bark 服务的完整 URL。
                     </Text>
                   </div>
                 )}
 
-                {/* 6. QQ 机器人 */}
+                {/* 8. Telegram */}
+                {notifyChannel === 'telegram' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Telegram Bot Token：</Text>
+                      <Input
+                        placeholder="例如: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                        value={notifyConfig.tg_bot_token || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_bot_token: val })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Telegram 个人/群组 Chat ID：</Text>
+                      <Input
+                        placeholder="例如: 987654321 或 -100123456789"
+                        value={notifyConfig.tg_chat_id || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_chat_id: val })}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">本地网络代理地址（选填）：</Text>
+                        <Input
+                          placeholder="http://127.0.0.1:7890"
+                          value={notifyConfig.tg_proxy_url || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_proxy_url: val })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">自定义 API 基础网关（选填）：</Text>
+                        <Input
+                          placeholder="https://api.telegram.org"
+                          value={notifyConfig.tg_api_base_url || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_api_base_url: val })}
+                        />
+                      </div>
+                    </div>
+                    <Text type="tertiary" size="small">
+                      国内环境使用 Telegram 建议配置本地代理（如 Clash/V2Ray）或自建反代网关。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 9. 通用自定义 Webhook */}
+                {notifyChannel === 'webhook' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Webhook URL 地址：</Text>
+                      <Input
+                        placeholder="https://your-service.com/api/notify"
+                        value={notifyConfig.webhook_url || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, webhook_url: val })}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">HTTP 请求方法：</Text>
+                        <Select
+                          value={notifyConfig.webhook_method || 'POST'}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, webhook_method: val as string })}
+                          style={{ width: '100%' }}
+                        >
+                          <Select.Option value="POST">POST (标准 JSON 载荷)</Select.Option>
+                          <Select.Option value="GET">GET (查询参数拼接)</Select.Option>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">自定义 Headers（选填 JSON）：</Text>
+                        <Input
+                          placeholder='{"Authorization": "Bearer xxx"}'
+                          value={notifyConfig.webhook_headers || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, webhook_headers: val })}
+                        />
+                      </div>
+                    </div>
+                    <Text type="tertiary" size="small">
+                      系统将以标准 JSON 结构传递 title, content, level, event 等字段。
+                    </Text>
+                  </div>
+                )}
+
+                {/* 10. SMTP 邮件服务 */}
+                {notifyChannel === 'email' && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="col-span-2 space-y-1">
+                        <Text strong className="text-xs">SMTP 服务器地址：</Text>
+                        <Input
+                          placeholder="例如: smtp.qq.com"
+                          value={notifyConfig.email_host || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, email_host: val })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">服务端口：</Text>
+                        <InputNumber
+                          value={notifyConfig.email_port || 465}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, email_port: Number(val) })}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">发件人账号/邮箱：</Text>
+                        <Input
+                          placeholder="your-email@qq.com"
+                          value={notifyConfig.email_user || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, email_user: val })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">授权码 / SMTP 密码：</Text>
+                        <Input
+                          type="password"
+                          placeholder="QQ/163 邮箱客户端授权码"
+                          value={notifyConfig.email_pass || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, email_pass: val })}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 items-center">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">接收人邮箱：</Text>
+                        <Input
+                          placeholder="recipient@domain.com"
+                          value={notifyConfig.email_to || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, email_to: val })}
+                        />
+                      </div>
+                      <div className="pt-4">
+                        <Checkbox
+                          checked={notifyConfig.email_ssl ?? true}
+                          onChange={(e) => setNotifyConfig({ ...notifyConfig, email_ssl: e.target.checked })}
+                        >
+                          启用 SSL 安全连接 (推荐端口 465)
+                        </Checkbox>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 11. Gotify */}
+                {notifyChannel === 'gotify' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Gotify 根服务地址：</Text>
+                      <Input
+                        placeholder="例如: https://gotify.yourdomain.com"
+                        value={notifyConfig.gotify_url || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, gotify_url: val })}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">App Token：</Text>
+                        <Input
+                          placeholder="Axxxxxxxxxxxxxx"
+                          value={notifyConfig.gotify_token || ''}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, gotify_token: val })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Text strong className="text-xs">消息优先级 (1-10)：</Text>
+                        <InputNumber
+                          min={1}
+                          max={10}
+                          value={notifyConfig.gotify_priority || 5}
+                          onChange={(val) => setNotifyConfig({ ...notifyConfig, gotify_priority: Number(val) })}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 12. Discord */}
+                {notifyChannel === 'discord' && (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">Discord Webhook 地址：</Text>
+                      <Input
+                        placeholder="https://discord.com/api/webhooks/xxxx/yyyy"
+                        value={notifyConfig.discord_webhook || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, discord_webhook: val })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Text strong className="text-xs">自定义机器人显示名称（选填）：</Text>
+                      <Input
+                        placeholder="小蚕小帮手"
+                        value={notifyConfig.discord_username || ''}
+                        onChange={(val) => setNotifyConfig({ ...notifyConfig, discord_username: val })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* 13. QQ 机器人 */}
                 {notifyChannel === 'qq_bot' && (
                   <div className="space-y-3">
                     <div className="space-y-1">
@@ -2362,31 +2644,6 @@ export const Accounts: React.FC = () => {
                         onChange={(val) => setNotifyConfig({ ...notifyConfig, qq_bot_token: val })}
                       />
                     </div>
-                  </div>
-                )}
-
-                {/* 7. Telegram */}
-                {notifyChannel === 'telegram' && (
-                  <div className="space-y-3">
-                    <div className="space-y-1">
-                      <Text strong className="text-xs">Telegram Bot Token：</Text>
-                      <Input
-                        placeholder="例如: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
-                        value={notifyConfig.tg_bot_token || ''}
-                        onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_bot_token: val })}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Text strong className="text-xs">Telegram 个人/群组 Chat ID：</Text>
-                      <Input
-                        placeholder="例如: 987654321 或 -100123456789"
-                        value={notifyConfig.tg_chat_id || ''}
-                        onChange={(val) => setNotifyConfig({ ...notifyConfig, tg_chat_id: val })}
-                      />
-                    </div>
-                    <Text type="tertiary" size="small">
-                      可向 @userinfobot 发送消息获取你的个人数字 Chat ID
-                    </Text>
                   </div>
                 )}
 
