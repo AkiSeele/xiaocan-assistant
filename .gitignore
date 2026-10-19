@@ -37,6 +37,7 @@ backend/app/certs/
 backend/data/*
 !backend/data/.gitkeep
 backend/*.db
+/data/
 
 # Node / Frontend
 frontend/node_modules/

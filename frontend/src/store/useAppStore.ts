@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Account, UserInfo } from '../types';
+import type { Account, UserInfo, LocationHistoryItem } from '../types';
 import { api } from '../api';
 
 export interface ActiveLocation {
@@ -9,6 +9,9 @@ export interface ActiveLocation {
   longitude: string;
   latitude: string;
 }
+
+const LOCATION_HISTORY_KEY = 'xiaocan_location_history';
+const LOCATION_HISTORY_LIMIT = 10;
 
 const getStoredLocation = (): ActiveLocation => {
   try {
@@ -28,6 +31,30 @@ const getStoredLocation = (): ActiveLocation => {
     latitude: '30.593099',
   };
 };
+
+const getStoredLocationHistory = (): LocationHistoryItem[] => {
+  try {
+    const raw = localStorage.getItem(LOCATION_HISTORY_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item) => item && item.longitude && item.latitude && item.cityName
+        );
+      }
+    }
+  } catch (e) {}
+  return [];
+};
+
+const persistLocationHistory = (items: LocationHistoryItem[]) => {
+  try {
+    localStorage.setItem(LOCATION_HISTORY_KEY, JSON.stringify(items));
+  } catch (e) {}
+};
+
+const locationHistoryKey = (loc: { longitude: string; latitude: string }) =>
+  `${Number(loc.longitude).toFixed(5)},${Number(loc.latitude).toFixed(5)}`;
 
 const getStoredCurrentAccountKey = (): string => {
   try {
@@ -64,12 +91,16 @@ interface AppState {
   userInfo: UserInfo | null;
   loading: boolean;
   activeLocation: ActiveLocation;
+  locationHistory: LocationHistoryItem[];
   isSidebarCollapsed: boolean;
   
   setActiveTab: (tab: string) => void;
   setDarkMode: (dark: boolean) => void;
   setCurrentAccountKey: (key: string) => void;
   setActiveLocation: (loc: Partial<ActiveLocation>) => void;
+  addLocationHistory: (loc: ActiveLocation) => void;
+  removeLocationHistory: (loc: { longitude: string; latitude: string }) => void;
+  clearLocationHistory: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapse: () => void;
   loadAccounts: () => Promise<void>;
@@ -92,6 +123,7 @@ export const useAppStore = create<AppState>((set, get) => {
     userInfo: null,
     loading: false,
     activeLocation: getStoredLocation(),
+    locationHistory: getStoredLocationHistory(),
     isSidebarCollapsed: getStoredSidebarCollapsed(),
 
   setActiveTab: (tab: string) => set({ activeTab: tab }),
@@ -118,6 +150,29 @@ export const useAppStore = create<AppState>((set, get) => {
       localStorage.setItem('xiaocan_active_location', JSON.stringify(updated));
     } catch (e) {}
     set({ activeLocation: updated });
+  },
+
+  addLocationHistory: (loc: ActiveLocation) => {
+    const key = locationHistoryKey(loc);
+    const rest = get().locationHistory.filter((item) => locationHistoryKey(item) !== key);
+    const next: LocationHistoryItem[] = [
+      { ...loc, usedAt: Date.now() },
+      ...rest,
+    ].slice(0, LOCATION_HISTORY_LIMIT);
+    persistLocationHistory(next);
+    set({ locationHistory: next });
+  },
+
+  removeLocationHistory: (loc: { longitude: string; latitude: string }) => {
+    const key = locationHistoryKey(loc);
+    const next = get().locationHistory.filter((item) => locationHistoryKey(item) !== key);
+    persistLocationHistory(next);
+    set({ locationHistory: next });
+  },
+
+  clearLocationHistory: () => {
+    persistLocationHistory([]);
+    set({ locationHistory: [] });
   },
 
   setDarkMode: (dark: boolean) => {

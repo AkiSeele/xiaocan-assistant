@@ -10,6 +10,7 @@ import ctypes
 import re
 import json
 import base64
+import sys
 import time
 import threading
 import logging
@@ -23,7 +24,9 @@ PROCESS_VM_READ = 0x0010
 MEM_COMMIT = 0x1000
 TH32CS_SNAPPROCESS = 0x00000002
 
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+IS_WINDOWS = sys.platform == "win32"
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if IS_WINDOWS else None
 
 
 class PROCESSENTRY32(ctypes.Structure):
@@ -61,6 +64,9 @@ NICK_PATTERN = re.compile(rb'["\']nickname["\']\s*:\s*["\']([^"\']{1,20})["\']')
 def get_wechat_applet_pids() -> List[Tuple[int, str]]:
     """获取所有正在运行的微信小程序运行引擎进程 (WeChatAppEx.exe)"""
     pids = []
+    if kernel32 is None:
+        logger.info("当前非 Windows 环境，微信小程序内存捕获不可用")
+        return pids
     h_snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if h_snap == -1:
         return pids
