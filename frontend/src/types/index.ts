@@ -521,6 +521,15 @@ export interface LocationCandidate {
   source?: string;
 }
 
+export interface LocationHistoryItem {
+  cityCode: number;
+  cityName: string;
+  addressName: string;
+  longitude: string;
+  latitude: string;
+  usedAt: number;
+}
+
 export interface LocationSearchResult {
   ok: boolean;
   keyword: string;
