@@ -15,7 +15,6 @@ import {
   Radio,
   Empty,
   Modal,
-  Popconfirm,
   Descriptions,
   Banner
 } from '@douyinfe/semi-ui';
@@ -86,7 +85,6 @@ export const OrdersView: React.FC = () => {
   const [platformOrderIdInput, setPlatformOrderIdInput] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [delayingOrderId, setDelayingOrderId] = useState<number | null>(null);
-  const [usingCardOrderId, setUsingCardOrderId] = useState<number | null>(null);
 
   // 纯净视口高度自适应：监听表格卡片容器，杜绝 DOM querySelector 与强制同步重排
   useEffect(() => {
@@ -243,25 +241,6 @@ export const OrdersView: React.FC = () => {
       Toast.error(`延时操作异常: ${e.response?.data?.detail || e.message || e}`);
     } finally {
       setDelayingOrderId(null);
-    }
-  };
-
-  const handleUseFreeCard = async (order: Order) => {
-    setUsingCardOrderId(order.id);
-    try {
-      const res = await api.useOrderFreeCard(order.id, {
-        platform_order_id: order.platform_order_id
-      });
-      if (res.ok) {
-        Toast.success(res.message || '免单券使用成功，该订单已享全额免单');
-        fetchOrders(undefined, true);
-      } else {
-        Toast.error(res.message || '免单券使用失败');
-      }
-    } catch (e: any) {
-      Toast.error(`免单操作异常: ${e.response?.data?.detail || e.message || e}`);
-    } finally {
-      setUsingCardOrderId(null);
     }
   };
 
@@ -452,23 +431,6 @@ export const OrdersView: React.FC = () => {
                       >
                         延时2h
                       </Button>
-                      <Popconfirm
-                        title="确认使用外卖全额免单神券？"
-                        content="将对该订单核销本月外卖全额免单神券，享受全额返现。"
-                        okText="确认核销"
-                        cancelText="取消"
-                        onConfirm={() => row && handleUseFreeCard(row)}
-                      >
-                        <Button
-                          theme="light"
-                          type="secondary"
-                          size="small"
-                          loading={usingCardOrderId === row?.id}
-                          className="!py-0.5 !px-1.5 text-xs h-5"
-                        >
-                          免单核销
-                        </Button>
-                      </Popconfirm>
                     </div>
                   )}
                 </div>
