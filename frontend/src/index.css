@@ -384,5 +384,53 @@ html, body, #root {
   min-width: 0;
 }
 
+/* Semi Design Checkbox 与 Radio 内部对齐与垂直居中修正 */
+.semi-checkbox {
+  align-items: center !important;
+}
+
+.semi-checkbox-inner {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.semi-checkbox-inner-display {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+}
+
+.semi-checkbox-inner-display .semi-icon {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: baseline !important;
+  width: 100% !important;
+  height: 100% !important;
+  line-height: 1 !important;
+}
+
+.semi-checkbox-inner-display .semi-icon svg {
+  display: block !important;
+  margin: auto !important;
+}
+
+.semi-checkbox-content {
+  display: flex !important;
+  align-items: center !important;
+}
+
+.semi-radio {
+  align-items: center !important;
+}
+
+.semi-radio-inner {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
 
 

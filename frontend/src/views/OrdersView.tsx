@@ -687,6 +687,7 @@ export const OrdersView: React.FC = () => {
         okText="确认提交单号"
         cancelText="取消"
         width={440}
+        centered
       >
         <div className="space-y-3 py-1">
           <Descriptions

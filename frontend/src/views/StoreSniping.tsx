@@ -1278,6 +1278,7 @@ export const StoreSniping: React.FC = () => {
             content: '首轮名额已抢完，是否立即为此店铺开启「名额监听」？有退单或补仓时将自动尝试抢单。',
             okText: '开启名额监听',
             cancelText: '取消',
+            centered: true,
             onOk: () => {
               handleOpenAppoint(store, targetPromo, 'monitor');
             }
@@ -3501,7 +3502,8 @@ export const StoreSniping: React.FC = () => {
         visible={assetModalVisible}
         onCancel={() => setAssetModalVisible(false)}
         footer={null}
-        width={620}
+        width={640}
+        centered
         bodyStyle={{ maxHeight: '68vh', overflowY: 'auto', padding: '12px 20px' }}
       >
         <Tabs

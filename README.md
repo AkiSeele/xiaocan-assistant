@@ -164,6 +164,35 @@ node -v
 2. 主窗口启动前端 Vite 开发服务器（端口 `5173`，启用 React 19 HMR 毫秒级热替换）；
 3. 自动打开浏览器访问 `http://127.0.0.1:5173`，代码修改即时响应。
 
+### Linux / macOS 一键启动模式
+
+本项目针对 Linux 与 macOS 系统提供了一键启动脚本：
+
+```bash
+# 赋予执行权限并启动 (自动完成 Python 虚拟环境配置、依赖安装、前端构建与美团环境自愈)
+chmod +x run.sh
+./run.sh
+```
+
+如需以热重载开发模式运行：
+```bash
+chmod +x dev.sh
+./dev.sh
+```
+
+### Docker 容器化一键部署
+
+本项目官方 `Dockerfile` 采用生产级多阶段构建，镜像内已预置 Python 3.11 与 Node.js 20 双运行时环境，开箱即用支持美团官方扫码绑定与优惠券自动化领取模块：
+
+```bash
+# 构建并启动容器 (单端口 8690 统一交付，自动挂载持久化数据目录)
+docker-compose up -d --build
+
+# 查看运行日志
+docker-compose logs -f
+```
+启动完成后，访问宿主机 `http://127.0.0.1:8690` 即可使用。
+
 ### 跨平台手动分步部署 (Linux / macOS / Windows)
 
 #### 1. 后端依赖安装与启动
@@ -182,7 +211,7 @@ source venv/bin/activate
 # 安装依赖
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 启动服务
+# 启动服务 (美团模块将自动完成离线自愈与 Node 路径探测)
 python main.py
 ```
 后端服务默认监听在 `http://0.0.0.0:8690`。
@@ -203,17 +232,6 @@ npm run dev
 # 生产构建 (产物输出至 frontend/dist，由后端 8690 端口统一托管)
 npm run build
 ```
-
-### Docker 容器化一键部署
-
-```bash
-# 构建并启动容器
-docker-compose up -d --build
-
-# 查看运行日志
-docker-compose logs -f
-```
-启动完成后，访问宿主机 `http://127.0.0.1:8690` 即可使用。
 
 ---
 

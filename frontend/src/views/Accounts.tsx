@@ -1125,6 +1125,7 @@ export const Accounts: React.FC = () => {
                                     okText: '确认解除',
                                     cancelText: '取消',
                                     okType: 'danger',
+                                    centered: true,
                                     onOk: () => handleUnbindMeituan(acc.key)
                                   });
                                 }}
@@ -2117,7 +2118,8 @@ export const Accounts: React.FC = () => {
         title={`账号专属推送配置 - 【${notifyAccount?.nickname || '未命名账号'}】`}
         visible={notifyModalVisible}
         onCancel={() => setNotifyModalVisible(false)}
-        width={660}
+        width={640}
+        centered
         footer={
           <div className="flex justify-end gap-2">
             <Button

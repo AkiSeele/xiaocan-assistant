@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     logger.info("正在启动小蚕助手系统...")
     init_db()
     start_scheduler()
+    try:
+        from app.meituan.runner import ensure_meituan_assets
+        ensure_meituan_assets()
+    except Exception as e:
+        logger.warning(f"美团运行环境自愈检查提示: {e}")
     yield
     logger.info("正在关闭小蚕助手系统...")
     shutdown_scheduler()

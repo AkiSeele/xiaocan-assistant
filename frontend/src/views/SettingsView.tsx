@@ -1055,10 +1055,24 @@ export const SettingsView: React.FC = () => {
                                     </Text>
                                   </div>
                                   <div className="flex items-center gap-2 shrink-0">
-                                    <Tag color={isCurrentEnabled ? 'green' : 'grey'} size="small">
-                                      {isCurrentEnabled ? '已启用通道' : '通道已停用'}
-                                    </Tag>
-                                    <Form.Switch field={currentChannel.enabledField} noLabel />
+                                    {CHANNELS.map((c) => {
+                                      const isChanEnabled = Boolean(values?.[c.enabledField]);
+                                      return (
+                                        <div
+                                          key={`header_switch_${c.key}`}
+                                          className={selectedChannelKey === c.key ? 'flex items-center gap-2' : 'hidden'}
+                                        >
+                                          <Tag color={isChanEnabled ? 'green' : 'grey'} size="small">
+                                            {isChanEnabled ? '已启用通道' : '通道已停用'}
+                                          </Tag>
+                                          <Form.Switch
+                                            key={`switch_${c.key}`}
+                                            field={c.enabledField}
+                                            noLabel
+                                          />
+                                        </div>
+                                      );
+                                    })}
                                   </div>
                                 </div>
                               }
@@ -1464,21 +1478,26 @@ export const SettingsView: React.FC = () => {
                                           />
                                         </Col>
                                       </Row>
-                                      <Row gutter={16} className="items-center">
-                                        <Col span={16}>
+                                      <Row gutter={16}>
+                                        <Col span={15}>
                                           <Form.Input
                                             field="email_to"
                                             label="接收通知的收件人邮箱"
                                             placeholder="receiver@example.com (支持逗号分隔多个)"
                                           />
                                         </Col>
-                                        <Col span={8} className="pt-6">
-                                          <Form.Checkbox
-                                            field="email_ssl"
-                                            noLabel
-                                          >
-                                            启用 SSL 安全连接 (465)
-                                          </Form.Checkbox>
+                                        <Col span={9}>
+                                          <div className="flex flex-col">
+                                            <div className="h-6" />
+                                            <div className="h-8 flex items-center">
+                                              <Form.Checkbox
+                                                field="email_ssl"
+                                                noLabel
+                                              >
+                                                启用 SSL 安全连接 (465)
+                                              </Form.Checkbox>
+                                            </div>
+                                          </div>
                                         </Col>
                                       </Row>
                                     </div>
@@ -1626,8 +1645,8 @@ export const SettingsView: React.FC = () => {
                             key={item.field}
                             className="strategy-item flex items-center justify-between py-3.5 px-2 hover:bg-semi-color-fill-0 rounded-lg transition-colors gap-4"
                           >
-                            <div className="flex items-start gap-3 min-w-0">
-                              <div className={`p-2 rounded-lg shrink-0 mt-0.5 ${item.iconBg}`}>
+                            <div className="flex items-center gap-3.5 min-w-0">
+                              <div className={`w-9 h-9 rounded-lg shrink-0 flex items-center justify-center ${item.iconBg}`}>
                                 {item.icon}
                               </div>
                               <div className="space-y-0.5">

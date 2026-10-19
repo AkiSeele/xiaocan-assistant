@@ -557,6 +557,7 @@ export const Automation: React.FC = () => {
         cancelText: '保持原有时段',
         icon: <IconAlertCircle style={{ color: 'var(--semi-color-warning)' }} />,
         okButtonProps: { type: 'warning' },
+        centered: true,
         onOk: () => {
           setDrawerParams((prev) => ({ ...prev, [key]: Number(newVal) }));
         },

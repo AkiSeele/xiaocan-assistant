@@ -117,6 +117,8 @@ class WindowsProxyManager:
             return False
 
     def _refresh_wininet(self):
+        if not self._is_windows():
+            return
         try:
             wininet = ctypes.windll.wininet
             wininet.InternetSetOptionW(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0)

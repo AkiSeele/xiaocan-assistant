@@ -35,7 +35,8 @@ const https = require('https');
 const SCRIPTS_DIR = __dirname;
 const SKILL_DIR = path.dirname(SCRIPTS_DIR);
 const CLIENT_ID = 'c6f50b5a1e2f4e2bb00a3e2f58df3ced';
-const PT_PASSPORT_BIN = path.join(SCRIPTS_DIR, 'node_modules', '.bin', 'pt-passport');
+const PT_PASSPORT_JS = path.join(SCRIPTS_DIR, 'node_modules', '@mtuser', 'pt-passport', 'dist', 'index.js');
+const PT_PASSPORT_BIN = path.join(SCRIPTS_DIR, 'node_modules', '.bin', process.platform === 'win32' ? 'pt-passport.cmd' : 'pt-passport');
 const AUTH_DIR = process.env.MEITUAN_AUTH_DIR || path.join(require('os').homedir(), '.meituan-living', 'credentials');
 const PYTHON = findPython();
 
@@ -50,6 +51,12 @@ const CERT_FILE = (() => {
 // ── 工具函数 ─────────────────────────────────────────────────
 
 function findPython() {
+  if (process.env.PYTHON_EXECUTABLE) {
+    try {
+      const ver = execSync(`"${process.env.PYTHON_EXECUTABLE}" --version`, { encoding: 'utf-8', timeout: 5000, stdio: 'pipe' }).trim();
+      if (ver && !ver.startsWith('Python 2.')) return process.env.PYTHON_EXECUTABLE;
+    } catch (_) { /* ignore */ }
+  }
   for (const cmd of ['python3', 'python']) {
     try {
       const ver = execSync(`${cmd} --version`, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe' }).trim();
@@ -100,20 +107,33 @@ function runPython(scriptName, args) {
   }
 }
 
-/** 执行 pt-passport CLI 命令，返回原始 stdout */
+/** 执行 pt-passport CLI 命令，优先原生直接通过 node 执行 dist/index.js，确保跨平台绝对兼容 */
 function runPassport(args) {
   try {
-    const result = spawnSync(PT_PASSPORT_BIN, args, {
-      encoding: 'utf-8',
-      timeout: 620000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: Object.assign({}, process.env, {
-        HOME: require('os').homedir(),
-        PT_PASSPORT_AUTH_FILE: path.join(AUTH_DIR, 'pt_passport_auth.json'),
-        NODE_OPTIONS: ''
-      }),
-      shell: true
+    const env = Object.assign({}, process.env, {
+      HOME: require('os').homedir(),
+      PT_PASSPORT_AUTH_FILE: path.join(AUTH_DIR, 'pt_passport_auth.json'),
+      NODE_OPTIONS: ''
     });
+
+    let result;
+    if (fs.existsSync(PT_PASSPORT_JS)) {
+      result = spawnSync(process.execPath, [PT_PASSPORT_JS, ...args], {
+        encoding: 'utf-8',
+        timeout: 620000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: env
+      });
+    } else {
+      result = spawnSync(PT_PASSPORT_BIN, args, {
+        encoding: 'utf-8',
+        timeout: 620000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: env,
+        shell: true
+      });
+    }
+
     return {
       exitCode: result.status,
       stdout: (result.stdout || '').trim(),
@@ -205,7 +225,9 @@ commands.init = function () {
 
   let localVersion = '';
   try {
-    const res = spawnSync(PT_PASSPORT_BIN, ['--version'], { encoding: 'utf-8', timeout: 10000, stdio: 'pipe', shell: true, env: Object.assign({}, process.env, { NODE_OPTIONS: '' }) });
+    const checkTarget = fs.existsSync(PT_PASSPORT_JS) ? process.execPath : PT_PASSPORT_BIN;
+    const checkArgs = fs.existsSync(PT_PASSPORT_JS) ? [PT_PASSPORT_JS, '--version'] : ['--version'];
+    const res = spawnSync(checkTarget, checkArgs, { encoding: 'utf-8', timeout: 10000, stdio: 'pipe', shell: !fs.existsSync(PT_PASSPORT_JS), env: Object.assign({}, process.env, { NODE_OPTIONS: '' }) });
     localVersion = (res.stdout || '').trim().split('\n').pop();
   } catch (_) { /* not installed */ }
 

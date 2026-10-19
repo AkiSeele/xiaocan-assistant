@@ -4,9 +4,10 @@ SSL 动态证书生成与管理 (Certificate Manager)
 非小蚕域名的流量通过纯 TCP 隧道透传，绝不干涉其他网络连接。
 """
 import datetime
+import logging
 import os
 import subprocess
-import logging
+import sys
 from typing import Tuple, Dict
 
 from cryptography import x509
@@ -78,21 +79,39 @@ class CertManager:
         return CA_CERT_PATH
 
     def is_ca_installed(self) -> bool:
-        """检查根证书是否已经存在于 Windows 当前用户的根证书存储中"""
+        """检查根证书是否已经存在于系统的信任根证书存储中"""
         try:
-            res = subprocess.run(["certutil", "-user", "-store", "Root"], capture_output=True, text=True)
-            return "XiaoCan Assistant CA" in res.stdout
+            if sys.platform == "win32":
+                res = subprocess.run(["certutil", "-user", "-store", "Root"], capture_output=True, text=True, timeout=5)
+                return "XiaoCan Assistant CA" in res.stdout
+            elif sys.platform == "darwin":
+                res = subprocess.run(["security", "find-certificate", "-c", "XiaoCan Assistant CA"], capture_output=True, text=True, timeout=5)
+                return res.returncode == 0
+            else:
+                # Linux / 容器环境下，检查标准 CA 证书安装路径或本地文件
+                ca_path = self.get_ca_cert_path()
+                return os.path.isfile(ca_path)
         except Exception:
             return False
 
     def install_ca_cert(self) -> bool:
-        """非阻塞唤起 Windows 证书安装确认框"""
+        """跨平台非阻塞唤起证书安装或信任"""
         try:
             if not os.path.exists(CA_CERT_PATH):
                 self._init_ca()
-            # 使用 subprocess.Popen 避免阻塞主进程，直接在桌面弹出 Windows 安全确认框
-            subprocess.Popen(["certutil", "-user", "-addstore", "Root", CA_CERT_PATH])
-            return True
+
+            if sys.platform == "win32":
+                # Windows: 使用 subprocess.Popen 避免阻塞主进程，直接在桌面弹出 Windows 安全确认框
+                subprocess.Popen(["certutil", "-user", "-addstore", "Root", CA_CERT_PATH])
+                return True
+            elif sys.platform == "darwin":
+                # macOS: 打开钥匙串或直接调用 security 添加信任
+                subprocess.Popen(["open", CA_CERT_PATH])
+                return True
+            else:
+                # Linux: 打印指引日志
+                logger.info(f"Linux 环境请手动将 CA 证书导入系统信任存储: {CA_CERT_PATH}")
+                return True
         except Exception as e:
             logger.error(f"唤起安装 CA 失败: {e}")
             return False

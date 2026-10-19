@@ -5,6 +5,7 @@
 """
 
 import base64
+import glob
 import io
 import json
 import logging
@@ -12,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import uuid
@@ -40,17 +42,139 @@ os.makedirs(AUTH_DIR, exist_ok=True)
 runner_lock = threading.Lock()
 
 
+def ensure_meituan_assets() -> bool:
+    """
+    检查并自愈美团 pt-passport 运行时依赖。
+    跨平台部署 (Windows / Linux / macOS / Docker 容器) 核心保障：
+    若本地缺少 node_modules/@mtuser/pt-passport，
+    直接利用 Python 内置 tarfile 将 mtuser-pt-passport-*.tgz 自动解压部署，
+    实现 100% 离线、零外部工具与网络依赖、开箱即用。
+    """
+    target_dir = os.path.join(ASSETS_DIR, "node_modules", "@mtuser", "pt-passport")
+    target_index = os.path.join(target_dir, "dist", "index.js")
+    if os.path.exists(target_index):
+        return True
+
+    tgz_candidates = [
+        f for f in os.listdir(ASSETS_DIR)
+        if f.startswith("mtuser-pt-passport-") and f.endswith(".tgz")
+    ]
+    if not tgz_candidates:
+        logger.warning("[美团环境自愈] 未在 assets 目录下找到 mtuser-pt-passport-*.tgz 归档文件")
+        return False
+
+    tgz_candidates.sort()
+    tgz_path = os.path.join(ASSETS_DIR, tgz_candidates[-1])
+    logger.info(f"[美团环境自愈] 正在自动解压部署 pt-passport 离线包: {tgz_candidates[-1]} ...")
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        with tarfile.open(tgz_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.startswith("package/"):
+                    rel_path = member.name[len("package/"):]
+                    if not rel_path:
+                        continue
+                    dest_file = os.path.join(target_dir, rel_path)
+                    if member.isdir():
+                        os.makedirs(dest_file, exist_ok=True)
+                    else:
+                        os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+                        with tar.extractfile(member) as src, open(dest_file, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+        if os.path.exists(target_index):
+            logger.info("[美团环境自愈] 成功部署 pt-passport 依赖至 node_modules/@mtuser/pt-passport")
+            return True
+        logger.error(f"[美团环境自愈] 解包完成但未在预期路径找到入口文件: {target_index}")
+        return False
+    except Exception as e:
+        logger.error(f"[美团环境自愈] 解压部署 pt-passport 异常: {e}")
+        return False
+
+
 def get_node_executable() -> str:
-    """寻找可用的 node 执行路径"""
-    for cmd in ["node", "node.exe"]:
+    """
+    跨平台寻找可用的 Node.js 运行时路径。
+    支持 Windows、macOS (Intel/Apple Silicon Homebrew)、Linux (Ubuntu/Debian/CentOS/Alpine)、
+    以及 NVM / Volta / FNM / ASDF 等各种 Node 版本管理器。
+    """
+    candidates = []
+
+    # 1. 用户自定义环境变量优先
+    for env_var in ["NODE_EXECUTABLE", "NODE_BIN", "NODE_PATH"]:
+        custom_node = os.environ.get(env_var)
+        if custom_node and os.path.isfile(custom_node):
+            candidates.append(custom_node)
+
+    # 2. 系统 PATH 中的可执行程序探测
+    which_node = shutil.which("node")
+    if which_node:
+        candidates.append(which_node)
+    which_node_exe = shutil.which("node.exe")
+    if which_node_exe and which_node_exe not in candidates:
+        candidates.append(which_node_exe)
+
+    # 3. Unix / Linux / macOS 常见安装路径探测
+    unix_paths = [
+        "/usr/local/bin/node",
+        "/opt/homebrew/bin/node",
+        "/usr/bin/node",
+        "/bin/node",
+    ]
+    for p in unix_paths:
+        if os.path.isfile(p) and p not in candidates:
+            candidates.append(p)
+
+    # 4. Unix 版本管理器路径探测 (NVM / Volta / FNM / ASDF)
+    home = os.path.expanduser("~")
+    nvm_nodes = sorted(glob.glob(os.path.join(home, ".nvm", "versions", "node", "*", "bin", "node")), reverse=True)
+    candidates.extend(nvm_nodes)
+
+    fnm_node = os.path.join(home, ".local", "share", "fnm", "current", "bin", "node")
+    if os.path.isfile(fnm_node):
+        candidates.append(fnm_node)
+    fnm_node_alt = os.path.join(home, ".fnm", "current", "bin", "node")
+    if os.path.isfile(fnm_node_alt):
+        candidates.append(fnm_node_alt)
+
+    volta_node = os.path.join(home, ".volta", "bin", "node")
+    if os.path.isfile(volta_node):
+        candidates.append(volta_node)
+
+    asdf_node = os.path.join(home, ".asdf", "shims", "node")
+    if os.path.isfile(asdf_node):
+        candidates.append(asdf_node)
+
+    # 5. Windows 常见安装路径探测
+    if sys.platform == "win32":
+        win_paths = [
+            r"C:\Program Files\nodejs\node.exe",
+            r"C:\Program Files (x86)\nodejs\node.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\node\node.exe"),
+        ]
+        win_nvm_nodes = sorted(glob.glob(os.path.expandvars(r"%APPDATA%\nvm\*\node.exe")), reverse=True)
+        win_paths.extend(win_nvm_nodes)
+        for wp in win_paths:
+            if os.path.isfile(wp) and wp not in candidates:
+                candidates.append(wp)
+
+    # 逐一测试各候选路径的可用性与版本
+    for candidate in candidates:
         try:
-            res = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5)
+            res = subprocess.run([candidate, "--version"], capture_output=True, text=True, timeout=5)
             if res.returncode == 0:
-                return cmd
+                ver_str = (res.stdout or "").strip()
+                logger.info(f"[Node运行时探测] 成功识别 Node.js: {candidate} ({ver_str})")
+                return candidate
         except Exception:
             continue
+
+    logger.warning("[Node运行时探测] 未能检测到可用的 Node.js 运行时，美团扫码与领券功能可能受限")
     return "node"
 
+
+# 模块导入时执行一次自愈检查
+ensure_meituan_assets()
 
 NODE_BIN = get_node_executable()
 
@@ -59,9 +183,19 @@ def run_node_command(args: List[str], timeout: int = 35) -> Dict[str, Any]:
     """
     执行 run.js 子命令并安全解析返回的 JSON。
     """
+    ensure_meituan_assets()
+
     env = os.environ.copy()
     env["MEITUAN_AUTH_DIR"] = AUTH_DIR
     env["NODE_OPTIONS"] = ""
+    env["PYTHON_EXECUTABLE"] = sys.executable
+
+    # 将当前 node 与 python 目录前置到 PATH，避免深层子进程丢失环境变量
+    node_dir = os.path.dirname(os.path.abspath(NODE_BIN)) if os.path.isabs(NODE_BIN) else ""
+    py_dir = os.path.dirname(os.path.abspath(sys.executable))
+    extra_paths = [p for p in [node_dir, py_dir] if p]
+    if extra_paths:
+        env["PATH"] = os.pathsep.join(extra_paths) + os.pathsep + env.get("PATH", "")
 
     cmd = [NODE_BIN, RUN_JS] + args
     try:
@@ -327,9 +461,17 @@ class MeituanAuthManager:
         save_meituan_account = db.save_meituan_account
         get_all_meituan_accounts = db.get_all_meituan_accounts
         update_job_log = db.update_job_log
+        ensure_meituan_assets()
         env = os.environ.copy()
         env["MEITUAN_AUTH_DIR"] = AUTH_DIR
         env["NODE_OPTIONS"] = ""
+        env["PYTHON_EXECUTABLE"] = sys.executable
+
+        node_dir = os.path.dirname(os.path.abspath(NODE_BIN)) if os.path.isabs(NODE_BIN) else ""
+        py_dir = os.path.dirname(os.path.abspath(sys.executable))
+        extra_paths = [p for p in [node_dir, py_dir] if p]
+        if extra_paths:
+            env["PATH"] = os.pathsep.join(extra_paths) + os.pathsep + env.get("PATH", "")
 
         cmd = [NODE_BIN, RUN_JS, "auth-poll-token"]
         try:

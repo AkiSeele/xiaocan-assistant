@@ -130,6 +130,7 @@ export const TopHeader: React.FC = () => {
       okText: '确定退出',
       cancelText: '取消',
       okButtonProps: { type: 'danger' },
+      centered: true,
       onOk: async () => {
         try {
           await api.deleteAccount(currentAccount.key);

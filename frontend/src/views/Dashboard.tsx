@@ -1884,7 +1884,8 @@ export const Dashboard: React.FC = () => {
             </Button>
           </div>
         }
-        width={540}
+        width={560}
+        centered
       >
         <div className="space-y-3">
           <Descriptions
