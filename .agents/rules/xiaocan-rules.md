@@ -2,7 +2,7 @@
 trigger: always_on
 ---
 
-# 小蚕会员助手 (XiaoCan Assistant) 开发规范与协作守则
+# 小蚕小帮手 (XiaoCan Assistant) 开发规范与协作守则
 
 > **版本**：v1.0.0  
 > **适用对象**：所有参与本项目维护、重构与功能迭代的开发者及 AI 编程助手。  
