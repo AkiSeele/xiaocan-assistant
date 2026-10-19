@@ -635,13 +635,19 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 log_output += f"[{time_service.format_now()}] 预热奖池探测异常: {e}\n"
 
             if can_burst:
+                # 针对大牌券设置 early_ms=0 精准整点开火 (避免整点前提前发射导致撞在未开闸状态 40021 或触发网关频控 50008)
                 warmup_msg = await prepare_warmup_and_wait(
                     target_hour=9, target_minute=30, token=token,
                     silk_id=silk_id, user_id=user_id, city_code=city_code,
-                    early_ms=50, trigger_type=trigger_type
+                    early_ms=0, trigger_type=trigger_type
                 )
                 if warmup_msg:
                     log_output += warmup_msg
+
+                # 计算今日 09:30:00.000 的 NTP 精准时间戳
+                cur_ntp = time_service.now_ts()
+                cur_dt = datetime.fromtimestamp(cur_ntp)
+                flash_target_ts = cur_dt.replace(hour=9, minute=30, second=0, microsecond=0).timestamp()
 
                 # 毫秒级整点零等待直射开火 (Zero-latency Burst)
                 for try_idx in range(1, 4):
@@ -660,6 +666,20 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                             log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: 官方限制: 你还有保底大牌券未领取，需先在App内使用当月保底券 (代码: {e.code})\n"
                         else:
                             log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
+
+                        now_ts = time_service.now_ts()
+                        # 若当前时间尚未到达目标整点，即便返回 40021 也是因为服务端尚未开闸，严禁提前终止退出！
+                        if e.code == 40021 and now_ts < flash_target_ts:
+                            wait_rem = flash_target_ts - now_ts
+                            if wait_rem > 0:
+                                await asyncio.sleep(wait_rem + 0.005)
+                            continue
+
+                        # 遭遇网关频控 50008 时，退避 200ms 后重试，避开滑动窗口硬碰撞
+                        if e.code == 50008:
+                            await asyncio.sleep(0.2)
+                            continue
+
                         if e.code in (40003, 40004, 40017, 40021, 40024, 40037, 40038, 40039, 40040):
                             break
                     except Exception as e:

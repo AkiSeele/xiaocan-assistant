@@ -772,13 +772,26 @@ def update_job_log(log_id: int, status: Optional[str] = None, output: Optional[s
 
 
 def auto_clean_stale_running_jobs():
-    """运行时自愈：对于 running 状态超过 10 分钟未更新的任务判定为超时僵尸任务，自动置为 aborted"""
+    """运行时自愈：对于 running 状态超过 10 分钟未更新的普通短任务判定为超时僵尸任务，自动置为 aborted；但必须豁免合法长周期的预约与监听任务"""
     try:
         with get_conn() as conn:
             cur_ts = int(time.time())
             stale_threshold = 600  # 10 分钟
-            rows = conn.execute("SELECT id, created_at, output FROM job_logs WHERE status = 'running'").fetchall()
+            # 1. 扫描处于 running 状态的任务，左连接 store_appointments 查验实际预约状态
+            rows = conn.execute("""
+            SELECT j.id, j.created_at, j.output, j.task_id, sa.status as apt_status
+            FROM job_logs j
+            LEFT JOIN store_appointments sa ON sa.log_id = j.id
+            WHERE j.status = 'running'
+            """).fetchall()
             for r in rows:
+                task_id = r["task_id"]
+                apt_status = r["apt_status"]
+                # 豁免：若属于定时预约或名额监听等长周期任务，且对应预约依然处于活跃等待中，绝对严禁误杀
+                if task_id in ("store_appoint", "store_monitor", "name_monitor", "keyword", "keyword_monitor"):
+                    if apt_status in ("pending", "scheduled", "primed", "monitoring", "running") or apt_status is None:
+                        continue
+
                 c_at = r["created_at"]
                 try:
                     c_ts = int(time.mktime(time.strptime(c_at, "%Y-%m-%d %H:%M:%S")))
@@ -789,6 +802,20 @@ def auto_clean_stale_running_jobs():
                         conn.execute("UPDATE job_logs SET status = 'aborted', output = ? WHERE id = ?", (new_out, r["id"]))
                 except Exception:
                     pass
+
+            # 2. 自愈纠正：若之前被误打为 aborted 但底层预约依然活跃的日志，自动恢复为 running 状态并清洗误判文本
+            mis_aborted = conn.execute("""
+            SELECT j.id, j.output
+            FROM job_logs j
+            JOIN store_appointments sa ON sa.log_id = j.id
+            WHERE j.status = 'aborted' AND sa.status IN ('pending', 'scheduled', 'primed', 'monitoring', 'running')
+            """).fetchall()
+            for m in mis_aborted:
+                m_out = m["output"] or ""
+                # 剔除误杀日志中的执行超时自愈行
+                clean_lines = [l for l in m_out.split("\n") if "执行超时自愈: 任务运行已超过 10 分钟未响应" not in l]
+                conn.execute("UPDATE job_logs SET status = 'running', output = ? WHERE id = ?", ("\n".join(clean_lines).strip(), m["id"]))
+
             conn.commit()
     except Exception:
         pass
