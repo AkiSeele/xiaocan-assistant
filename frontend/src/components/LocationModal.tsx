@@ -18,7 +18,7 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
-import type { LocationCandidate } from '../types';
+import type { LocationCandidate, LocationHistoryItem } from '../types';
 
 interface LocationModalProps {
   visible: boolean;
@@ -42,6 +42,10 @@ const formatCityTag = (rawCity?: string, district?: string) => {
 export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }) => {
   const activeLocation = useAppStore((s) => s.activeLocation);
   const setActiveLocation = useAppStore((s) => s.setActiveLocation);
+  const locationHistory = useAppStore((s) => s.locationHistory);
+  const addLocationHistory = useAppStore((s) => s.addLocationHistory);
+  const removeLocationHistory = useAppStore((s) => s.removeLocationHistory);
+  const clearLocationHistory = useAppStore((s) => s.clearLocationHistory);
 
   const [editLng, setEditLng] = useState<string>(activeLocation?.longitude || '');
   const [editLat, setEditLat] = useState<string>(activeLocation?.latitude || '');
@@ -141,6 +145,16 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     setResolvedAddress(cand.full_address || `${cand.city_name} · ${cand.short_name}`);
     setDropdownVisible(false);
     Toast.success(`已切换：${cand.city_name} · ${cand.short_name}`);
+  };
+
+  // 选中历史位置
+  const handleSelectHistory = (item: LocationHistoryItem) => {
+    setEditLng(item.longitude);
+    setEditLat(item.latitude);
+    setResolvedCityCode(item.cityCode || 420100);
+    setResolvedCityName(item.cityName);
+    setResolvedAddress(item.addressName);
+    Toast.success(`已切换历史位置：${item.cityName} · ${item.addressName}`);
   };
 
   // 仅在用户主动按 Enter 或点击【搜索】时单次触发检索 (严禁打字实时触发)
@@ -269,6 +283,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     };
 
     setActiveLocation(newLoc);
+    addLocationHistory(newLoc);
     Toast.success(`抢单位置已更新：${newLoc.cityName} · ${newLoc.addressName}`);
     onClose();
   };
@@ -398,7 +413,59 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
           </div>
         </Dropdown>
 
-        {/* 3. 辅助微调区：经纬度弱化微调 (单行紧凑，视觉弱化) */}
+        {/* 3. 历史位置：点击标签快速切回此前使用过的抢单位置 */}
+        <Divider margin="8px" />
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-semi-color-text-2">历史位置</span>
+            {locationHistory.length > 0 && (
+              <Button
+                size="small"
+                theme="borderless"
+                type="tertiary"
+                className="text-[11px]"
+                onClick={clearLocationHistory}
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                清空
+              </Button>
+            )}
+          </div>
+          {locationHistory.length === 0 ? (
+            <div className="text-[11px] text-semi-color-text-3">
+              暂无历史位置，确认设置后自动记录
+            </div>
+          ) : (
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {locationHistory.map((item) => {
+                const isCurrent =
+                  Math.abs(parseFloat(item.longitude) - parseFloat(editLng || '0')) < 1e-5 &&
+                  Math.abs(parseFloat(item.latitude) - parseFloat(editLat || '0')) < 1e-5;
+                return (
+                  <Tag
+                    key={`${item.longitude}-${item.latitude}-${item.usedAt}`}
+                    size="small"
+                    color={isCurrent ? 'blue' : 'grey'}
+                    closable
+                    className="shrink-0 cursor-pointer font-normal"
+                    style={{ maxWidth: 220 }}
+                    onClick={() => handleSelectHistory(item)}
+                    onClose={() => removeLocationHistory(item)}
+                  >
+                    <span
+                      className="block truncate"
+                      title={`${item.cityName} · ${item.addressName}`}
+                    >
+                      {formatCityTag(item.cityName)} · {item.addressName}
+                    </span>
+                  </Tag>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 4. 辅助微调区：经纬度弱化微调 (单行紧凑，视觉弱化) */}
         <Divider margin="8px" />
         <div className="flex items-center justify-between gap-2 text-xs text-semi-color-text-2">
           <Space align="center" spacing="tight" style={{ flex: 1 }}>
