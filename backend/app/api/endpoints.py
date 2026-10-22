@@ -40,15 +40,23 @@ TASK_META = {
     "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "会员每日打卡 + VIP专属签到抽奖 + 里程碑核验 + 专属成长礼包", "category": "daily", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
     "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "晚间睡前自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
     "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
-    "flash_sale": {"id": "flash_sale", "label": "元宝秒杀抢券", "tip": "元宝商城限量秒杀抢券，支持自定义商品ID", "category": "daily", "default_time": "10:00"},
     "meituan_coupon": {"id": "meituan_coupon", "label": "美团神券每日一键领", "tip": "全量美团官方账号轮流领取大额神券（外卖/美食/闪购/生活服务），支持401自动自愈与24小时滚动窗口冷却防刷", "category": "daily", "default_time": "08:15"},
 
     # --- 会员秒杀与特权抢券 (member) ---
+    "flash_sale": {
+        "id": "flash_sale",
+        "label": "元宝秒杀抢券",
+        "tip": "官方元宝秒杀专区限量神券（1元小蚕券/通用大牌券/110%返利券/复活券/免单券），每日三场 (09/14/18点) 准点秒杀",
+        "category": "member",
+        "default_time": "09:00",
+        "fixed_time": True,
+        "time_label": "三场 09/14/18点"
+    },
     "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "member", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
-    "svip_rebate": {"id": "svip_rebate", "label": "抢SVIP专属返利券", "tip": "SVIP专属大额返利券每日 09:00:00 准点秒杀", "category": "member", "vip": "SVIP2-6", "default_time": "09:00", "fixed_time": True, "time_label": "09:00 固定"},
-    "brand_flash": {"id": "brand_flash", "label": "抢SVIP大牌券", "tip": "每日 09:30:00 准点抢额外放量大牌神券（独立通道，绝不消耗每月保底张数）", "category": "member", "vip": "SVIP2-6 / VIP5+", "default_time": "09:30", "fixed_time": True, "time_label": "09:30 固定"},
-    "media_vip": {"id": "media_vip", "label": "抢每月影音VIP", "tip": "影音会员VIP周卡(网易云音乐/腾讯视频等)每日三场 (10/17/20点)，智能检测本月余量与历史记录", "category": "member", "vip": "SVIP4-6 / VIP5-6", "default_time": "10:00", "fixed_time": True, "time_label": "三场 10/17/20点"},
-    "free_order": {"id": "free_order", "label": "抢每月免单券", "tip": "外卖霸王餐全额免单券每日 14:00:00 准点秒杀", "category": "member", "vip": "SVIP5-6 / VIP6", "default_time": "14:00", "fixed_time": True, "time_label": "14:00 固定"},
+    "svip_rebate": {"id": "svip_rebate", "label": "抢SVIP专属返利券", "tip": "SVIP专属大额返利券每日 09:00:00 准点秒杀 (官方特权: SVIP2+ 或 VIP5+ 均可享受)", "category": "member", "vip": "SVIP2+ / VIP5+", "default_time": "09:00", "fixed_time": True, "time_label": "09:00 固定"},
+    "brand_flash": {"id": "brand_flash", "label": "抢SVIP大牌券", "tip": "每日 09:30:00 准点抢额外放量大牌神券（独立通道，绝不消耗每月保底张数）", "category": "member", "vip": "SVIP2+ / VIP5+", "default_time": "09:30", "fixed_time": True, "time_label": "09:30 固定"},
+    "media_vip": {"id": "media_vip", "label": "抢每月影音VIP", "tip": "影音会员VIP周卡(网易云音乐/腾讯视频等)每日三场 (10/17/20点)，智能检测本月余量与历史记录", "category": "member", "vip": "SVIP4+ / VIP5+", "default_time": "10:00", "fixed_time": True, "time_label": "三场 10/17/20点"},
+    "free_order": {"id": "free_order", "label": "抢每月免单券", "tip": "外卖霸王餐全额免单券每日 14:00:00 准点秒杀", "category": "member", "vip": "SVIP5+ / VIP6", "default_time": "14:00", "fixed_time": True, "time_label": "14:00 固定"},
 
     # --- 资产守护与双返利监控 (custom) ---
     "expire_remind": {"id": "expire_remind", "label": "凭据/JWT到期预警", "tip": "监控小蚕凭据与JWT有效期，提前推送防掉线", "category": "custom", "default_time": "08:00"},
@@ -103,7 +111,29 @@ TASK_PARAM_DEFS = {
         {"key": "warn_hours", "label": "提前预警小时数", "def": 24, "type": "number", "step": "1", "min": 1, "hint": "券过期前多少小时发送到期提醒"}
     ],
     "flash_sale": [
-        {"key": "goods_ids", "label": "秒杀商品ID（逗号分隔）", "def": "", "type": "string", "hint": "指定优先秒杀的商品/券ID，留空则默认场次"}
+        {
+            "key": "target_products",
+            "label": "目标抢兑产品（按需勾选，可多选）",
+            "def": [],
+            "type": "multi_select",
+            "options": [
+                {"label": "【14:00场】通用大牌券 (SVIP: 4万 / VIP: 8万元宝, 限量50份)", "value": "brand_card"},
+                {"label": "【14:00场】霸王餐免单券 (SVIP: 6万 / VIP: 12万元宝, 限量10份)", "value": "free_order"},
+                {"label": "【09:00场】1元小蚕红包 (SVIP: 4千 / VIP: 8千元宝, 限量200份)", "value": "redpack_1"},
+                {"label": "【09:00场】2元小蚕红包 (SVIP: 8千 / VIP: 1.6万元宝, 限量200份)", "value": "redpack_2"},
+                {"label": "【09:00场】3元小蚕红包 (SVIP: 1.2万 / VIP: 2.4万元宝, 限量80份)", "value": "redpack_3"},
+                {"label": "【18:00场】110%返利券 (SVIP: 8千 / VIP: 1.5万元宝, 限量200份)", "value": "rebate_card"},
+                {"label": "【18:00场】超时复活券 (SVIP: 3.2万 / VIP: 6.4万元宝, 限量50份)", "value": "relive_card"}
+            ],
+            "hint": "重要：仅在勾选产品的对应场次准点抢兑。未勾选任何商品时任务自动静默待命，绝不擅自消耗任何元宝！"
+        },
+        {
+            "key": "goods_ids",
+            "label": "自定义指定商品ID（选填备用）",
+            "def": "",
+            "type": "string",
+            "hint": "选填：如需抢非上述列表的特殊商品，可在此输入官方 exchange_id（多个以英文逗号分隔）"
+        }
     ]
 }
 
@@ -663,7 +693,21 @@ async def sync_account_endpoint(key: str):
     if not token:
         raise HTTPException(status_code=400, detail="账号未配置有效 Token")
 
-    enriched = await _enrich_and_save_account(acc)
+    # 预先核验 Token 有效期
+    is_valid, payload, msg = decode_jwt_payload(token)
+    if not is_valid:
+        return {
+            "ok": False,
+            "message": f"同步失败: {msg}"
+        }
+
+    try:
+        enriched = await _enrich_and_save_account(acc)
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": f"同步异常: {e}"
+        }
     return {
         "ok": True,
         "account": enriched,
@@ -909,6 +953,207 @@ async def toggle_task(data: Dict[str, Any] = Body(...)):
     return {"ok": True, "message": f"任务 [{TASK_META.get(task_id, {}).get('label', task_id)}] 配置已更新生效"}
 
 
+@router.get("/flash-sale/shelf")
+async def get_flash_sale_shelf_endpoint(account_key: str = Query(...)):
+    """
+    获取指定账号的官方元宝秒杀货架实时数据 (包含 09:00 / 14:00 / 18:00 三大场次在线库存、实时剩余、会员折扣与个人限额)
+    """
+    acc = db.get_account_by_key(account_key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    token = acc.get("token") or ""
+    silk_id = acc.get("silk_id")
+    user_id = acc.get("user_id")
+    is_plus = bool(acc.get("is_plus", 0))
+    vip_level = int(acc.get("vip_level", 5) or 5)
+    city_code = int(acc.get("city_code", 440303) or 440303)
+
+    OFFICIAL_CATALOG = {
+        "redpack_1": {
+            "name": "1元小蚕红包", "round": "09:00", "round_sec": 32400,
+            "svip_silk": 4000, "vip_silk": 8000, "svip_id": 200, "vip_id": 190, "stock": 200,
+            "tip": "通用小蚕红包，满返与比例返通用 (72小时有效)"
+        },
+        "redpack_2": {
+            "name": "2元小蚕红包", "round": "09:00", "round_sec": 32400,
+            "svip_silk": 8000, "vip_silk": 16000, "svip_id": 199, "vip_id": 189, "stock": 200,
+            "tip": "通用小蚕红包，满返与比例返通用 (72小时有效)"
+        },
+        "redpack_3": {
+            "name": "3元小蚕红包", "round": "09:00", "round_sec": 32400,
+            "svip_silk": 12000, "vip_silk": 24000, "svip_id": 198, "vip_id": 188, "stock": 80,
+            "tip": "大额通用红包，满返与比例返通用 (72小时有效)"
+        },
+        "brand_card": {
+            "name": "通用大牌券", "round": "14:00", "round_sec": 50400,
+            "svip_silk": 40000, "vip_silk": 80000, "svip_id": 202, "vip_id": 194, "stock": 50,
+            "tip": "大牌商户专属抵扣神券 (72小时有效)"
+        },
+        "free_order": {
+            "name": "霸王餐免单券", "round": "14:00", "round_sec": 50400,
+            "svip_silk": 60000, "vip_silk": 120000, "svip_id": 201, "vip_id": 193, "stock": 10,
+            "tip": "48小时内订单全额免单补贴，至多15元"
+        },
+        "rebate_card": {
+            "name": "110%返利券", "round": "18:00", "round_sec": 64800,
+            "svip_silk": 8000, "vip_silk": 15000, "svip_id": 204, "vip_id": 197, "stock": 200,
+            "tip": "额外多返活动返豆10%(上限2豆，72小时有效)"
+        },
+        "relive_card": {
+            "name": "超时复活券", "round": "18:00", "round_sec": 64800,
+            "svip_silk": 32000, "vip_silk": 64000, "svip_id": 203, "vip_id": 196, "stock": 50,
+            "tip": "168小时内超时取消订单可补单复活"
+        }
+    }
+
+    live_map = {}
+    try:
+        fs_res = await client.list_flash_sale_exchanges(
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            city_code=city_code,
+            new_level=vip_level,
+            is_plus=is_plus
+        )
+        raw_list = fs_res.get("list") or {}
+        live_items = (raw_list.get("svip") if is_plus else raw_list.get("vip")) or []
+        live_map = {it.get("exchange_id"): it for it in live_items if it.get("exchange_id")}
+    except Exception as e:
+        logger.warning(f"获取秒杀实时货架失败 (降级为离线字典): {e}")
+
+    now_dt = time_service.now_dt()
+    now_sec = now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
+
+    rounds_def = [
+        {"round": "09:00", "round_title": "09:00 早场 (小蚕红包专场)", "round_sec": 32400, "keys": ["redpack_1", "redpack_2", "redpack_3"]},
+        {"round": "14:00", "round_title": "14:00 午场 (大牌与免单专场)", "round_sec": 50400, "keys": ["brand_card", "free_order"]},
+        {"round": "18:00", "round_title": "18:00 晚场 (返利与复活专场)", "round_sec": 64800, "keys": ["rebate_card", "relive_card"]},
+    ]
+
+    result_rounds = []
+    for r_def in rounds_def:
+        r_sec = r_def["round_sec"]
+        if now_sec < r_sec - 1800:
+            status = "upcoming"
+        elif now_sec <= r_sec + 7200:
+            status = "ongoing"
+        else:
+            status = "ended"
+
+        r_items = []
+        for k in r_def["keys"]:
+            meta = OFFICIAL_CATALOG[k]
+            eid = meta["svip_id"] if is_plus else meta["vip_id"]
+            live = live_map.get(eid) or {}
+            raw_name = live.get("goods_name") or meta["name"]
+            clean_name = re.sub(r'[𐀀-􏿿]|[☀-➿]', '', raw_name).strip()
+            price = live.get("community_silk") or (meta["svip_silk"] if is_plus else meta["vip_silk"])
+            stock = live.get("daily_stock") or meta["stock"]
+            left = live.get("left") if live else stock
+            reach = bool(live.get("daily_stock_reach", False))
+            quota = live.get("user_quota_limit", 1)
+
+            r_items.append({
+                "product_key": k,
+                "exchange_id": eid,
+                "goods_name": clean_name,
+                "round_str": r_def["round"],
+                "community_silk": price,
+                "strike_price": live.get("strike_price") or (price * 2),
+                "discount_rate": live.get("discount_rate") or (400 if is_plus else 800),
+                "daily_stock": stock,
+                "left": left,
+                "daily_stock_reach": reach,
+                "user_quota_limit": quota,
+                "goods_banner": live.get("goods_banner") or "",
+                "equity_desc": live.get("equity_desc") or meta["tip"],
+            })
+
+        result_rounds.append({
+            "round": r_def["round"],
+            "round_title": r_def["round_title"],
+            "status": status,
+            "items": r_items
+        })
+
+    cfg = next((c for c in db.get_task_configs(account_key) if c["task_id"] == "flash_sale"), {})
+    current_params = cfg.get("params") or {}
+
+    return {
+        "ok": True,
+        "account": {
+            "key": account_key,
+            "nickname": acc.get("nickname", "未命名账号"),
+            "is_plus": is_plus,
+            "vip_level": vip_level,
+            "yb_point": int(acc.get("yb_point", 0) or 0)
+        },
+        "rounds": result_rounds,
+        "current_params": current_params
+    }
+
+
+@router.post("/flash-sale/exchange")
+async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
+    """
+    即时兑换进行中场次的秒杀商品 (SilkwormCommunity.SilkwormMobileCommunityService.ExchangeGoodsV2)
+    """
+    account_key = data.get("account_key")
+    exchange_id = data.get("exchange_id")
+    goods_name = data.get("goods_name") or f"商品#{exchange_id}"
+    cost_silk = int(data.get("community_silk") or 0)
+
+    if not account_key or not exchange_id:
+        raise HTTPException(status_code=400, detail="缺少必要参数")
+
+    acc = db.get_account_by_key(account_key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    token = acc.get("token") or ""
+    silk_id = acc.get("silk_id")
+    user_id = acc.get("user_id")
+    city_code = int(acc.get("city_code", 440303) or 440303)
+    yb_point = int(acc.get("yb_point", 0) or 0)
+
+    if cost_silk > yb_point:
+        return {"ok": False, "message": f"账户可用元宝不足 ({yb_point:,} < {cost_silk:,})"}
+
+    try:
+        res = await client.exchange_goods_v2(
+            exchange_id=int(exchange_id),
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            city_code=city_code
+        )
+        remaining = max(0, yb_point - cost_silk) if cost_silk > 0 else yb_point
+        if cost_silk > 0:
+            db.update_account_profile(account_key, {"yb_point": remaining})
+
+        from ..core.notifier import send_system_notification, NotificationEvent, NotificationLevel
+        await send_system_notification(
+            title="元宝秒杀直接兑换成功",
+            content=f"账号【{acc.get('nickname', '主控账号')}】成功即时兑换【{goods_name}】(消耗: {cost_silk:,}元宝)！",
+            account_key=account_key,
+            event=NotificationEvent.SPIKE_SUCCESS,
+            level=NotificationLevel.SUCCESS
+        )
+
+        return {
+            "ok": True,
+            "message": f"成功兑换【{goods_name}】！消耗 {cost_silk:,} 元宝",
+            "remaining_yb": remaining,
+            "data": res
+        }
+    except XiaoCanRPCError as ce:
+        return {"ok": False, "message": f"{ce.msg} (代码: {ce.code})", "code": ce.code}
+    except Exception as e:
+        return {"ok": False, "message": f"兑换网络异常: {str(e)}"}
+
+
 @router.post("/tasks/run")
 async def run_task_immediately(data: Dict[str, Any] = Body(...)):
     """立即手动触发一次任务"""
@@ -927,32 +1172,74 @@ async def run_task_immediately(data: Dict[str, Any] = Body(...)):
 
 @router.post("/tasks/batch-run-daily")
 async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
-    """一键执行全部已托管账号的高频日常任务 (小蚕全账号日常打卡 + 美团全账号神券领取)"""
+    """日常任务打卡 (首页: 当前账号已启用日常打卡; 自动化任务: 全账号批量日常打卡)"""
     if hasattr(data, "default"):
         data = None
     data = data or {}
     specified_key = data.get("account_key")
-    
-    # 1. 获取所有待执行的小蚕账号 (排除美团账号，美团账号由美团专属引擎执行)
-    all_accounts = [a for a in db.get_all_accounts() if a.get("is_active", 1) and a.get("platform") != "meituan"]
-    if not all_accounts and specified_key:
-        single = db.get_account_by_key(specified_key)
-        if single and single.get("platform") != "meituan":
-            all_accounts = [single]
 
-    daily_task_ids = ["yb_sign", "yb_task", "vip_expand", "group_lottery"]
+    # 1. 区分单账号执行与全账号执行
+    if specified_key:
+        single = db.get_account_by_key(specified_key)
+        if not single or not single.get("is_active", 1):
+            raise HTTPException(status_code=404, detail="指定小蚕账号不存在或已停用")
+        all_accounts = [single]
+    else:
+        all_accounts = [a for a in db.get_all_accounts() if a.get("is_active", 1) and a.get("platform") != "meituan"]
+
+    if not all_accounts:
+        return {
+            "ok": True,
+            "all_ok": True,
+            "message": "当前未配置任何有效账号",
+            "summary": {"xiaocan_accounts_count": 0, "meituan_accounts_count": 0, "total_tasks": 0, "success_tasks": 0},
+            "xiaocan_accounts": [],
+            "meituan_accounts": [],
+            "results": []
+        }
+
     xiaocan_accounts_res = []
     flattened_results = []
     total_tasks = 0
     success_tasks = 0
+    executed_mt_keys = set()
 
-    # 2. 串行/错峰轮询执行小蚕全账号打卡，并严格添加单任务 15s 超时熔断保护
+    # 2. 串行/错峰执行小蚕账号打卡，并严格添加单任务 15s 超时熔断保护
     for acc in all_accounts:
         acc_key = acc.get("key")
         nick = acc.get("nickname") or acc_key
         acc_task_results = []
 
-        for tid in daily_task_ids:
+        cfg_list = db.get_task_configs(acc_key)
+        cfg_map = {c["task_id"]: c for c in cfg_list}
+
+        if specified_key:
+            # 首页当前账号打卡：仅执行当前账号已经启用的日常任务 (category == 'daily' 且 enabled == 1)
+            run_task_ids = [
+                tid for tid, meta in TASK_META.items()
+                if meta.get("category") == "daily" and bool(cfg_map.get(tid, {}).get("enabled", False))
+            ]
+            if not run_task_ids:
+                return {
+                    "ok": True,
+                    "all_ok": True,
+                    "message": f"当前账号【{nick}】未启用任何日常任务，请先在自动化任务中配置开启",
+                    "summary": {"xiaocan_accounts_count": 1, "meituan_accounts_count": 0, "total_tasks": 0, "success_tasks": 0},
+                    "xiaocan_accounts": [],
+                    "meituan_accounts": [],
+                    "results": []
+                }
+        else:
+            # 自动化页面全账号打卡：优先执行已启用日常，若无单独配置则执行标准日常组合
+            active_daily_ids = [
+                tid for tid, meta in TASK_META.items()
+                if meta.get("category") == "daily" and bool(cfg_map.get(tid, {}).get("enabled", False))
+            ]
+            run_task_ids = active_daily_ids if active_daily_ids else ["yb_sign", "yb_task", "vip_expand", "group_lottery"]
+
+        for tid in run_task_ids:
+            if tid == "meituan_coupon":
+                executed_mt_keys.add(acc_key)
             label = TASK_META.get(tid, {}).get("label", tid)
             total_tasks += 1
             try:
@@ -1011,7 +1298,7 @@ async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
                     "output": out_msg
                 })
 
-        acc_all_ok = all(t["ok"] for t in acc_task_results)
+        acc_all_ok = all(t["ok"] for t in acc_task_results) if acc_task_results else True
         xiaocan_accounts_res.append({
             "account_key": acc_key,
             "nickname": nick,
@@ -1019,54 +1306,59 @@ async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
             "tasks": acc_task_results
         })
 
-        # 账号间随机等待 0.3~0.6s，防止高频突发并发
-        await asyncio.sleep(random.uniform(0.3, 0.6))
+        # 多账号间随机等待 0.3~0.6s，防止高频突发并发
+        if len(all_accounts) > 1:
+            await asyncio.sleep(random.uniform(0.3, 0.6))
 
-    # 3. 轮询执行美团全账号神券领取（自动受24小时滚动窗口冷却保护）
+    # 3. 轮询执行美团全账号神券领取（仅在全账号打卡且未指定单账号时执行）
     meituan_results = []
-    try:
-        from ..meituan.worker import claim_all_meituan_accounts
-        mt_res = await asyncio.wait_for(
-            asyncio.to_thread(claim_all_meituan_accounts, force=False),
-            timeout=90.0
-        )
-        meituan_results = mt_res or []
-        for mr in meituan_results:
-            m_nick = mr.get("nickname") or mr.get("account_key", "美团账号")
-            m_ok = bool(mr.get("success") or mr.get("status") == "skipped")
-            m_out = mr.get("detailed_log") or mr.get("formatted_text") or mr.get("message") or ""
-            total_tasks += 1
-            if m_ok:
-                success_tasks += 1
+    if not specified_key:
+        try:
+            from ..meituan.worker import claim_all_meituan_accounts
+            mt_res = await asyncio.wait_for(
+                asyncio.to_thread(claim_all_meituan_accounts, force=False, record_log=True, exclude_keys=executed_mt_keys),
+                timeout=90.0
+            )
+            meituan_results = mt_res or []
+            for mr in meituan_results:
+                m_nick = mr.get("nickname") or mr.get("account_key", "美团账号")
+                m_ok = bool(mr.get("success") or mr.get("status") == "skipped")
+                m_out = mr.get("detailed_log") or mr.get("formatted_text") or mr.get("message") or ""
+                total_tasks += 1
+                if m_ok:
+                    success_tasks += 1
+                flattened_results.append({
+                    "task_id": "meituan_coupon",
+                    "account_key": mr.get("account_key"),
+                    "account_nickname": m_nick,
+                    "label": f"[{m_nick}] 美团神券领取",
+                    "ok": m_ok,
+                    "output": m_out
+                })
+        except asyncio.TimeoutError:
             flattened_results.append({
                 "task_id": "meituan_coupon",
-                "account_key": mr.get("account_key"),
-                "account_nickname": m_nick,
-                "label": f"[{m_nick}] 美团神券领取",
-                "ok": m_ok,
-                "output": m_out
+                "account_key": "all",
+                "account_nickname": "美团账号",
+                "label": "美团全量领券",
+                "ok": False,
+                "output": "美团领券总流程超时 (90秒熔断保护)"
             })
-    except asyncio.TimeoutError:
-        flattened_results.append({
-            "task_id": "meituan_coupon",
-            "account_key": "all",
-            "account_nickname": "美团账号",
-            "label": "美团全量领券",
-            "ok": False,
-            "output": "美团领券总流程超时 (90秒熔断保护)"
-        })
-    except Exception as e:
-        flattened_results.append({
-            "task_id": "meituan_coupon",
-            "account_key": "all",
-            "account_nickname": "美团账号",
-            "label": "美团全量领券",
-            "ok": False,
-            "output": f"美团领券异常: {str(e)}"
-        })
+        except Exception as e:
+            flattened_results.append({
+                "task_id": "meituan_coupon",
+                "account_key": "all",
+                "account_nickname": "美团账号",
+                "label": "美团全量领券",
+                "ok": False,
+                "output": f"美团领券异常: {str(e)}"
+            })
 
     all_ok = (total_tasks > 0) and (success_tasks == total_tasks)
-    summary_msg = f"已完成全部账号日常打卡！共处理 {len(all_accounts)} 个小蚕账号、{len(meituan_results)} 个美团账号 (成功 {success_tasks}/{total_tasks})"
+    if specified_key:
+        summary_msg = f"当前账号【{all_accounts[0].get('nickname') or specified_key}】日常打卡完成！共执行 {total_tasks} 项日常，成功 {success_tasks} 项"
+    else:
+        summary_msg = f"全账号日常任务打卡完成！共处理 {len(all_accounts)} 个小蚕账号、{len(meituan_results)} 个美团账号 (成功 {success_tasks}/{total_tasks})"
 
     return {
         "ok": True,
@@ -3317,6 +3609,7 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
     min_rebate_rate = float(data.get("min_rebate_rate") or 0.0)
     max_order_money = float(data.get("max_order_money") or 0.0)
     auto_stop_on_success = int(data.get("auto_stop_on_success") if data.get("auto_stop_on_success") is not None else 1)
+    use_advance_card = int(data.get("use_advance_card") or 0)
 
     raw_timeout = data.get("timeout_sec")
     timeout_sec = int(raw_timeout) if raw_timeout is not None else 7200
@@ -3354,6 +3647,7 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
         f"[{t_now_init}] 创建店名抢单监听任务 - 调度引擎装载就绪\n"
         f"[{t_now_init}] 目标商户关键词: 「{keyword}」 (模式: {match_desc} | 平台: {plat_desc})\n"
         f"[{t_now_init}] 方案筛选要求: {filter_desc} | 阈值规则: {req_str}\n"
+        f"[{t_now_init}] 卡券加速策略: {'已启用超前抢单券加速 (进入开抢前30分钟自动触发)' if use_advance_card else '常规开抢 (准点开火)'}\n"
         f"[{t_now_init}] 监听策略: 准点放单智能对齐 (每分钟 00 秒必嗅探) + 每 {poll_sec} 秒轮询 | 时段: {start_at} 至 {until_str} | 抢成自停: {'开启' if auto_stop_on_success else '关闭'}\n"
         f"[{t_now_init}] 执行账号: 【{nick}】，高频嗅探与自动秒抢通道已就绪..."
     )
@@ -3381,6 +3675,7 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
         "min_rebate_rate": min_rebate_rate,
         "max_order_money": max_order_money,
         "auto_stop_on_success": auto_stop_on_success,
+        "use_advance_card": use_advance_card,
         "redpack_mode": int(data.get("redpack_mode", 0)),
         "redpack_id": str(data.get("redpack_id") or ""),
         "redpack_name": str(data.get("redpack_name") or ""),
@@ -3653,6 +3948,7 @@ async def list_orders(
             c_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ot)) if ot else time.strftime("%Y-%m-%d %H:%M:%S")
             tt = o.get("timeout_time")
             exp_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(tt)) if tt else ""
+            delay_count_val = int(o.get("delay_count") or o.get("hh_delay_count") or 0)
 
             db.save_order({
                 "account_key": account_key,
@@ -3676,8 +3972,10 @@ async def list_orders(
                 "created_at": c_at,
                 "order_time": int(ot or 0),
                 "order_type": 12 if is_percent_order else order_type_val,
-                "rebate_ratio": rebate_ratio
+                "rebate_ratio": rebate_ratio,
+                "delay_count": delay_count_val
             })
+
 
         # 若本次查询为「待上传」(query_st == 0) 或全部，核验本地与官方待处理列表
         if query_st == 0 and account_key:
@@ -3890,9 +4188,80 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
 
 @router.delete("/orders/{order_id}")
 async def remove_order(order_id: int):
-    """删除订单记录"""
+    """删除订单记录 (针对已完成/已取消订单，同步删除官方记录与本地数据库)"""
+    target_order = db.get_order_by_id(order_id)
+    if not target_order:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    st = (target_order.get("status") or "").lower()
+    if st not in ("completed", "cancelled"):
+        raise HTTPException(status_code=400, detail="仅支持删除已完成或已取消的历史订单")
+
+    account_key = target_order.get("account_key")
+    acc = db.get_account_by_key(account_key) if account_key else None
+    promo_order_id = target_order.get("promotion_order_id") or 0
+
+    if promo_order_id and acc and acc.get("token"):
+        try:
+            await client.delete_promotion_order(
+                promotion_order_id=promo_order_id,
+                token=acc["token"],
+                silk_id=acc.get("silk_id"),
+                user_id=acc.get("user_id"),
+                city_code=acc.get("city_code") or 440303
+            )
+        except Exception as e:
+            logger.info(f"官方删除订单微服务返回或已在远端删除: {e}")
+
     db.delete_order(order_id)
     return {"ok": True, "message": "订单记录已删除"}
+
+
+@router.post("/orders/{order_id}/cancel")
+async def cancel_order(order_id: int):
+    """取消霸王餐报名名额 (针对未提交外卖单号的待处理订单)"""
+    target_order = db.get_order_by_id(order_id)
+    if not target_order:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    if target_order.get("platform_order_id"):
+        raise HTTPException(status_code=400, detail="已绑定外卖单号的订单无法取消报名")
+
+    st = (target_order.get("status") or "").lower()
+    if st != "pending":
+        raise HTTPException(status_code=400, detail="仅待上传状态且未下单的订单支持取消报名")
+
+    account_key = target_order.get("account_key")
+    acc = db.get_account_by_key(account_key) if account_key else None
+    if not acc or not acc.get("token"):
+        raise HTTPException(status_code=400, detail="对应小蚕账号凭据已失效或未登录")
+
+    promo_order_id = target_order.get("promotion_order_id") or 0
+    if not promo_order_id:
+        order_sn = target_order.get("order_sn", "")
+        m = re.search(r'(\d{8,10})$', order_sn)
+        if m:
+            promo_order_id = int(m.group(1))
+
+    if not promo_order_id:
+        raise HTTPException(status_code=400, detail="该订单缺少官方活动订单号 promotion_order_id，无法取消报名")
+
+    try:
+        res = await client.cancel_promotion_quota(
+            promotion_order_id=promo_order_id,
+            token=acc["token"],
+            silk_id=acc.get("silk_id"),
+            user_id=acc.get("user_id"),
+            city_code=acc.get("city_code") or 440303
+        )
+        db.update_order(order_id, {"status": "cancelled"})
+        return {"ok": True, "message": "霸王餐报名已成功取消，名额已释放", "raw": res}
+    except XiaoCanRPCError as e:
+        logger.warning(f"取消报名官方接口返回异常: {e}")
+        raise HTTPException(status_code=400, detail=f"官方取消失败: {e.msg} (错误码: {e.code})")
+    except Exception as e:
+        logger.error(f"取消报名请求异常: {e}")
+        raise HTTPException(status_code=500, detail=f"取消报名服务异常: {str(e)}")
 
 
 @router.post("/orders/{order_id}/delay-voucher")
@@ -3904,6 +4273,12 @@ async def delay_order_voucher(order_id: int):
     target_order = db.get_order_by_id(order_id)
     if not target_order:
         raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    if target_order.get("platform_order_id"):
+        raise HTTPException(status_code=400, detail="绑定上单号的订单无法申请延时")
+
+    if int(target_order.get("delay_count") or 0) > 0:
+        raise HTTPException(status_code=400, detail="该订单已享受过延时2小时特权，无法重复申请")
 
     if int(target_order.get("order_type") or 0) == 12 or float(target_order.get("rebate_ratio") or 0) > 0:
         raise HTTPException(status_code=400, detail="百分比按比例返现订单不支持「领红包延时2小时」特权")
@@ -3940,6 +4315,16 @@ async def delay_order_voucher(order_id: int):
         raw_delay_time = int(res.get("delay_time") or res.get("delayTime") or 0)
         delay_time = raw_delay_time if raw_delay_time > 0 else (7200 if is_delayed else 0)
         delay_hours = round(delay_time / 3600.0, 1) if delay_time else 2.0
+
+        if is_delayed or raw_delay_time > 0:
+            new_tt = int(target_order.get("timeout_time") or 0) + delay_time
+            new_exp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_tt)) if new_tt > 0 else ""
+            db.update_order(order_id, {
+                "delay_count": 1,
+                "timeout_time": new_tt,
+                "expire_time": new_exp
+            })
+
         msg = f"官方领红包延时特权已成功激活！凭据上传有效期已顺延 {delay_hours} 小时" if (is_delayed or raw_delay_time > 0) else "已成功向官方提交延时请求"
         return {
             "ok": True,
@@ -3954,6 +4339,7 @@ async def delay_order_voucher(order_id: int):
     except Exception as e:
         logger.error(f"领红包延时请求失败: {e}")
         raise HTTPException(status_code=500, detail=f"领红包延时网络或服务异常: {str(e)}")
+
 
 
 @router.post("/orders/{order_id}/use-free-card")

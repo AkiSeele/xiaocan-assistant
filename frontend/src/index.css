@@ -432,5 +432,52 @@ html, body, #root {
   justify-content: center !important;
 }
 
+/* ==========================================================================
+   Semi Design 模态框 (Modal) 统一视觉规范与间距调校
+   核心遵循 Semi Design 官方视觉层级：
+   - 顶部 Header 到 Body 间距收敛为 12px~14px，根治 40px~64px 异常视觉真空
+   - 底部 Footer 保持 20px~24px 呼吸感，确保操作按钮居于规范的 Footer 区域
+   - 当 Modal 无 Footer 时为 Body 容器兜底设置 20px 底部内边距，严防内容触底贴边
+   - 统一 Modal Content 侧向 24px 边距与大圆角阴影
+   ========================================================================== */
+.semi-modal-content {
+  padding: 0 24px !important;
+  border-radius: var(--semi-border-radius-large, 12px) !important;
+  box-shadow: var(--semi-shadow-elevated) !important;
+}
 
+.semi-modal-header {
+  margin: 20px 0 12px 0 !important;
+  padding: 0 !important;
+}
 
+.semi-modal-title {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  line-height: 24px !important;
+  color: var(--semi-color-text-0) !important;
+}
+
+.semi-modal-close {
+  top: 18px !important;
+  right: 20px !important;
+}
+
+.semi-modal-body {
+  padding-top: 0 !important;
+}
+
+.semi-modal-footer {
+  margin: 16px 0 20px 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+}
+
+/* 当未显式配置 Footer 时，为最后一个子元素补充底部 20px 呼吸间距，杜绝贴底压迫感 */
+.semi-modal-content > .semi-modal-body:last-child,
+.semi-modal-content > .semi-modal-body-wrapper:last-child {
+  margin-bottom: 20px !important;
+  padding-bottom: 4px !important;
+}

@@ -1,8 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Card,
-  Row,
-  Col,
   Typography,
   Tag,
   Button,
@@ -174,7 +172,6 @@ export const Dashboard: React.FC = () => {
   // 待上传外卖订单 (官方限额 3 笔) 状态
   const [pendingOrders, setPendingOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState<boolean>(false);
-  const [pendingAccountFilter, setPendingAccountFilter] = useState<'current' | 'all'>('current');
 
   // 本账号待执行与进行中任务状态
   const [accountTasks, setAccountTasks] = useState<TaskItem[]>([]);
@@ -234,14 +231,17 @@ export const Dashboard: React.FC = () => {
     }
   }, [logFilterAccount]);
 
-  // 待上传外卖订单拉取 (带上传订单)
-  const fetchPendingOrders = useCallback(async (scope?: 'current' | 'all', silent = false) => {
-    const targetScope = scope || pendingAccountFilter;
-    const effectiveKey = targetScope === 'current' ? (currentAccountKey || (accounts[0]?.key ?? '')) : undefined;
+  // 待上传外卖订单拉取 (当前账号)
+  const fetchPendingOrders = useCallback(async (silent = false) => {
+    const effectiveKey = currentAccountKey || accounts[0]?.key;
+    if (!effectiveKey) {
+      setPendingOrders([]);
+      return;
+    }
     if (!silent) setOrdersLoading(true);
     try {
       const res = await api.getOrders({
-        account_key: effectiveKey || undefined,
+        account_key: effectiveKey,
         status: 'pending',
         limit: 20,
       });
@@ -253,7 +253,7 @@ export const Dashboard: React.FC = () => {
     } finally {
       if (!silent) setOrdersLoading(false);
     }
-  }, [currentAccountKey, accounts, pendingAccountFilter]);
+  }, [currentAccountKey, accounts]);
 
   // 刷新本账号自动化待命任务
   const fetchAccountTasks = useCallback(async (targetKey?: string, silent = false) => {
@@ -445,7 +445,7 @@ export const Dashboard: React.FC = () => {
         setTotalTaskCount(tasksRes.tasks.length);
       }
       fetchMessages(selectedChannelId, silent);
-      fetchPendingOrders(undefined, silent);
+      fetchPendingOrders(silent);
     } catch (e) {
       // 异常捕获
     } finally {
@@ -457,7 +457,7 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     loadDashboardData();
     fetchMessages(0);
-    fetchPendingOrders(undefined, false);
+    fetchPendingOrders(false);
   }, [currentAccountKey, accounts.length]);
 
   // 页面切入激活时自动平滑拉取最新资产、任务与执行流水数据
@@ -465,7 +465,7 @@ export const Dashboard: React.FC = () => {
     loadDashboardData(true, false);
     fetchRecentLogs(logFilterAccount, false);
     fetchMessages(selectedChannelId, false);
-    fetchPendingOrders(undefined, false);
+    fetchPendingOrders(false);
     fetchAccountTasks(undefined, false);
   }, { throttleMs: 300 });
 
@@ -661,14 +661,22 @@ export const Dashboard: React.FC = () => {
     return combined.slice(0, 4);
   }, [activePendingTasks]);
 
-  // 一键执行全部账号日常任务 (全量打卡与领券)
+  // 一键执行当前账号日常任务 (执行当前账号已开启的日常任务)
   const handleBatchRunAll = async () => {
+    if (!currentAccountKey && accounts.length === 0) {
+      Toast.warning('请先绑定或选择小蚕账号');
+      return;
+    }
+    const accKey = currentAccountKey || accounts[0]?.key;
+    const curAcc = accounts.find((a) => a.key === accKey);
+    const accLabel = curAcc ? (curAcc.nickname || curAcc.phone || '当前账号') : '当前账号';
+
     setBatchAllLoading(true);
     try {
-      const res = await api.batchRunDaily(currentAccountKey || undefined);
+      const res = await api.batchRunDaily(accKey);
       if (res.ok) {
         Notification.success({
-          title: '全部账号日常打卡完毕',
+          title: `账号【${accLabel}】日常打卡完毕`,
           content: (
             <div className="text-xs space-y-1.5 mt-1 max-h-60 overflow-y-auto">
               <div className="text-semi-color-text-2 mb-1">{res.message}</div>
@@ -686,10 +694,10 @@ export const Dashboard: React.FC = () => {
         });
         loadDashboardData(true);
       } else {
-        Toast.error(res.message || '一键打卡失败');
+        Toast.error(res.message || '当前账号打卡失败');
       }
     } catch (e: any) {
-      Toast.error(`一键执行异常: ${e.message || e}`);
+      Toast.error(`打卡执行异常: ${e.message || e}`);
     } finally {
       setBatchAllLoading(false);
     }
@@ -702,9 +710,9 @@ export const Dashboard: React.FC = () => {
   };
 
   return (
-    <div ref={dashboardRef} className="w-full h-full min-h-0 flex flex-col justify-between overflow-hidden gap-2 sm:gap-2.5">
+    <div ref={dashboardRef} className="w-full h-full min-h-0 flex flex-col overflow-hidden gap-2 sm:gap-2.5">
       {/* 顶部主控账号概览 Card (专业沉稳三段式，色彩收敛，数据聚焦) */}
-      <div className="gsap-card-item shrink-0 bg-semi-color-bg-1 border border-semi-color-border/90 rounded-2xl px-4 py-2.5 shadow-xs hover:border-semi-color-primary-light-active transition-colors duration-200 will-change-[transform,opacity] flex items-center justify-between gap-3">
+      <div className="gsap-card-item shrink-0 bg-semi-color-bg-1 border border-semi-color-border/90 rounded-xl px-4 py-2.5 shadow-xs hover:border-semi-color-primary-light-active transition-colors duration-200 will-change-[transform,opacity] flex items-center justify-between gap-3">
         {/* 左侧：主控账号身份与连接状态 */}
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative group cursor-pointer shrink-0" onClick={() => setActiveTab('accounts')}>
@@ -828,163 +836,183 @@ export const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* 4 大核心资产 Bento 卡片 (大字号聚焦核心资产与调度) */}
-      <Row gutter={[10, 10]} className="w-full !mx-0 shrink-0">
+      {/* 4 大核心资产 Bento 卡片 (大字号聚焦核心资产与调度，完美边缘对齐与均等自适应) */}
+      <div className="w-full grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 shrink-0">
         {/* 1. 累计到账返现 */}
-        <Col xs={12} sm={6}>
-          <div
-            onMouseEnter={handleBentoEnter}
-            onMouseLeave={handleBentoLeave}
-            onClick={() => setActiveTab('orders')}
-            className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        <div
+          onMouseEnter={handleBentoEnter}
+          onMouseLeave={handleBentoLeave}
+          onClick={() => setActiveTab('orders')}
+          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        >
+          <Card
+            shadows="hover"
+            className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+            bodyStyle={{
+              padding: '12px 14px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxSizing: 'border-box',
+            }}
           >
-            <Card
-              shadows="hover"
-              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '12px 14px' }}
-            >
-              <div className="flex justify-between items-center">
-                <Space align="center" spacing="tight">
-                  <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                    <IconCheckCircleStroked size="small" />
-                  </div>
-                  <Text type="secondary" className="text-sm font-semibold">累计到账返现</Text>
-                </Space>
-                <Tooltip content="已成功核销并结算入账的霸王餐总返利">
-                  <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
-                </Tooltip>
-              </div>
-              <div className="flex items-baseline gap-1 my-1">
-                <span className="text-sm font-semibold text-semi-color-text-2">¥</span>
-                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                  {orderStats.total_rebate.toFixed(2)}
-                </span>
-              </div>
-              <Text type="tertiary" size="small" className="text-xs block truncate">
-                已结算 <span className="text-semi-color-text-1 font-medium">{orderStats.completed_orders}</span> 笔订单
-              </Text>
-            </Card>
-          </div>
-        </Col>
+            <div className="flex justify-between items-center">
+              <Space align="center" spacing="tight">
+                <div className="w-6 h-6 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <IconCheckCircleStroked size="small" />
+                </div>
+                <Text type="secondary" className="text-xs sm:text-sm font-semibold">累计到账返现</Text>
+              </Space>
+              <Tooltip content="已成功核销并结算入账的霸王餐总返利">
+                <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
+              </Tooltip>
+            </div>
+            <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
+              <span className="text-xs sm:text-sm font-semibold text-semi-color-text-2">¥</span>
+              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                {orderStats.total_rebate.toFixed(2)}
+              </span>
+            </div>
+            <Text type="tertiary" size="small" className="text-xs block truncate">
+              已结算 <span className="text-semi-color-text-1 font-medium">{orderStats.completed_orders}</span> 笔订单
+            </Text>
+          </Card>
+        </div>
 
         {/* 2. 在途/待入账返现 */}
-        <Col xs={12} sm={6}>
-          <div
-            onMouseEnter={handleBentoEnter}
-            onMouseLeave={handleBentoLeave}
-            onClick={() => setActiveTab('orders')}
-            className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        <div
+          onMouseEnter={handleBentoEnter}
+          onMouseLeave={handleBentoLeave}
+          onClick={() => setActiveTab('orders')}
+          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        >
+          <Card
+            shadows="hover"
+            className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+            bodyStyle={{
+              padding: '12px 14px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxSizing: 'border-box',
+            }}
           >
-            <Card
-              shadows="hover"
-              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '12px 14px' }}
-            >
-              <div className="flex justify-between items-center">
-                <Space align="center" spacing="tight">
-                  <div className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                    <IconPriceTag size="small" />
-                  </div>
-                  <Text type="secondary" className="text-sm font-semibold">在途/待入账</Text>
-                </Space>
-                <Tooltip content="已提交外卖单号，正由小蚕与商家审核中的返利金额">
-                  <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
-                </Tooltip>
-              </div>
-              <div className="flex items-baseline gap-1 my-1">
-                <span className="text-sm font-semibold text-semi-color-text-2">¥</span>
-                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                  {orderStats.pending_rebate.toFixed(2)}
-                </span>
-              </div>
-              <Text type="tertiary" size="small" className="text-xs block truncate">
-                审核中 <span className="text-semi-color-text-1 font-medium">{orderStats.pending_orders}</span> 单 · 预计2~24h
-              </Text>
-            </Card>
-          </div>
-        </Col>
+            <div className="flex justify-between items-center">
+              <Space align="center" spacing="tight">
+                <div className="w-6 h-6 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                  <IconPriceTag size="small" />
+                </div>
+                <Text type="secondary" className="text-xs sm:text-sm font-semibold">在途/待入账</Text>
+              </Space>
+              <Tooltip content="已提交外卖单号，正由小蚕与商家审核中的返利金额">
+                <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
+              </Tooltip>
+            </div>
+            <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
+              <span className="text-xs sm:text-sm font-semibold text-semi-color-text-2">¥</span>
+              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                {orderStats.pending_rebate.toFixed(2)}
+              </span>
+            </div>
+            <Text type="tertiary" size="small" className="text-xs block truncate">
+              审核中 <span className="text-semi-color-text-1 font-medium">{orderStats.pending_orders}</span> 单 · 预计2~24h
+            </Text>
+          </Card>
+        </div>
 
         {/* 3. 今日已省外卖费 */}
-        <Col xs={12} sm={6}>
-          <div
-            onMouseEnter={handleBentoEnter}
-            onMouseLeave={handleBentoLeave}
-            onClick={() => setActiveTab('orders')}
-            className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        <div
+          onMouseEnter={handleBentoEnter}
+          onMouseLeave={handleBentoLeave}
+          onClick={() => setActiveTab('orders')}
+          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        >
+          <Card
+            shadows="hover"
+            className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+            bodyStyle={{
+              padding: '12px 14px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxSizing: 'border-box',
+            }}
           >
-            <Card
-              shadows="hover"
-              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '12px 14px' }}
-            >
-              <div className="flex justify-between items-center">
-                <Space align="center" spacing="tight">
-                  <div className="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-                    <IconShoppingBag size="small" />
-                  </div>
-                  <Text type="secondary" className="text-sm font-semibold">今日已省外卖费</Text>
-                </Space>
-                <Tooltip content="今日已实际核销到账的霸王餐返现总额">
-                  <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
-                </Tooltip>
-              </div>
-              <div className="flex items-baseline gap-1 my-1">
-                <span className="text-sm font-semibold text-semi-color-text-2">¥</span>
-                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                  {(chartData?.today_summary?.today_savings || 0).toFixed(2)}
-                </span>
-              </div>
-              <Text type="tertiary" size="small" className="text-xs block truncate">
-                今日到账 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)}</span> 笔
-                {(chartData?.today_summary?.today_pending_orders ?? 0) > 0 && (
-                  <span> · 在途 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_pending_orders}</span> 单</span>
-                )}
-              </Text>
-            </Card>
-          </div>
-        </Col>
+            <div className="flex justify-between items-center">
+              <Space align="center" spacing="tight">
+                <div className="w-6 h-6 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                  <IconShoppingBag size="small" />
+                </div>
+                <Text type="secondary" className="text-xs sm:text-sm font-semibold">今日已省外卖费</Text>
+              </Space>
+              <Tooltip content="今日已实际核销到账的霸王餐返现总额">
+                <IconHelpCircle size="small" className="text-semi-color-text-3 cursor-pointer" />
+              </Tooltip>
+            </div>
+            <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
+              <span className="text-xs sm:text-sm font-semibold text-semi-color-text-2">¥</span>
+              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                {(chartData?.today_summary?.today_savings || 0).toFixed(2)}
+              </span>
+            </div>
+            <Text type="tertiary" size="small" className="text-xs block truncate">
+              今日到账 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)}</span> 笔
+              {(chartData?.today_summary?.today_pending_orders ?? 0) > 0 && (
+                <span> · 在途 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_pending_orders}</span> 单</span>
+              )}
+            </Text>
+          </Card>
+        </div>
 
         {/* 4. 自动化任务调度 */}
-        <Col xs={12} sm={6}>
-          <div
-            onMouseEnter={handleBentoEnter}
-            onMouseLeave={handleBentoLeave}
-            onClick={() => setActiveTab('automation')}
-            className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        <div
+          onMouseEnter={handleBentoEnter}
+          onMouseLeave={handleBentoLeave}
+          onClick={() => setActiveTab('automation')}
+          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+        >
+          <Card
+            shadows="hover"
+            className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
+            bodyStyle={{
+              padding: '12px 14px',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              boxSizing: 'border-box',
+            }}
           >
-            <Card
-              shadows="hover"
-              className="gsap-card-item rounded-xl border border-semi-color-border hover:border-semi-color-primary-light-active transition-colors duration-200 select-none h-full"
-              bodyStyle={{ padding: '12px 14px' }}
-            >
-              <div className="flex justify-between items-center">
-                <Space align="center" spacing="tight">
-                  <div className="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
-                    <IconPlay size="small" />
-                  </div>
-                  <Text type="secondary" className="text-sm font-semibold">任务调度中心</Text>
-                </Space>
-                <Tooltip content="APScheduler 毫秒级调度中心全天候定时任务">
-                  <IconActivity size="small" className="text-purple-500 cursor-pointer" />
-                </Tooltip>
-              </div>
-              <div className="flex items-baseline gap-1 my-1">
-                <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                  {enabledTaskCount}
-                </span>
-                <span className="text-xs font-medium text-semi-color-text-2">/ {totalTaskCount} 项开启</span>
-              </div>
-              <Text type="tertiary" size="small" className="text-xs flex items-center gap-1.5 truncate">
-                <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0"></span>
-                <span className="truncate">
-                  {enabledTaskCount > 0 ? '定时秒杀就绪' : '任务待开启'}
-                  {appointments.length > 0 ? ` · ${appointments.length}家盯单` : ''}
-                </span>
-              </Text>
-            </Card>
-          </div>
-        </Col>
-      </Row>
+            <div className="flex justify-between items-center">
+              <Space align="center" spacing="tight">
+                <div className="w-6 h-6 rounded-md bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                  <IconPlay size="small" />
+                </div>
+                <Text type="secondary" className="text-xs sm:text-sm font-semibold">任务调度中心</Text>
+              </Space>
+              <Tooltip content="APScheduler 毫秒级调度中心全天候定时任务">
+                <IconActivity size="small" className="text-purple-500 cursor-pointer" />
+              </Tooltip>
+            </div>
+            <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
+              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
+                {enabledTaskCount}
+              </span>
+              <span className="text-xs font-medium text-semi-color-text-2">/ {totalTaskCount} 项开启</span>
+            </div>
+            <Text type="tertiary" size="small" className="text-xs flex items-center gap-1.5 truncate">
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0"></span>
+              <span className="truncate">
+                {enabledTaskCount > 0 ? '定时秒杀就绪' : '任务待开启'}
+                {appointments.length > 0 ? ` · ${appointments.length}家盯单` : ''}
+              </span>
+            </Text>
+          </Card>
+        </div>
+      </div>
 
       {/* 核心业务双栏布局 (100% 满屏自适应，左7列核心聚焦，右5列全高动态消息) */}
       <div className="flex-1 min-h-0 w-full grid grid-cols-1 lg:grid-cols-12 gap-2 sm:gap-2.5 overflow-hidden">
@@ -1012,26 +1040,13 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <Select
-                    size="small"
-                    value={pendingAccountFilter}
-                    onChange={(v) => {
-                      const val = v as 'current' | 'all';
-                      setPendingAccountFilter(val);
-                      fetchPendingOrders(val);
-                    }}
-                    style={{ width: 104 }}
-                  >
-                    <Select.Option value="current">当前账号</Select.Option>
-                    <Select.Option value="all">全部账号</Select.Option>
-                  </Select>
                   <Tooltip content="刷新待上传订单">
                     <Button
                       theme="borderless"
                       type="tertiary"
                       size="small"
                       icon={<IconRefresh spin={ordersLoading} />}
-                      onClick={() => fetchPendingOrders(pendingAccountFilter)}
+                      onClick={() => fetchPendingOrders()}
                     />
                   </Tooltip>
                   <Button
@@ -1049,8 +1064,8 @@ export const Dashboard: React.FC = () => {
               </div>
             }
             className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs shrink-0 overflow-hidden flex flex-col"
-            headerStyle={{ padding: '8px 12px', borderBottom: '1px solid var(--semi-color-border)' }}
-            bodyStyle={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}
+            headerStyle={{ padding: '8px 14px', borderBottom: '1px solid var(--semi-color-border)', minHeight: '44px', display: 'flex', alignItems: 'center' }}
+            bodyStyle={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}
           >
             {ordersLoading && pendingOrders.length === 0 ? (
               <div className="flex items-center justify-center py-3 text-semi-color-text-2 gap-2">
@@ -1058,7 +1073,7 @@ export const Dashboard: React.FC = () => {
                 <span className="text-xs">检查待上传外卖订单...</span>
               </div>
             ) : pendingOrders.length > 0 ? (
-              <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-0.5">
+              <div className="space-y-1.5">
                 {pendingOrders.map((order) => {
                   const acc = accounts.find((a) => a.key === order.account_key);
                   const isBound = Boolean(order.platform_order_id);
@@ -1221,8 +1236,8 @@ export const Dashboard: React.FC = () => {
 
                 <div className="flex items-center gap-1.5 shrink-0">
                   <Popconfirm
-                    title="立即执行今日所有日常打卡？"
-                    content="将依次执行：每日签到 + SVIP成长值膨胀金 + 社群转盘，打满今日全部收益。"
+                    title="立即执行当前账号日常打卡？"
+                    content="将为当前账号执行已启用的日常任务（如每日签到、SVIP成长值膨胀金、社群转盘等）。"
                     onConfirm={handleBatchRunAll}
                     okText="立即打卡"
                     cancelText="取消"
@@ -1235,7 +1250,7 @@ export const Dashboard: React.FC = () => {
                       icon={<IconPlay />}
                       className="text-xs shrink-0 !py-0.5 !h-7 font-medium"
                     >
-                      一键日常打卡
+                      当前账号打卡
                     </Button>
                   </Popconfirm>
                   <Tooltip content="刷新自动化任务状态">
@@ -1267,8 +1282,8 @@ export const Dashboard: React.FC = () => {
               </div>
             }
             className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs flex-1 min-h-0 flex flex-col overflow-hidden"
-            headerStyle={{ padding: '8px 12px', borderBottom: '1px solid var(--semi-color-border)' }}
-            bodyStyle={{ padding: '8px 12px', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: '8px' }}
+            headerStyle={{ padding: '8px 14px', borderBottom: '1px solid var(--semi-color-border)', minHeight: '44px', display: 'flex', alignItems: 'center' }}
+            bodyStyle={{ padding: '10px 14px', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: '8px' }}
           >
             {/* 快速通道胶囊条 */}
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
@@ -1457,6 +1472,7 @@ export const Dashboard: React.FC = () => {
                 {/* 模式切换切换器 */}
                 <RadioGroup
                   type="button"
+                  buttonSize="small"
                   value={rightPanelTab}
                   onChange={(e) => setRightPanelTab(e.target.value as 'feed' | 'messages')}
                   className="shrink-0"
@@ -1580,7 +1596,7 @@ export const Dashboard: React.FC = () => {
               </div>
             }
             className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs flex-1 min-h-0 flex flex-col overflow-hidden"
-            headerStyle={{ padding: '8px 12px', borderBottom: '1px solid var(--semi-color-border)' }}
+            headerStyle={{ padding: '8px 14px', borderBottom: '1px solid var(--semi-color-border)', minHeight: '44px', display: 'flex', alignItems: 'center' }}
             bodyStyle={{ padding: 0, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
           >
             {/* 内容区：根据选中的 Tab 呈现 */}
@@ -1675,6 +1691,7 @@ export const Dashboard: React.FC = () => {
                 <div className="p-2 pb-0 flex items-center gap-1 shrink-0 overflow-x-auto">
                   <RadioGroup
                     type="button"
+                    buttonSize="small"
                     value={selectedChannelId}
                     onChange={(e) => {
                       const cid = Number(e.target.value);

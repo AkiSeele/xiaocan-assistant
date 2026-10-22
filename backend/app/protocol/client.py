@@ -160,8 +160,21 @@ class XiaoCanClient:
                 raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
 
             if resp.status_code != 200:
+                err_text = ""
+                try:
+                    err_json = resp.json()
+                    err_text = (err_json.get("status") or {}).get("msg") or err_json.get("detail") or err_json.get("msg") or err_json.get("error") or ""
+                except Exception:
+                    err_text = resp.text.strip()
+
+                if resp.status_code == 401:
+                    hint = err_text or "登录凭据已过期或鉴权失效 (HTTP 401 Unauthorized)，请在「账号管理」中重新获取并更新 Token 凭据"
+                    logger.warning(f"RPC {server_name}.{method_name} 鉴权失效: {hint}")
+                    raise XiaoCanRPCError(code=401, msg=hint, raw={"status_code": 401, "text": resp.text[:200]})
+
+                msg = err_text or f"HTTP {resp.status_code} 异常"
                 logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
-                raise XiaoCanRPCError(code=resp.status_code, msg=f"HTTP {resp.status_code} 异常", raw={"status_code": resp.status_code, "text": resp.text[:200]})
+                raise XiaoCanRPCError(code=resp.status_code, msg=msg, raw={"status_code": resp.status_code, "text": resp.text[:200]})
 
             data = resp.json()
         except XiaoCanRPCError:
@@ -1565,13 +1578,30 @@ class XiaoCanClient:
         city_code: int = 440303
     ) -> Dict[str, Any]:
         """秒杀兑换今日元宝商品 (SilkwormCommunity.SilkwormMobileCommunityService.TodayExchange)"""
+        return await self.exchange_goods_v2(
+            exchange_id=exchange_id,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id,
+            city_code=city_code
+        )
+
+    async def exchange_goods_v2(
+        self,
+        exchange_id: int,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """元宝商城限量秒杀兑换商品 (SilkwormCommunity.SilkwormMobileCommunityService.ExchangeGoodsV2)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "exchange_id": int(exchange_id)
         }
         return await self.invoke_rpc(
             server_name="SilkwormCommunity",
-            method_name="SilkwormMobileCommunityService.TodayExchange",
+            method_name="SilkwormMobileCommunityService.ExchangeGoodsV2",
             body=body,
             city_code=city_code,
             token=token,
@@ -1669,20 +1699,13 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """元宝商城限量秒杀兑换商品 (SilkwormMobileCommunityService.ExchangeGoods)"""
-        body = {
-            "silk_id": int(silk_id) if silk_id else 0,
-            "goods_id": int(goods_id),
-            "city_code": int(city_code)
-        }
-        return await self.invoke_rpc(
-            server_name="SilkwormCommunity",
-            method_name="SilkwormMobileCommunityService.ExchangeGoods",
-            body=body,
-            city_code=city_code,
+        """元宝商城限量秒杀兑换商品 (SilkwormMobileCommunityService.ExchangeGoodsV2)"""
+        return await self.exchange_goods_v2(
+            exchange_id=int(goods_id),
             token=token,
             silk_id=silk_id,
-            user_id=user_id
+            user_id=user_id,
+            city_code=city_code
         )
 
     async def grab_promotion_quota(
@@ -1915,6 +1938,30 @@ class XiaoCanClient:
             silk_id=silk_id,
             user_id=user_id
         )
+
+    async def delete_promotion_order(
+        self,
+        promotion_order_id: Any,
+        token: str,
+        silk_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        city_code: int = 440303
+    ) -> Dict[str, Any]:
+        """删除官方霸王餐订单 (SilkwormService.DeletePromotionOrder)"""
+        body = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "promotion_order_id": int(promotion_order_id)
+        }
+        return await self.invoke_rpc(
+            server_name="Silkworm",
+            method_name="SilkwormService.DeletePromotionOrder",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
 
     async def get_store_promotion_detail(
         self,

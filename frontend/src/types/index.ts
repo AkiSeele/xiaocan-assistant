@@ -39,6 +39,7 @@ export interface Account {
   meituan_history_pool?: string[];
   meituan_is_active?: number;
   expires_at: string;
+  is_token_expired?: boolean;
   is_active: number;
   created_at: string;
   updated_at?: string;
@@ -124,6 +125,47 @@ export interface TaskParamField {
   max?: number;
   hint?: string;
   options?: TaskParamOption[];
+}
+
+
+export interface FlashSaleItem {
+  product_key: string;
+  exchange_id: number;
+  goods_name: string;
+  round_str: string;
+  community_silk: number;
+  strike_price?: number;
+  discount_rate?: number;
+  daily_stock?: number;
+  left?: number;
+  daily_stock_reach?: boolean;
+  user_quota_limit?: number;
+  goods_banner?: string;
+  equity_desc?: string;
+}
+
+export interface FlashSaleRound {
+  round: string;
+  round_title: string;
+  status: 'ended' | 'ongoing' | 'upcoming';
+  items: FlashSaleItem[];
+}
+
+export interface FlashSaleShelfResponse {
+  ok: boolean;
+  account: {
+    key: string;
+    nickname: string;
+    is_plus: boolean;
+    vip_level: number;
+    yb_point: number;
+  };
+  rounds: FlashSaleRound[];
+  current_params: {
+    target_products?: string[];
+    max_silk?: number;
+    goods_ids?: string;
+  };
 }
 
 export interface TaskItem {
@@ -238,9 +280,11 @@ export interface Order {
   timeout_time?: number;
   order_type?: number;
   rebate_ratio?: number;
+  delay_count?: number;
   created_at: string;
   updated_at?: string;
 }
+
 
 export interface OrderStats {
   total_orders: number;
@@ -307,6 +351,7 @@ export interface NameMonitorPayload {
   redpack_mode?: number;
   redpack_id?: string;
   redpack_name?: string;
+  use_advance_card?: number | boolean;
   store_icon?: string;
 }
 

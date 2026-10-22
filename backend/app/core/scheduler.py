@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import random
+import re
 from datetime import datetime, timedelta
 import uuid
 from typing import Dict, Any, Optional, Tuple
@@ -35,7 +36,7 @@ TASK_DEFAULT_TIME = {
     "free_order": "14:00",      # 抢每月免单券
     "collect_points": "23:59",  # 收取未收元宝 (晚间睡前避免气泡过期)
     "redpack_rain": "10:00",    # 公共整点红包雨 (六场: 10/11/12/14/16/19)
-    "flash_sale": "10:00",      # 元宝秒杀
+    "flash_sale": "09:00",      # 元宝秒杀 (每日三场: 09:00/14:00/18:00)
     "group_lottery": "07:40",   # 免费开红包与抽奖
     "vip_expand": "08:30",      # 会员成长膨胀礼包
     "expire_remind": "08:00",   # 登录凭据到期巡检
@@ -174,10 +175,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 extra = f" (获得元宝: +{point})" if point else ""
                 log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: {msg}{extra}\n"
             except XiaoCanRPCError as e:
-                if e.code in (3, 40002) or "已签" in e.msg or "已经签到" in e.msg:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: 今日已完成签到打卡\n"
-                else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (提示码: {e.code})\n"
+                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (代码: {e.code})\n"
             except Exception as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到异常: {e}\n"
 
@@ -203,10 +201,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 lottery_msg = vip_lottery_res.get("status", {}).get("msg", "打卡成功")
                 log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {lottery_msg}\n"
             except XiaoCanRPCError as le:
-                if le.code == 40022 or "已签到" in le.msg:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: 今日已完成打卡\n"
-                else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {le.msg} (提示码: {le.code})\n"
+                log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {le.msg} (代码: {le.code})\n"
             except Exception as le:
                 log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {le}\n"
 
@@ -565,8 +560,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                                 grab_ok = True
                                 break
                             except XiaoCanRPCError as ge:
+                                log_output += f"[{ts_fmt}] [公共红包雨] 第{try_idx}次开包提示: {ge.msg} (代码: {ge.code})\n"
                                 if ge.code == 40023:
-                                    log_output += f"[{ts_fmt}] [公共红包雨] 提示: 该账号在此场次中已完成结算抽奖，无需重复提交\n"
                                     break
                                 elif ge.code == 200001:
                                     log_output += f"[{ts_fmt}] [公共红包雨] 风险拦截: 触发风控安全校验 (代码: 200001: {ge.msg})\n"
@@ -601,6 +596,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "brand_flash":
             # 抢每日09:30 SVIP额外放量大牌券 (绝不消耗每月保底大牌券配额 - 极速直射模式)
+            is_plus = bool(account.get("is_plus", 0))
+            vip_level = int(account.get("vip_level", 0) or 0)
+            if (is_plus and vip_level < 2) or (not is_plus and vip_level < 5):
+                vip_desc = f"SVIP{vip_level}" if is_plus else f"VIP{vip_level}"
+                log_output += f"[{time_service.format_now()}] [资格拦截] 当前账号为 {vip_desc} (未达门槛)，「抢SVIP大牌券」官方要求 SVIP2+ 或 VIP5+ 会员开放，自动终止以防触发风控\n"
+                status = "success"
+                return {"ok": True, "job_id": job_id, "output": log_output}
             log_output += f"[{time_service.format_now()}] 正在预热探测今日 09:30 SVIP 额外大牌放量券实时配置 (微服务 VipRightsService.ExtraBrandCardPool)...\n"
             log_output += f"[{time_service.format_now()}] 配额保护模式: 仅抢每日放量券，严禁触发消耗账号每月保底大牌券额度\n"
 
@@ -669,10 +671,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         )
                         break
                     except XiaoCanRPCError as e:
-                        if e.code == 40024:
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: 官方限制: 你还有保底大牌券未领取，需先在App内使用当月保底券 (代码: {e.code})\n"
-                        else:
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
+                        log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
 
                         now_ts = time_service.now_ts()
                         # 若当前时间尚未到达目标整点，即便返回 40021 也是因为服务端尚未开闸，严禁提前终止退出！
@@ -715,10 +714,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     except Exception:
                         pass
                 except XiaoCanRPCError as ce:
-                    if ce.code in (10001, 20006) or "完成" in ce.msg or "重复" in ce.msg:
-                        log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 任务 [{t_title}]: 今日已完成无需重复提交\n"
-                    else:
-                        log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 任务 [{t_title}] 响应: {ce.msg} (代码: {ce.code})\n"
+                    log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 任务 [{t_title}] 响应: {ce.msg} (代码: {ce.code})\n"
                 except Exception as e:
                     log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 任务 [{t_title}] 执行异常: {e}\n"
 
@@ -734,10 +730,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     await client.complete_task_event(task_type=tid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                     log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 奖励领取成功\n"
                 except XiaoCanRPCError as e:
-                    if e.code == 3 or "已" in e.msg:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 今日已完成\n"
-                    else:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: {e.msg} (提示码: {e.code})\n"
+                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}] 响应: {e.msg} (代码: {e.code})\n"
                 except Exception:
                     pass
 
@@ -841,15 +834,19 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 except Exception:
                     pass
             except XiaoCanRPCError as e:
-                if e.code in (3, 40002) or "已签" in e.msg or "已经签到" in e.msg:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到: 今日已完成签到打卡无需重复操作\n"
-                else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (提示码: {e.code})\n"
+                log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到响应: {e.msg} (代码: {e.code})\n"
             except Exception as e:
                 log_output += f"[{time.strftime('%H:%M:%S')}] 每日签到异常: {e}\n"
 
         elif task_id == "svip_rebate":
             # 抢SVIP专属返利券 (每日 09:00:00 准点秒杀 - 极速直射模式)
+            is_plus = bool(account.get("is_plus", 0))
+            vip_level = int(account.get("vip_level", 0) or 0)
+            if (is_plus and vip_level < 2) or (not is_plus and vip_level < 5):
+                vip_desc = f"SVIP{vip_level}" if is_plus else f"VIP{vip_level}"
+                log_output += f"[{time_service.format_now()}] [资格拦截] 当前账号为 {vip_desc} (未达门槛)，「抢SVIP专属返利券」官方特权面向 SVIP2+ 或 VIP5+ 会员开放，自动终止以防触发风控\n"
+                status = "success"
+                return {"ok": True, "job_id": job_id, "output": log_output}
             log_output += f"[{time_service.format_now()}] 正在预热检索今日 09:00 SVIP 专属返利券档位与资格 (官方独立App原生协议 VipRightsService)...\n"
             try:
                 rebate_res = await client.get_plus_vip_rebate_card_infos(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
@@ -891,6 +888,11 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "free_order":
             # 抢每月免单券 (每日 14:00:00 准点开抢 - 极速直射模式)
+            is_plus = bool(account.get("is_plus", 0))
+            vip_level = int(account.get("vip_level", 0) or 0)
+            if (is_plus and vip_level < 5) or (not is_plus and vip_level < 6):
+                vip_name = 'SVIP' if is_plus else 'VIP'
+                log_output += f"[{time_service.format_now()}] [等级预警] 提示: 每月免单券官方门槛为 SVIP5+ 或 VIP6 (当前身份: {vip_name}{vip_level})，正在核验资格...\n"
             log_output += f"[{time_service.format_now()}] 正在预热检索每月免单券 14:00 专属通道状态与账户资格 (官方独立App原生协议 VipRightsService)...\n"
             can_grab_free = True
             try:
@@ -939,56 +941,268 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     await asyncio.sleep(0.1)
 
         elif task_id == "flash_sale":
-            # 元宝秒杀抢券 (每日 10:00 / 14:00 / 18:00 放量)
-            goods_ids = str(params.get("goods_ids", "")).strip()
-            log_output += f"[{time.strftime('%H:%M:%S')}] 接入元宝商城限量秒杀通道 (目标商品: {goods_ids or '自动优选券'})...\n"
-            try:
-                fs_res = await client.list_flash_sale_exchanges(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, is_plus=bool(account.get("is_plus", 0)))
-                items = (fs_res.get("list") or {}).get("vip") or []
-                rounds = fs_res.get("rounds") or []
-                round_strs = [f"{r//3600:02d}:{(r%3600)//60:02d}" for r in rounds]
-                log_output += f"[{time.strftime('%H:%M:%S')}] 元宝商城档期: 今日场次 [{', '.join(round_strs)}]，在架商品 {len(items)} 款\n"
+            # 元宝秒杀抢券 (官方元宝秒杀专区: 09:00 / 14:00 / 18:00 三场 - 精准选品保金直射模式)
+            # 官方秒杀专区产品字典 (严格对应官方 App 09:00/14:00/18:00 三场商品与 SVIP/VIP 4折/8折配置)
+            FLASH_SALE_CATALOG = {
+                "brand_card": {
+                    "id": "brand_card", "name": "通用大牌券", "round": "14:00", "round_sec": 50400,
+                    "svip_silk": 40000, "vip_silk": 80000, "svip_id": 202, "vip_id": 194, "daily_stock": 50
+                },
+                "free_order": {
+                    "id": "free_order", "name": "霸王餐免单券", "round": "14:00", "round_sec": 50400,
+                    "svip_silk": 60000, "vip_silk": 120000, "svip_id": 201, "vip_id": 193, "daily_stock": 10
+                },
+                "redpack_1": {
+                    "id": "redpack_1", "name": "1元小蚕红包", "round": "09:00", "round_sec": 32400,
+                    "svip_silk": 4000, "vip_silk": 8000, "svip_id": 200, "vip_id": 190, "daily_stock": 200
+                },
+                "redpack_2": {
+                    "id": "redpack_2", "name": "2元小蚕红包", "round": "09:00", "round_sec": 32400,
+                    "svip_silk": 8000, "vip_silk": 16000, "svip_id": 199, "vip_id": 189, "daily_stock": 200
+                },
+                "redpack_3": {
+                    "id": "redpack_3", "name": "3元小蚕红包", "round": "09:00", "round_sec": 32400,
+                    "svip_silk": 12000, "vip_silk": 24000, "svip_id": 198, "vip_id": 188, "daily_stock": 80
+                },
+                "rebate_card": {
+                    "id": "rebate_card", "name": "110%返利券", "round": "18:00", "round_sec": 64800,
+                    "svip_silk": 8000, "vip_silk": 15000, "svip_id": 204, "vip_id": 197, "daily_stock": 200
+                },
+                "relive_card": {
+                    "id": "relive_card", "name": "超时复活券", "round": "18:00", "round_sec": 64800,
+                    "svip_silk": 32000, "vip_silk": 64000, "svip_id": 203, "vip_id": 196, "daily_stock": 50
+                }
+            }
 
-                target_item = None
-                if goods_ids:
-                    target_id = int(goods_ids.split(",")[0].strip())
-                    for it in items:
-                        if it.get("exchange_id") == target_id:
-                            target_item = it
-                            break
-                if not target_item and items:
-                    for it in items:
-                        if it.get("left", 0) > 0:
-                            target_item = it
-                            break
-                    if not target_item:
-                        target_item = items[0]
+            # 1. 账号资格与当前可用元宝核验
+            is_plus = bool(account.get("is_plus", 0))
+            vip_level = int(account.get("vip_level", 5) or 5)
+            yb_point = int(account.get("yb_point", 0) or 0)
+            vip_tag = "SVIP" if is_plus else f"VIP{vip_level}"
 
-                if target_item:
-                    eid = target_item.get("exchange_id")
-                    ename = target_item.get("goods_name") or f"商品#{eid}"
-                    esilk = target_item.get("community_silk", 0)
-                    eleft = target_item.get("left", 0)
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    log_output += f"[{ts_fmt}] 准备秒杀目标商品: 【{ename}】(消耗: {esilk}元宝, 剩余库存: {eleft})\n"
-                    try:
-                        ex_res = await client.today_exchange(exchange_id=eid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        log_output += f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [自动抢元宝秒杀] 兑换成功！已斩获【{ename}】\n"
-                        await send_system_notification(
-                            title="元宝秒杀抢券成功",
-                            content=f"账号【{nickname}】成功兑换【{ename}】！",
-                            account_key=account_key,
-                            event=NotificationEvent.SPIKE_SUCCESS,
-                            level=NotificationLevel.SUCCESS
-                        )
-                    except XiaoCanRPCError as e:
-                        log_output += f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] [自动抢元宝秒杀] 提示: {e.msg} (代码: {e.code})\n"
+            # 解析用户选定的目标商品
+            raw_target_products = params.get("target_products")
+            if isinstance(raw_target_products, str):
+                target_keys = [x.strip() for x in raw_target_products.split(",") if x.strip()]
+            elif isinstance(raw_target_products, list):
+                target_keys = [str(x).strip() for x in raw_target_products if str(x).strip()]
+            else:
+                target_keys = []
+
+            custom_goods_ids = [int(x.strip()) for x in str(params.get("goods_ids", "")).split(",") if x.strip().isdigit()]
+
+            # 核心安全守则：未选择任何目标商品时，绝对不扣减元宝，静默终止
+            if not target_keys and not custom_goods_ids:
+                log_output += f"[{time_service.format_now()}] [待命静默] 任务尚未勾选任何目标抢兑产品，已安全终止以保护账户元宝余额 (当前账户元宝: {yb_point:,})。请在任务配置中勾选需要抢兑的产品（如通用大牌券、1元红包等）。\n"
+                status = "success"
+                return {"ok": True, "job_id": job_id, "output": log_output}
+
+            selected_product_items = [FLASH_SALE_CATALOG[k] for k in target_keys if k in FLASH_SALE_CATALOG]
+            selected_names = [f"【{p['name']}】({p['round']}场, {'SVIP' if is_plus else 'VIP'}:{p['svip_silk' if is_plus else 'vip_silk']:,}元宝)" for p in selected_product_items]
+            log_output += f"[{time_service.format_now()}] 步骤 1/4: 账号核准与选品确认 - 身份: {vip_tag}, 当前可用元宝: {yb_point:,}, 用户已选目标: {', '.join(selected_names) or custom_goods_ids}\n"
+
+            # 2. 场次判定与预热过滤
+            now_dt = time_service.now_dt()
+            if trigger_type == "cron":
+                if now_dt.hour == 8 or now_dt.hour < 9:
+                    target_h, target_m = 9, 0
+                elif now_dt.hour == 13 or now_dt.hour < 14:
+                    target_h, target_m = 14, 0
+                elif now_dt.hour == 17 or now_dt.hour < 18:
+                    target_h, target_m = 18, 0
                 else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 提示: 当前商城暂无在架秒杀商品\n"
+                    target_h, target_m = 14, 0
+                target_round_str = f"{target_h:02d}:00"
+
+                # 检查当前场次是否有用户勾选的商品
+                current_round_products = [p for p in selected_product_items if p["round"] == target_round_str]
+                if not current_round_products and not custom_goods_ids:
+                    log_output += f"[{time_service.format_now()}] [场次静默] 当前为 {target_round_str} 场次，未配置本场秒杀商品，自动跳过以保护元宝余额\n"
+                    status = "success"
+                    return {"ok": True, "job_id": job_id, "output": log_output}
+
+                # 准点秒杀提前预热唤醒与 NTP 授时校准自旋
+                warmup_msg = await prepare_warmup_and_wait(
+                    target_hour=target_h,
+                    target_minute=target_m,
+                    token=token,
+                    silk_id=silk_id,
+                    user_id=user_id,
+                    city_code=city_code,
+                    early_ms=50,
+                    trigger_type=trigger_type
+                )
+                if warmup_msg:
+                    log_output += warmup_msg
+            else:
+                # 手动即时触发模式
+                target_h = 9 if now_dt.hour < 12 else (14 if now_dt.hour < 17 else 18)
+                target_round_str = f"{target_h:02d}:00"
+                # 手动模式下：优先选取用户勾选的当前/最近场次商品，若无则取用户勾选的第一个商品
+                current_round_products = [p for p in selected_product_items if p["round"] == target_round_str]
+                if not current_round_products:
+                    current_round_products = selected_product_items
+
+            # 3. 实时拉取官方秒杀专区商品池，校验真实库存与限购
+            try:
+                fs_res = await client.list_flash_sale_exchanges(
+                    token=token,
+                    silk_id=silk_id,
+                    user_id=user_id,
+                    city_code=city_code,
+                    new_level=vip_level,
+                    is_plus=is_plus
+                )
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 元宝秒杀接口响应: {e.msg} (代码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 官方秒杀接口响应异常: {e.msg} (代码: {e.code})\n"
+                status = "failed"
+                return {"ok": False, "job_id": job_id, "output": log_output}
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 元宝秒杀异常: {e}\n"
+                log_output += f"[{time_service.format_now()}] 查询秒杀列表网络异常: {e}\n"
+                status = "failed"
+                return {"ok": False, "job_id": job_id, "output": log_output}
+
+            raw_list = fs_res.get("list") or {}
+            online_items = (raw_list.get("svip") if is_plus else raw_list.get("vip")) or []
+            online_map = {it.get("exchange_id"): it for it in online_items if it.get("exchange_id")}
+
+            log_output += f"[{time_service.format_now()}] 步骤 2/4: 官方档期与库存核准 (在线在架商品 {len(online_items)} 款)...\n"
+
+            # 4. 构建当前场次待抢兑的实际商品队列
+            targets_to_exchange = []
+            for p_info in current_round_products:
+                eid = p_info["svip_id"] if is_plus else p_info["vip_id"]
+                req_silk = p_info["svip_silk"] if is_plus else p_info["vip_silk"]
+                p_name = p_info["name"]
+
+                # 严格等级与专区隔离: SVIP 只能抢 SVIP，VIP 只能抢 VIP
+                if is_plus and eid != p_info.get("svip_id"):
+                    log_output += f"[{time_service.format_now()}] [专区隔离] 当前为 SVIP 会员，自动过滤普通 VIP 专区商品【{p_name}】\n"
+                    continue
+                if not is_plus and eid != p_info.get("vip_id"):
+                    log_output += f"[{time_service.format_now()}] [专区隔离] 当前为 VIP{vip_level}，自动过滤 SVIP 专区商品【{p_name}】\n"
+                    continue
+
+                # 检查在架实时数据
+                live_item = online_map.get(eid)
+                if live_item:
+                    req_silk = live_item.get("community_silk", req_silk)
+                    user_reach = live_item.get("quota_limit_reach", False)
+                    stock_reach = live_item.get("daily_stock_reach", False)
+                    left_stock = live_item.get("left", 0)
+
+                    if user_reach:
+                        log_output += f"[{time_service.format_now()}] [限额已达] 账号今日/本周已兑换过【{p_name}】(限购1次)，跳过抢兑\n"
+                        continue
+                    if stock_reach or (trigger_type == "manual" and left_stock <= 0):
+                        log_output += f"[{time_service.format_now()}] [库存告罄] 【{p_name}】全网库存已售罄 (剩余: {left_stock} 份)，跳过\n"
+                        continue
+
+                # 元宝余额与预算核准
+                if req_silk > yb_point:
+                    log_output += f"[{time_service.format_now()}] [元宝不足] 账户可用元宝 ({yb_point:,}) 低于【{p_name}】所需元宝 ({req_silk:,})，取消抢兑以保护账户\n"
+                    continue
+
+
+                targets_to_exchange.append({
+                    "exchange_id": eid,
+                    "name": p_name,
+                    "silk": req_silk,
+                    "round": p_info["round"]
+                })
+
+            # 若有自定义 goods_ids，也一并加入
+            for custom_id in custom_goods_ids:
+                if custom_id not in online_map:
+                    log_output += f"[{time_service.format_now()}] [等级拦截] 自定义商品 ID#{custom_id} 不在当前账号 ({vip_tag}) 的可兑换池中 (SVIP只能抢SVIP，VIP只能抢VIP)，已跳过\n"
+                    continue
+                live_item = online_map.get(custom_id) or {}
+                c_name = re.sub(r'[𐀀-􏿿]|[☀-➿]', '', live_item.get("goods_name") or f"商品#{custom_id}").strip()
+                c_silk = live_item.get("community_silk", 0)
+                if c_silk > yb_point:
+                    log_output += f"[{time_service.format_now()}] [元宝不足] 账户可用元宝不足以兑换自定义商品【{c_name}】\n"
+                    continue
+                targets_to_exchange.append({
+                    "exchange_id": custom_id,
+                    "name": c_name,
+                    "silk": c_silk,
+                    "round": target_round_str
+                })
+
+            if not targets_to_exchange:
+                log_output += f"[{time_service.format_now()}] 步骤 3/4: 核验完成 - 本场次无可执行抢兑的目标商品 (商品未到时间、库存已光或元宝不足)\n"
+                status = "success"
+                return {"ok": True, "job_id": job_id, "output": log_output}
+
+            # 5. 执行极速直射秒杀 (按用户选定商品依次尝试，成功斩获1件即止，防重复扣元宝)
+            log_output += f"[{time_service.format_now()}] 步骤 3/4: 锁定开火目标清单: {', '.join([f'【{t["name"]}】({t["silk"]:,}元宝)' for t in targets_to_exchange])}\n"
+
+            grab_success = False
+            for target in targets_to_exchange:
+                target_eid = target["exchange_id"]
+                target_name = target["name"]
+                target_silk = target["silk"]
+
+                log_output += f"[{time_service.format_now_ms()}] 步骤 4/4: 发起官方直射秒杀 -> 【{target_name}】(exchange_id: {target_eid}, 消耗: {target_silk:,}元宝)...\n"
+
+                for try_idx in range(1, 4):
+                    ts_fmt = time_service.format_now_ms()
+                    try:
+                        ex_res = await client.exchange_goods_v2(
+                            exchange_id=target_eid,
+                            token=token,
+                            silk_id=silk_id,
+                            user_id=user_id,
+                            city_code=city_code
+                        )
+                        # 一旦 RPC 成功返回，代表官方已确认斩获！立即标记成功并终止重试
+                        grab_success = True
+                        status = "success"
+                        log_output += f"[{ts_fmt}] [元宝秒杀抢券] 第{try_idx}次调用 秒杀成功！已成功斩获【{target_name}】！\n"
+
+                        # 更新本地账户元宝余额 (容错保护，严禁本地 DB 报错中断成功闭环)
+                        try:
+                            remaining_silk = max(0, yb_point - target_silk)
+                            db.update_account_profile(account_key, {"yb_point": remaining_silk})
+                            log_output += f"[{time_service.format_now()}] 资产变更: 成功扣减 {target_silk:,} 元宝，当前账户最新可用元宝: {remaining_silk:,}\n"
+                        except Exception as dbe:
+                            log_output += f"[{time_service.format_now()}] 资产变更同步提示: {dbe}\n"
+
+                        # 发送系统通知 (容错保护)
+                        try:
+                            await send_system_notification(
+                                title="元宝秒杀抢券成功",
+                                content=f"账号【{nickname}】在 {target['round']} 场次成功抢到【{target_name}】(消耗: {target_silk:,}元宝)！",
+                                account_key=account_key,
+                                event=NotificationEvent.SPIKE_SUCCESS,
+                                level=NotificationLevel.SUCCESS
+                            )
+                        except Exception as ne:
+                            log_output += f"[{time_service.format_now()}] 发送抢券通知提示: {ne}\n"
+
+                        break
+                    except XiaoCanRPCError as ce:
+                        log_output += f"[{ts_fmt}] [元宝秒杀抢券] 第{try_idx}次调用提示: {ce.msg} (代码: {ce.code})\n"
+                        # 代码 7: 本周已达上限; 代码 29: 秒杀已结束; 400xx 等非重试错误均立即终止
+                        if ce.code in (7, 29, 40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
+                            break
+                        elif ce.code == 28:
+                            # 秒杀未开始
+                            if trigger_type == "cron":
+                                await asyncio.sleep(0.05)
+                                continue
+                            else:
+                                break
+                    except Exception as e:
+                        log_output += f"[{ts_fmt}] [元宝秒杀抢券] 第{try_idx}次调用异常: {e}\n"
+                    await asyncio.sleep(0.08)
+
+                if grab_success:
+                    # 单场抢到一件即功成身退，保护元宝资产不超花
+                    break
+
+            if not grab_success:
+                log_output += f"[{time_service.format_now()}] 元宝秒杀流水结束: 本轮抢券未命中或场次已结束\n"
 
         elif task_id == "media_vip":
             # 抢每月影音VIP (每日 10:00 / 17:00 / 20:00 三场 - 极速直射模式)
@@ -1167,12 +1381,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 status = "error"
 
         elif task_id == "meituan_coupon":
-            from ..meituan.worker import claim_single_account, claim_all_meituan_accounts
+            from ..meituan.worker import claim_single_account
             mt_acc = db.get_meituan_account(account_key)
             acc_record = db.get_account_by_key(account_key)
             has_mt = bool(mt_acc or (acc_record and acc_record.get("meituan_token")))
             if has_mt:
-                claim_res = await asyncio.to_thread(claim_single_account, account_key)
+                # 显式传入 record_log=False，避免调度器与底层执行器双重插入日志导致记录重复
+                claim_res = await asyncio.to_thread(claim_single_account, account_key, False)
                 detail_out = claim_res.get("detailed_log") or claim_res.get("formatted_text", "")
                 log_output += detail_out + "\n"
                 if claim_res.get("success") and claim_res.get("coupon_count", 0) > 0:
@@ -1186,22 +1401,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 if not claim_res.get("success") and claim_res.get("code") != 1014:
                     status = "error"
             else:
-                claim_results = await asyncio.to_thread(claim_all_meituan_accounts, force=False)
-                if not claim_results:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 未找到已绑定的美团官方账号，请前往【账号管理】扫码绑定。\n"
-                else:
-                    for cr in claim_results:
-                        detail_out = cr.get("detailed_log") or cr.get("formatted_text", "")
-                        log_output += detail_out + "\n"
-                        if cr.get("success") and cr.get("coupon_count", 0) > 0:
-                            cr_nick = cr.get("nickname") or cr.get("account_key")
-                            await send_system_notification(
-                                title="美团外卖券自动领取成功",
-                                content=f"账号【{cr_nick}】成功领取 {cr.get('coupon_count')} 张美团外卖优惠券！",
-                                account_key=cr.get("account_key"),
-                                event=NotificationEvent.MEITUAN_COUPON,
-                                level=NotificationLevel.SUCCESS
-                            )
+                # 严密的多账号隔离：若当前账号未关联美团凭证，直接输出提示并安全跳过，严禁越权轮询其他账号
+                log_output += f"[{time.strftime('%H:%M:%S')}] 当前账号【{nickname}】尚未绑定美团官方凭据，已安全跳过本次打卡。\n"
+                log_output += f"[{time.strftime('%H:%M:%S')}] [指引] 如需开启美团神券每日自动领取，请前往【账号管理】页面为该账号绑定美团。\n"
 
         else:
             log_output += f"[{time.strftime('%H:%M:%S')}] 【{task_label}】执行完成 (无异常)\n"
@@ -1235,6 +1437,9 @@ def create_fixed_trigger(task_id: str) -> Optional[CronTrigger]:
         return CronTrigger(hour=13, minute=59, second=35)
     elif task_id == "media_vip":
         return CronTrigger(hour="9,16,19", minute=59, second=35)
+    elif task_id == "flash_sale":
+        # 官方元宝秒杀每日固定三场 (09:00, 14:00, 18:00)，提前 25 秒自动唤醒与 NTP 校准自旋
+        return CronTrigger(hour="8,13,17", minute=59, second=35)
     return None
 
 

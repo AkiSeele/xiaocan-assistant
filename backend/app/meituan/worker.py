@@ -32,6 +32,9 @@ COOLDOWN_SEC = 24 * 3600  # 服务端 24 小时滚动窗口
 MAX_401_RETRY = 3
 RETRY_INTERVALS = [1.5, 3.0]
 
+# 全局美团发券 RPC 调用时间戳，用于多账号并发时的平滑错峰防抖
+_last_rpc_timestamp: float = 0.0
+
 
 def format_single_coupon_item(idx: int, cp: Dict[str, Any]) -> str:
     """格式化单张优惠券明细为纯文本清单行（无Emoji）"""
@@ -79,12 +82,22 @@ def format_claim_result(account_key: str, nickname: str, res: Dict[str, Any], co
     return f"{header} 领券未成功：{res.get('message') or res.get('error') or '接口返回异常'}"
 
 
-def claim_single_account(account_key: str) -> Dict[str, Any]:
+def claim_single_account(account_key: str, record_log: bool = True) -> Dict[str, Any]:
     """
     为单个美团账号执行领券操作：
     包含：排他锁保护 -> 主 Token 401 自愈重试 -> 历史池兜底 -> 凭证回存续期 -> 写入高精度结构化运行日志。
     """
     with runner_lock:
+        global _last_rpc_timestamp
+        # 多账号并发执行错峰防刷保护：若距离上一次美团发券 RPC 调用间隔过短，自动注入平滑抖动
+        cur_ts = time.time()
+        time_diff = cur_ts - _last_rpc_timestamp
+        if _last_rpc_timestamp > 0 and time_diff < 2.0:
+            jitter = random.uniform(1.2, 2.5) - time_diff
+            if jitter > 0:
+                logger.info(f"[美团并发错峰防抖] 账号 {account_key} 注入 {jitter:.2f}s 随机平滑延迟...")
+                time.sleep(jitter)
+
         account = get_meituan_account(account_key) or db.get_account_by_key(account_key)
         main_acc = db.get_account_by_key(account_key)
         if not account:
@@ -131,10 +144,11 @@ def claim_single_account(account_key: str) -> Dict[str, Any]:
             f"[{now_str}] ========================================================"
         ]
         log_id = 0
-        try:
-            log_id = db.add_job_log(job_id, account_key, "meituan_coupon", "running", "\n".join(log_lines))
-        except Exception:
-            pass
+        if record_log:
+            try:
+                log_id = db.add_job_log(job_id, account_key, "meituan_coupon", "running", "\n".join(log_lines))
+            except Exception:
+                pass
 
         last_res = {"ok": False, "success": False, "code": 9999, "message": "未执行"}
         status = "running"
@@ -145,6 +159,7 @@ def claim_single_account(account_key: str) -> Dict[str, Any]:
             activate_account(token, saved_at)
             log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 2/3] 发送福利社发券 RPC 协议请求...")
             res = execute_issue(timeout=35)
+            _last_rpc_timestamp = time.time()
             code = res.get("code")
 
             if code != 401:
@@ -223,7 +238,7 @@ def claim_single_account(account_key: str) -> Dict[str, Any]:
 
                 if log_id > 0:
                     db.update_job_log(log_id, status=status, output=full_log_text)
-                else:
+                elif record_log:
                     db.add_job_log(job_id, account_key, "meituan_coupon", status, full_log_text)
                 return res
 
@@ -246,6 +261,7 @@ def claim_single_account(account_key: str) -> Dict[str, Any]:
                 log_lines.append(f"[{time.strftime('%H:%M:%S')}] 正在测试历史候选 Token {f_idx}/{len(pool)} ({f_mask})...")
                 activate_account(fallback_token)
                 res = execute_issue(timeout=35)
+                _last_rpc_timestamp = time.time()
                 code = res.get("code")
                 if code != 401:
                     logger.info(f"[美团领券] {nickname} 历史池候选 Token 激活成功！code={code}")
@@ -273,7 +289,7 @@ def claim_single_account(account_key: str) -> Dict[str, Any]:
                     res["detailed_log"] = full_log_text
                     if log_id > 0:
                         db.update_job_log(log_id, status=status, output=full_log_text)
-                    else:
+                    elif record_log:
                         db.add_job_log(job_id, account_key, "meituan_coupon", status, full_log_text)
                     return res
 
@@ -303,12 +319,12 @@ def claim_single_account(account_key: str) -> Dict[str, Any]:
 
         if log_id > 0:
             db.update_job_log(log_id, status=status, output=full_log_text)
-        else:
+        elif record_log:
             db.add_job_log(job_id, account_key, "meituan_coupon", status, full_log_text)
         return last_res
 
 
-def claim_all_meituan_accounts(force: bool = False) -> List[Dict[str, Any]]:
+def claim_all_meituan_accounts(force: bool = False, record_log: bool = True, exclude_keys: Optional[Any] = None) -> List[Dict[str, Any]]:
     """
     全量美团账号轮流领券：
     1. 检查 24 小时滚动窗口，冷却中的账号输出详尽跳过明细；
@@ -321,9 +337,12 @@ def claim_all_meituan_accounts(force: bool = False) -> List[Dict[str, Any]]:
 
     results = []
     now_ts = int(time.time())
+    exclude_set = set(exclude_keys) if exclude_keys else set()
 
     for acc in accounts:
         key = acc["key"]
+        if key in exclude_set:
+            continue
         nickname = acc.get("nickname") or key
         last_claimed = acc.get("last_claimed_at") or 0
         elapsed = now_ts - last_claimed
@@ -353,10 +372,11 @@ def claim_all_meituan_accounts(force: bool = False) -> List[Dict[str, Any]]:
             skip_lines.append(f"[{time.strftime('%H:%M:%S')}] 【美团全量领券轮询】该账号检查完毕。")
             skip_log = "\n".join(skip_lines)
 
-            try:
-                db.add_job_log(f"job_mt_{now_ts}_{uuid.uuid4().hex[:6]}", key, "meituan_coupon", "success", skip_log)
-            except Exception:
-                pass
+            if record_log:
+                try:
+                    db.add_job_log(f"job_mt_{now_ts}_{uuid.uuid4().hex[:6]}", key, "meituan_coupon", "success", skip_log)
+                except Exception:
+                    pass
 
             results.append({
                 "account_key": key,
@@ -374,7 +394,7 @@ def claim_all_meituan_accounts(force: bool = False) -> List[Dict[str, Any]]:
             continue
 
         # 执行领券
-        res = claim_single_account(key)
+        res = claim_single_account(key, record_log=record_log)
         results.append(res)
 
         # 账号间随机等待，避免高频请求触发美团防刷

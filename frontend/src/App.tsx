@@ -82,7 +82,7 @@ export const App: React.FC = () => {
     });
   }, [activeTab]);
 
-  // 遵循 Semi Design 官方中后台设计规范与 GSAP 最佳实践：纯净、轻柔的高性能 GPU 合成淡入转场 (0 位移，消除视口抖动)
+  // 遵循 Semi Design 官方中后台设计规范与 GSAP 最佳实践：纯净、轻柔的高性能 GPU 合成淡入位移转场 (y: 10 -> 0)
   useGSAP(
     () => {
       if (!pageContainerRef.current) return;
@@ -94,14 +94,16 @@ export const App: React.FC = () => {
         gsap.fromTo(
           targetEl,
           {
-            autoAlpha: 0.72,
+            autoAlpha: 0,
+            y: 10,
           },
           {
             autoAlpha: 1,
-            duration: 0.2,
-            ease: 'power1.out',
+            y: 0,
+            duration: 0.28,
+            ease: 'power2.out',
             overwrite: 'auto',
-            clearProps: 'opacity,visibility',
+            clearProps: 'transform,opacity,visibility',
           }
         );
       }

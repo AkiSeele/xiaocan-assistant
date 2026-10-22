@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, FlashSaleShelfResponse, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -101,6 +101,8 @@ export const api = {
 
   // 任务自动化
   getTasks: (accountKey: string) => client.get<{ ok: boolean; tasks: TaskItem[] }>(`/tasks?account_key=${accountKey}`).then(r => r.data),
+  getFlashSaleShelf: (accountKey: string) => client.get<FlashSaleShelfResponse>(`/flash-sale/shelf?account_key=${accountKey}`).then(r => r.data),
+  exchangeFlashSale: (data: { account_key: string; exchange_id: number; community_silk?: number; goods_name?: string }) => client.post<{ ok: boolean; message: string; remaining_yb?: number }>('/flash-sale/exchange', data).then(r => r.data),
   toggleTask: (data: { account_key: string; task_id: string; enabled: boolean; cron_time?: string; params?: Record<string, any> }) => client.post<{ ok: boolean; message: string }>('/tasks/toggle', data).then(r => r.data),
   runTaskNow: (accountKey: string, taskId: string) => client.post<{ ok: boolean; job_id?: string; output: string }>('/tasks/run', { account_key: accountKey, task_id: taskId }, { timeout: 60000 }).then(r => r.data),
   batchRunDaily: (accountKey?: string) => client.post<BatchDailyResult>('/tasks/batch-run-daily', { account_key: accountKey }, { timeout: 180000 }).then(r => r.data),
@@ -172,8 +174,11 @@ export const api = {
     client.post<{ ok: boolean; order: Order; message: string }>(`/orders/${id}/submit-platform-id`, { platform_order_id: platformOrderId, receipt_img: receiptImg }).then(r => r.data),
   delayOrderVoucher: (id: number) =>
     client.post<{ ok: boolean; is_delayed: boolean; delay_time: number; message: string }>(`/orders/${id}/delay-voucher`).then(r => r.data),
+  cancelOrder: (id: number) =>
+    client.post<{ ok: boolean; message: string; raw?: any }>(`/orders/${id}/cancel`).then(r => r.data),
   deleteOrder: (id: number) => 
     client.delete<{ ok: boolean; message: string }>(`/orders/${id}`).then(r => r.data),
+
 
   // 日志与监控
   getJobs: (accountKey?: string, limit: number = 50) => client.get<{ ok: boolean; jobs: JobLog[] }>('/jobs', { params: { account_key: accountKey, limit } }).then(r => r.data),

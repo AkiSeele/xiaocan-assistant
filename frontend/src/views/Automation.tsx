@@ -19,6 +19,7 @@ import {
   TabPane,
   Checkbox,
   Select,
+  Popconfirm,
 } from '@douyinfe/semi-ui';
 import {
   IconPlay,
@@ -35,6 +36,7 @@ import { api } from '../api';
 import { useGSAP, animateStaggerEnter } from '../utils/animations';
 import { useOnActivated } from '../utils/useOnActivated';
 import { LogDetailModal } from '../components/LogDetailModal';
+import { FlashSaleDrawerConfig } from '../components/FlashSaleDrawerConfig';
 import type { TaskItem, Account } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -73,6 +75,7 @@ const getCategoryMeta = (category?: string) => {
   }
 };
 
+
 const TaskCard: React.FC<TaskCardProps> = React.memo(({
   task,
   accounts,
@@ -101,6 +104,42 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
   );
 
   const isAllAccountsEnabled = accounts.length > 0 && enabledAccounts.length === accounts.length;
+
+  const currentAccount = useMemo(
+    () => accounts.find((a) => a.key === currentAccountKey),
+    [accounts, currentAccountKey]
+  );
+  const isPlus = Boolean(currentAccount?.is_plus);
+  const vipLevel = currentAccount?.vip_level ?? 1;
+
+  // 检测当前账号对该秒杀抢券任务的官方门槛与特权支持（仅在资格不足时提示，符合资格时不展示多余的“资格符合”标记）
+  const eligibility = useMemo(() => {
+    if (!task.vip) return null;
+    const v = task.vip;
+    if (v === 'VIP / SVIP') {
+      return null;
+    }
+    if (v === 'SVIP2+ / VIP5+' || v === 'SVIP2-6 / VIP5+' || v === 'SVIP2-6') {
+      if (isPlus && vipLevel >= 2) return null;
+      if (!isPlus && vipLevel >= 5) return null;
+      return { eligible: false, text: isPlus ? '需SVIP2+' : '需VIP5+ (等级不足)', color: 'orange' as const };
+    }
+    if (v === 'SVIP4+ / VIP5+' || v === 'SVIP4-6 / VIP5-6') {
+      if (isPlus && vipLevel >= 4) return null;
+      if (!isPlus && vipLevel >= 5) return null;
+      return { eligible: false, text: isPlus ? '需SVIP4+' : '需VIP5+ (等级不足)', color: 'orange' as const };
+    }
+    if (v === 'SVIP5+ / VIP6' || v === 'SVIP5-6 / VIP6') {
+      if (isPlus && vipLevel >= 5) return null;
+      if (!isPlus && vipLevel >= 6) return null;
+      return { eligible: false, text: isPlus ? '需SVIP5+' : '需VIP6 (等级不足)', color: 'orange' as const };
+    }
+    if (v === 'VIP2+ / SVIP') {
+      if (isPlus || vipLevel >= 2) return null;
+      return { eligible: false, text: '需VIP2+ (等级不足)', color: 'orange' as const };
+    }
+    return null;
+  }, [task.vip, isPlus, vipLevel]);
 
   return (
     <Card
@@ -139,6 +178,11 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
           {task.vip && (
             <Tag color="amber" size="small" shape="circle">
               {task.vip}
+            </Tag>
+          )}
+          {eligibility && (
+            <Tag color={eligibility.color} size="small">
+              {eligibility.text}
             </Tag>
           )}
         </div>
@@ -252,6 +296,23 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
                   自定义参数
                 </Tag>
               </Tooltip>
+            )}
+
+            {task.task_id === 'flash_sale' && (
+              <Tag
+                color={
+                  Array.isArray(task.params?.target_products) && task.params.target_products.length > 0
+                    ? 'violet'
+                    : 'grey'
+                }
+                size="small"
+                style={{ cursor: 'pointer' }}
+                onClick={() => onOpenConfig(task)}
+              >
+                {Array.isArray(task.params?.target_products) && task.params.target_products.length > 0
+                  ? `已选 ${task.params.target_products.length} 款目标商品`
+                  : '未选定商品 (点击配置)'}
+              </Tag>
             )}
           </div>
         </div>
@@ -512,20 +573,24 @@ export const Automation: React.FC = () => {
     }
   };
 
-  // 批量日常打卡
+  // 全账号批量日常打卡
   const handleBatchRunDaily = async () => {
+    if (accounts.length === 0) {
+      Toast.warning('当前无托管账号，请先添加或绑定账号');
+      return;
+    }
     setBatchRunning(true);
     try {
-      const res = await api.batchRunDaily(currentAccountKey);
+      const res = await api.batchRunDaily();
       if (res.ok) {
         setBatchResults(res.results || []);
-        setBatchSummaryMessage(res.message || '日常打卡完成');
+        setBatchSummaryMessage(res.message || '全账号日常打卡完成');
         setBatchResultModal(true);
       } else {
-        Toast.error(res.message || '批量打卡执行失败');
+        Toast.error(res.message || '全账号批量打卡失败');
       }
     } catch (e: any) {
-      Toast.error(`批量打卡失败: ${e.message}`);
+      Toast.error(`全账号批量打卡失败: ${e.message}`);
     } finally {
       setBatchRunning(false);
     }
@@ -573,7 +638,10 @@ export const Automation: React.FC = () => {
     if (!selectedTask) return;
     setSavingParams(true);
     try {
-      const targetKeys = drawerApplyAllAccounts ? accounts.map((a) => a.key) : [currentAccountKey];
+      const targetKeys =
+        drawerApplyAllAccounts && selectedTask.task_id !== 'flash_sale'
+          ? accounts.map((a) => a.key)
+          : [currentAccountKey];
 
       await Promise.all(
         targetKeys.map((k) =>
@@ -827,15 +895,22 @@ export const Automation: React.FC = () => {
         </div>
 
         <Space spacing="medium">
-          <Button
-            theme="solid"
-            type="primary"
-            icon={<IconPlay />}
-            loading={batchRunning}
-            onClick={handleBatchRunDaily}
+          <Popconfirm
+            title="确认执行全账号日常打卡？"
+            content="将为所有托管的有效账号执行已启用的日常任务（签到、成长值膨胀金、社群转盘等）。"
+            okText="立即打卡"
+            cancelText="取消"
+            onConfirm={handleBatchRunDaily}
           >
-            一键日常打卡
-          </Button>
+            <Button
+              theme="solid"
+              type="primary"
+              icon={<IconPlay />}
+              loading={batchRunning}
+            >
+              一键全账号打卡
+            </Button>
+          </Popconfirm>
           <Button
             theme="light"
             type="tertiary"
@@ -1030,7 +1105,7 @@ export const Automation: React.FC = () => {
         title={`配置任务参数 - ${selectedTask?.label || ''}`}
         visible={drawerVisible}
         onCancel={() => setDrawerVisible(false)}
-        width={420}
+        width={selectedTask?.task_id === 'flash_sale' ? 520 : 420}
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button theme="light" type="tertiary" onClick={() => setDrawerVisible(false)}>
@@ -1066,18 +1141,19 @@ export const Automation: React.FC = () => {
               </Text>
             </div>
 
-            {/* 定时配置 */}
-            <div
-              style={{
-                backgroundColor: 'var(--semi-color-fill-0)',
-                padding: '12px 14px',
-                borderRadius: 'var(--semi-border-radius-medium)',
-                border: '1px solid var(--semi-color-border)',
-              }}
-            >
-              <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
-                触发时间
-              </Text>
+            {/* 定时配置 (元宝秒杀抢券采用场次专属时间，无需展示触发时间区块) */}
+            {selectedTask.task_id !== 'flash_sale' && (
+              <div
+                style={{
+                  backgroundColor: 'var(--semi-color-fill-0)',
+                  padding: '12px 14px',
+                  borderRadius: 'var(--semi-border-radius-medium)',
+                  border: '1px solid var(--semi-color-border)',
+                }}
+              >
+                <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+                  触发时间
+                </Text>
 
               {selectedTask.fixed_time ? (
                 <Banner
@@ -1098,7 +1174,7 @@ export const Automation: React.FC = () => {
                     value={drawerCronTime}
                     onChange={(v) => setDrawerCronTime(v)}
                     placeholder="例如: 09:30"
-                    style={{ fontFamily: 'monospace', marginBottom: 8 }}
+                    style={{ marginBottom: 8 }}
                   />
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     <Text type="tertiary" size="small">
@@ -1110,7 +1186,7 @@ export const Automation: React.FC = () => {
                         color="blue"
                         size="small"
                         onClick={() => setDrawerCronTime(t)}
-                        style={{ cursor: 'pointer', fontFamily: 'monospace' }}
+                        style={{ cursor: 'pointer' }}
                       >
                         {t}
                       </Tag>
@@ -1119,9 +1195,17 @@ export const Automation: React.FC = () => {
                 </>
               )}
             </div>
+            )}
 
             {/* 动态参数项 */}
-            {selectedTask.param_defs && selectedTask.param_defs.length > 0 ? (
+            {selectedTask.task_id === 'flash_sale' ? (
+              <FlashSaleDrawerConfig
+                accountKey={currentAccountKey}
+                accounts={accounts}
+                drawerParams={drawerParams}
+                setDrawerParams={setDrawerParams}
+              />
+            ) : selectedTask.param_defs && selectedTask.param_defs.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <Text strong style={{ fontSize: 13 }}>
                   高级参数
@@ -1129,6 +1213,54 @@ export const Automation: React.FC = () => {
 
                 {selectedTask.param_defs.map((pd) => {
                   const val = drawerParams[pd.key] ?? pd.def;
+
+                  if (pd.type === 'multi_select' || (pd.type === 'select' && (pd as any).multiple)) {
+                    const selectedList: string[] = Array.isArray(val)
+                      ? val
+                      : (typeof val === 'string' && val.trim() ? val.split(',').map((s) => s.trim()) : []);
+
+                    
+                    return (
+                      <div
+                        key={pd.key}
+                        style={{
+                          backgroundColor: 'var(--semi-color-fill-0)',
+                          padding: '12px 14px',
+                          borderRadius: 'var(--semi-border-radius-medium)',
+                          border: '1px solid var(--semi-color-border)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                          <Text strong style={{ fontSize: 13 }}>
+                            {pd.label.replace(/[（(][^）)]*[）)]/g, '').trim()}
+                          </Text>
+                          <Tag color={selectedList.length > 0 ? 'violet' : 'grey'} size="small">
+                            {selectedList.length > 0 ? `已选择 ${selectedList.length} 款` : '未选定'}
+                          </Tag>
+                        </div>
+
+                        <Select
+                          multiple
+                          value={selectedList}
+                          onChange={(newVal) => setDrawerParams((prev) => ({ ...prev, [pd.key]: newVal }))}
+                          style={{ width: '100%', marginBottom: selectedTask.task_id === 'flash_sale' && pd.key === 'target_products' ? 12 : 0 }}
+                          placeholder="请勾选需要秒杀的商品（支持多选）"
+                        >
+                          {(pd.options || []).map((opt) => (
+                            <Select.Option key={String(opt.value)} value={opt.value}>
+                              {opt.label}
+                            </Select.Option>
+                          ))}
+                        </Select>
+
+                        {pd.hint && (
+                          <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 8, lineHeight: '18px' }}>
+                            {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
+                          </Text>
+                        )}
+                      </div>
+                    );
+                  }
 
                   if (pd.type === 'select') {
                     let selectVal = val;
@@ -1309,7 +1441,7 @@ export const Automation: React.FC = () => {
             )}
 
             {/* 同步全部账号选项 */}
-            {accounts.length > 1 && (
+            {accounts.length > 1 && selectedTask.task_id !== 'flash_sale' && (
               <div style={{ marginTop: 8 }}>
                 <Checkbox
                   checked={drawerApplyAllAccounts}
@@ -1342,7 +1474,7 @@ export const Automation: React.FC = () => {
             value={editingTimeValue}
             onChange={(v) => setEditingTimeValue(v)}
             placeholder="例如: 22:05"
-            style={{ fontFamily: 'monospace', marginBottom: 12 }}
+            style={{ marginBottom: 12 }}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             <Text type="tertiary" size="small">
@@ -1354,7 +1486,7 @@ export const Automation: React.FC = () => {
                 color="blue"
                 size="small"
                 onClick={() => setEditingTimeValue(t)}
-                style={{ cursor: 'pointer', fontFamily: 'monospace' }}
+                style={{ cursor: 'pointer' }}
               >
                 {t}
               </Tag>
@@ -1421,7 +1553,7 @@ export const Automation: React.FC = () => {
                 <div
                   style={{
                     fontSize: 12,
-                    fontFamily: 'monospace',
+                    
                     color: 'var(--semi-color-text-2)',
                     whiteSpace: 'pre-wrap',
                     backgroundColor: 'var(--semi-color-bg-0)',
@@ -1439,6 +1571,8 @@ export const Automation: React.FC = () => {
       </Modal>
 
       {/* 统一单次任务执行日志弹窗 */}
+
+
       <LogDetailModal
         visible={execResultModal}
         onClose={() => setExecResultModal(false)}

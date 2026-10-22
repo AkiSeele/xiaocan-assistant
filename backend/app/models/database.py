@@ -224,6 +224,8 @@ def init_db():
         c.execute("ALTER TABLE orders ADD COLUMN order_type INTEGER DEFAULT 0")
     if "rebate_ratio" not in cols:
         c.execute("ALTER TABLE orders ADD COLUMN rebate_ratio REAL DEFAULT 0")
+    if "delay_count" not in cols:
+        c.execute("ALTER TABLE orders ADD COLUMN delay_count INTEGER DEFAULT 0")
 
     # 自动自愈 orders 中缺失 store_icon 的记录 (从已有历史同名/同 store_id 记录回填)
     try:
@@ -432,6 +434,32 @@ def _format_account_row(d: Dict[str, Any]) -> Dict[str, Any]:
         d["meituan_history_pool"] = []
     if not d.get("platform"):
         d["platform"] = "xiaocan"
+
+    # 计算与解析凭据有效状态
+    is_expired = False
+    exp_str = d.get("expires_at")
+    if exp_str and exp_str not in ("长期有效", "无"):
+        try:
+            t_struct = time.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
+            if time.mktime(t_struct) < time.time():
+                is_expired = True
+        except Exception:
+            pass
+    elif not exp_str and d.get("token") and "." in str(d["token"]):
+        try:
+            import base64
+            parts = str(d["token"]).split(".")
+            if len(parts) >= 2:
+                b64 = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(b64.encode()).decode("utf-8"))
+                if payload.get("exp"):
+                    exp_ts = int(payload["exp"])
+                    d["expires_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_ts))
+                    if exp_ts < time.time():
+                        is_expired = True
+        except Exception:
+            pass
+    d["is_token_expired"] = is_expired
     return d
 
 
@@ -668,6 +696,11 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         conn.execute(sql, params)
         conn.commit()
     return get_account_by_key(key)
+
+
+def update_account(key: str, **kwargs) -> Optional[Dict[str, Any]]:
+    """更新账号资料字段便捷包装器 (兼容 update_account 命名)"""
+    return update_account_profile(key, kwargs)
 
 
 def get_account_notify_config(key: str) -> Dict[str, Any]:
@@ -1124,6 +1157,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 order_time = :order_time,
                 order_type = :order_type,
                 rebate_ratio = :rebate_ratio,
+                delay_count = :delay_count,
                 updated_at = :updated_at
             WHERE id = :id
             """, {
@@ -1148,7 +1182,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "updated_at": now,
                 "order_time": int(data.get("order_time") or 0),
                 "order_type": int(data.get("order_type") or 0),
-                "rebate_ratio": float(data.get("rebate_ratio") or 0)
+                "rebate_ratio": float(data.get("rebate_ratio") or 0),
+                "delay_count": int(data.get("delay_count") or 0)
             })
             if promo_id > 0:
                 conn.execute(
@@ -1159,8 +1194,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return get_order_by_id(target_id)
 
         cursor = conn.execute("""
-        INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time, order_type, rebate_ratio)
-        VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time, :order_type, :rebate_ratio)
+        INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time, order_type, rebate_ratio, delay_count)
+        VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time, :order_type, :rebate_ratio, :delay_count)
         ON CONFLICT(order_sn) DO UPDATE SET
             promotion_order_id = excluded.promotion_order_id,
             platform_order_id = excluded.platform_order_id,
@@ -1179,6 +1214,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             condition = excluded.condition,
             order_type = excluded.order_type,
             rebate_ratio = excluded.rebate_ratio,
+            delay_count = excluded.delay_count,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at
         """, {
@@ -1204,7 +1240,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "updated_at": now,
             "order_time": int(data.get("order_time") or 0),
             "order_type": int(data.get("order_type") or 0),
-            "rebate_ratio": float(data.get("rebate_ratio") or 0)
+            "rebate_ratio": float(data.get("rebate_ratio") or 0),
+            "delay_count": int(data.get("delay_count") or 0)
         })
         conn.commit()
         last_id = cursor.lastrowid
@@ -1215,7 +1252,7 @@ def update_order(order_id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]
     allowed = [
         "platform_order_id", "status", "receipt_img", "reject_reason",
         "order_money", "rebate_money", "original_user_rebate",
-        "redpack_reward_num", "timeout_time", "store_icon"
+        "redpack_reward_num", "timeout_time", "store_icon", "delay_count"
     ]
     updates = []
     params: Dict[str, Any] = {"id": order_id, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -1226,6 +1263,7 @@ def update_order(order_id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]
     if not updates:
         return get_order_by_id(order_id)
     sql = f"UPDATE orders SET {', '.join(updates)}, updated_at = :updated_at WHERE id = :id"
+
     with get_conn() as conn:
         conn.execute(sql, params)
         conn.commit()

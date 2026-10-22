@@ -14,9 +14,7 @@ import {
   RadioGroup,
   Radio,
   Empty,
-  Modal,
-  Descriptions,
-  Banner
+  Popconfirm
 } from '@douyinfe/semi-ui';
 import { gsap, useGSAP } from '../utils/animations';
 
@@ -24,7 +22,8 @@ import type { ColumnProps } from '@douyinfe/semi-ui/lib/es/table';
 import {
   IconRefresh,
   IconCopy,
-  IconSearch
+  IconSearch,
+  IconDelete
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
@@ -32,6 +31,7 @@ import { useOnActivated } from '../utils/useOnActivated';
 import type { Order } from '../types';
 
 const { Title, Text } = Typography;
+
 
 const getConditionTagColor = (condition?: string): 'green' | 'cyan' | 'blue' | 'amber' | 'grey' => {
   if (!condition) return 'green';
@@ -81,10 +81,10 @@ export const OrdersView: React.FC = () => {
   const [activeStatusTab, setActiveStatusTab] = useState<string>('all');
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
-  const [uploadModalOrder, setUploadModalOrder] = useState<Order | null>(null);
-  const [platformOrderIdInput, setPlatformOrderIdInput] = useState<string>('');
-  const [submitting, setSubmitting] = useState<boolean>(false);
   const [delayingOrderId, setDelayingOrderId] = useState<number | null>(null);
+  const [cancellingOrderId, setCancellingOrderId] = useState<number | null>(null);
+  const [deletingOrderId, setDeletingOrderId] = useState<number | null>(null);
+
 
   // 纯净视口高度自适应：监听表格卡片容器，杜绝 DOM querySelector 与强制同步重排
   useEffect(() => {
@@ -191,42 +191,6 @@ export const OrdersView: React.FC = () => {
     Toast.success(`${label}已复制到剪贴板`);
   };
 
-  // 打开待上传回填单号弹窗 (平台禁止二次修改)
-  const handleOpenUploadModal = (order: Order) => {
-    if (order.platform_order_id) {
-      Toast.warning('外卖单号已绑定，平台禁止修改');
-      return;
-    }
-    setUploadModalOrder(order);
-    setPlatformOrderIdInput('');
-  };
-
-  // 提交/更新外卖单号
-  const handleConfirmSubmitId = async () => {
-    if (!uploadModalOrder) return;
-    const orderIdToSubmit = platformOrderIdInput.trim();
-    if (!orderIdToSubmit) {
-      Toast.warning('请输入外卖平台订单号');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const res = await api.submitPlatformOrderId(uploadModalOrder.id, orderIdToSubmit);
-      if (res.ok) {
-        Toast.success(res.message || '外卖单号已成功绑定');
-        setUploadModalOrder(null);
-        setPlatformOrderIdInput('');
-        fetchOrders(undefined, true);
-      } else {
-        Toast.error(res.message || '单号提交失败，请重试');
-      }
-    } catch (e: any) {
-      Toast.error(`提交异常: ${e.message || e}`);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleDelayVoucher = async (order: Order) => {
     setDelayingOrderId(order.id);
     try {
@@ -243,6 +207,41 @@ export const OrdersView: React.FC = () => {
       setDelayingOrderId(null);
     }
   };
+
+  const handleCancelOrder = async (order: Order) => {
+    setCancellingOrderId(order.id);
+    try {
+      const res = await api.cancelOrder(order.id);
+      if (res.ok) {
+        Toast.success(res.message || '霸王餐报名已成功取消');
+        fetchOrders(undefined, true);
+      } else {
+        Toast.error(res.message || '取消报名失败');
+      }
+    } catch (e: any) {
+      Toast.error(`取消报名异常: ${e.response?.data?.detail || e.message || e}`);
+    } finally {
+      setCancellingOrderId(null);
+    }
+  };
+
+  const handleDeleteOrder = async (order: Order) => {
+    setDeletingOrderId(order.id);
+    try {
+      const res = await api.deleteOrder(order.id);
+      if (res.ok) {
+        Toast.success(res.message || '订单记录已删除');
+        fetchOrders(undefined, true);
+      } else {
+        Toast.error(res.message || '删除订单失败');
+      }
+    } catch (e: any) {
+      Toast.error(`删除订单异常: ${e.response?.data?.detail || e.message || e}`);
+    } finally {
+      setDeletingOrderId(null);
+    }
+  };
+
 
   const DEFAULT_PLATFORM_ICONS: Record<string, string> = {
     jingdong: 'https://img10.360buyimg.com/imagetools/jfs/t1/282159/28/8442/32950/67e10a0dFb8e53ae1/3a4d405ef2b69aff.jpg',
@@ -355,13 +354,9 @@ export const OrdersView: React.FC = () => {
     {
       title: '外卖单号 / 审核状态',
       dataIndex: 'status',
-      width: 270,
+      width: 240,
       render: (status: string, row?: Order) => {
         const hasExtId = !!row?.platform_order_id;
-        const isPercentOrder =
-          row?.order_type === 12 ||
-          Boolean(row?.rebate_ratio && row.rebate_ratio > 0) ||
-          Number(row?.order_money || 0) <= 0;
         let badgeColor: 'green' | 'amber' | 'blue' | 'red' | 'grey' | 'cyan' = 'grey';
         let statusText = '未知状态';
 
@@ -377,7 +372,7 @@ export const OrdersView: React.FC = () => {
             statusText = '已下单待反馈';
           } else {
             badgeColor = 'blue';
-            statusText = isPercentOrder ? '待下单同步单号' : '待提交外卖单号';
+            statusText = '待提交外卖单号';
           }
         } else if (status === 'rejected') {
           badgeColor = 'red';
@@ -390,10 +385,11 @@ export const OrdersView: React.FC = () => {
         const nowSec = Math.floor(Date.now() / 1000);
         const remainingSec = row?.timeout_time ? row.timeout_time - nowSec : null;
         const countdownStr = formatRemainingTime(remainingSec);
+        const hasDelayed = Boolean(row?.delay_count && row.delay_count > 0);
 
         return (
-          <div className="max-w-[270px]">
-            <Space spacing="tight">
+          <div className="max-w-[240px]">
+            <Space spacing="tight" wrap>
               <Tag color={badgeColor} size="small">
                 {statusText}
               </Tag>
@@ -402,68 +398,28 @@ export const OrdersView: React.FC = () => {
                   {countdownStr}
                 </Tag>
               )}
+              {hasDelayed && (
+                <Tag color="violet" size="small">
+                  已延时2h
+                </Tag>
+              )}
             </Space>
             <div className="mt-1.5 text-xs font-mono">
               {hasExtId ? (
-                <div>
-                  <div className="flex items-center gap-1 text-semi-color-text-1">
-                    <span className="truncate max-w-[170px]" title={row?.platform_order_id}>
-                      单号: {row?.platform_order_id}
-                    </span>
-                    <Button
-                      theme="borderless"
-                      icon={<IconCopy size="small" />}
-                      size="small"
-                      className="p-0.5 ml-0.5 h-5 flex-shrink-0"
-                      onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
-                    />
-                  </div>
-                  {status === 'pending' && !isPercentOrder && (
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <Button
-                        theme="light"
-                        type="warning"
-                        size="small"
-                        loading={delayingOrderId === row?.id}
-                        className="!py-0.5 !px-1.5 text-xs h-5"
-                        onClick={() => row && handleDelayVoucher(row)}
-                        title="激活官方领红包延时2小时特权"
-                      >
-                        延时2h
-                      </Button>
-                    </div>
-                  )}
+                <div className="flex items-center gap-1 text-semi-color-text-1">
+                  <span className="truncate max-w-[170px]" title={row?.platform_order_id}>
+                    单号: {row?.platform_order_id}
+                  </span>
+                  <Button
+                    theme="borderless"
+                    icon={<IconCopy size="small" />}
+                    size="small"
+                    className="p-0.5 ml-0.5 h-5 flex-shrink-0"
+                    onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
+                  />
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-semi-color-text-3">未绑定外卖单号</span>
-                  {status === 'pending' && (
-                    <div className="flex items-center gap-1">
-                      <Button
-                        theme="light"
-                        type="primary"
-                        size="small"
-                        className="!py-0.5 !px-1.5 text-xs h-5"
-                        onClick={() => row && handleOpenUploadModal(row)}
-                      >
-                        回填单号
-                      </Button>
-                      {!isPercentOrder && (
-                        <Button
-                          theme="light"
-                          type="warning"
-                          size="small"
-                          loading={delayingOrderId === row?.id}
-                          className="!py-0.5 !px-1.5 text-xs h-5"
-                          onClick={() => row && handleDelayVoucher(row)}
-                          title="激活官方领红包延时2小时特权"
-                        >
-                          延时2h
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <span className="text-semi-color-text-3">未绑定外卖单号</span>
               )}
             </div>
           </div>
@@ -489,10 +445,108 @@ export const OrdersView: React.FC = () => {
     {
       title: '下单时间',
       dataIndex: 'created_at',
-      width: 180,
+      width: 170,
       render: (timeStr: string) => (
         <Text size="small" type="secondary">{timeStr}</Text>
       ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 190,
+      fixed: 'right',
+      render: (_: any, row?: Order) => {
+        if (!row) return null;
+        const status = row.status;
+        const hasExtId = !!row.platform_order_id;
+        const isPercentOrder =
+          row.order_type === 12 ||
+          Boolean(row.rebate_ratio && row.rebate_ratio > 0) ||
+          Number(row.order_money || 0) <= 0;
+        const hasDelayed = Boolean(row.delay_count && row.delay_count > 0);
+
+        if (status === 'pending') {
+          if (!hasExtId) {
+            return (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {!isPercentOrder && (
+                  hasDelayed ? (
+                    <Tag color="violet" size="small">已延时2h</Tag>
+                  ) : (
+                    <Button
+                      theme="light"
+                      type="warning"
+                      size="small"
+                      loading={delayingOrderId === row.id}
+                      onClick={() => handleDelayVoucher(row)}
+                      title="使用延时券延长有效期2小时"
+                      className="!py-0.5 !px-1.5 text-xs h-6"
+                    >
+                      使用延时券
+                    </Button>
+                  )
+                )}
+                <Popconfirm
+                  title="确认取消该霸王餐报名？"
+                  content="取消后将释放当前占用的抢单名额，该操作不可撤销。"
+                  okText="确认取消"
+                  cancelText="返回"
+                  okType="danger"
+                  onConfirm={() => handleCancelOrder(row)}
+                >
+                  <Button
+                    theme="light"
+                    type="danger"
+                    size="small"
+                    loading={cancellingOrderId === row.id}
+                    className="!py-0.5 !px-1.5 text-xs h-6"
+                  >
+                    取消报名
+                  </Button>
+                </Popconfirm>
+              </div>
+            );
+          } else {
+            return (
+              <Tag color="cyan" size="small">已锁单待核对</Tag>
+            );
+          }
+        }
+
+        if (status === 'completed' || status === 'cancelled') {
+          return (
+            <Popconfirm
+              title="确认删除该订单？"
+              content="将从官方订单列表与本地记录中彻底删除该条订单。"
+              okText="确认删除"
+              cancelText="取消"
+              okType="danger"
+              onConfirm={() => handleDeleteOrder(row)}
+            >
+              <Button
+                theme="light"
+                type="tertiary"
+                size="small"
+                icon={<IconDelete size="small" />}
+                loading={deletingOrderId === row.id}
+                className="!py-0.5 !px-1.5 text-xs h-6"
+              >
+                删除订单
+              </Button>
+            </Popconfirm>
+          );
+        }
+
+        if (status === 'auditing') {
+          return <Tag color="amber" size="small">平台审核中</Tag>;
+        }
+
+        if (status === 'rejected') {
+          return <Tag color="red" size="small">已驳回</Tag>;
+        }
+
+        return <Text size="small" type="secondary">-</Text>;
+      },
     }
   ];
 
@@ -652,7 +706,7 @@ export const OrdersView: React.FC = () => {
               showSizeChanger: true,
               pageSizeOpts: [10, 20, 50, 100],
             }}
-            scroll={{ y: tableScrollY, x: 1000 }}
+            scroll={{ y: tableScrollY, x: 1200 }}
             size="middle"
             empty={
               loading ? (
@@ -673,69 +727,6 @@ export const OrdersView: React.FC = () => {
           />
         </div>
       </Card>
-
-      {/* 回填外卖单号弹窗 (禁止二次修改) */}
-      <Modal
-        title="回填外卖单号"
-        visible={!!uploadModalOrder}
-        onOk={handleConfirmSubmitId}
-        onCancel={() => {
-          setUploadModalOrder(null);
-          setPlatformOrderIdInput('');
-        }}
-        confirmLoading={submitting}
-        okText="确认提交单号"
-        cancelText="取消"
-        width={440}
-        centered
-      >
-        <div className="space-y-3 py-1">
-          <Descriptions
-            size="small"
-            row={false}
-            style={{
-              padding: '10px 14px',
-              backgroundColor: 'var(--semi-color-fill-0)',
-              borderRadius: 'var(--semi-border-radius-medium)',
-              border: '1px solid var(--semi-color-border-subtle)'
-            }}
-            data={[
-              {
-                key: '商户名称',
-                value: (
-                  <Text strong ellipsis={{ showTooltip: true }}>
-                    {uploadModalOrder?.store_name}
-                  </Text>
-                )
-              },
-              {
-                key: '实付门槛',
-                value: <Text code size="small">¥{uploadModalOrder?.order_money}</Text>
-              },
-              {
-                key: '预计返利',
-                value: <Text type="danger" strong>¥{uploadModalOrder?.rebate_money}</Text>
-              }
-            ]}
-          />
-          <div>
-            <Text size="small" type="secondary" className="block mb-1">
-              请输入外卖平台订单号：
-            </Text>
-            <Input
-              placeholder="例如：3002311852210111003"
-              value={platformOrderIdInput}
-              onChange={(val) => setPlatformOrderIdInput(val || '')}
-              autoFocus
-            />
-          </div>
-          <Banner
-            type="warning"
-            description="单号提交后官方将锁定绑定关系，平台禁止二次修改，请务必核对正确"
-            className="rounded-lg text-xs"
-          />
-        </div>
-      </Modal>
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Nav, Select, Avatar, Space, Button, Tooltip, Dropdown, Tag } from '@douyinfe/semi-ui';
 import {
   IconHome,
@@ -11,6 +11,7 @@ import {
   IconPlus,
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
+import { gsap, useGSAP } from '../utils/animations';
 
 export const SideNav: React.FC = () => {
   const activeTab = useAppStore((s) => s.activeTab);
@@ -20,8 +21,34 @@ export const SideNav: React.FC = () => {
   const accounts = useAppStore((s) => s.accounts);
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
+  const navRef = useRef<HTMLDivElement>(null);
 
   const currentAccount = accounts.find((a) => a.key === currentAccountKey) || accounts[0];
+
+  // 菜单项微动效：选中的菜单项图标轻弹激活 (遵循 gsap-react 规范)
+  useGSAP(
+    () => {
+      if (!navRef.current) return;
+      const selectedItem = navRef.current.querySelector('.semi-navigation-item-selected');
+      if (selectedItem) {
+        const icon = selectedItem.querySelector('.semi-navigation-item-icon');
+        if (icon) {
+          gsap.fromTo(
+            icon,
+            { scale: 0.82 },
+            {
+              scale: 1,
+              duration: 0.28,
+              ease: 'back.out(2)',
+              overwrite: 'auto',
+              clearProps: 'transform',
+            }
+          );
+        }
+      }
+    },
+    { scope: navRef, dependencies: [activeTab] }
+  );
 
   const navItems = [
     { itemKey: 'dashboard', text: '概览仪表盘', icon: <IconHome size="large" /> },
@@ -34,7 +61,7 @@ export const SideNav: React.FC = () => {
   ];
 
   return (
-    <div className="h-full flex flex-col">
+    <div ref={navRef} className="h-full flex flex-col">
       <Nav
         mode="vertical"
         isCollapsed={isSidebarCollapsed}

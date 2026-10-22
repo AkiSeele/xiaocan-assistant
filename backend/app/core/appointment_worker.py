@@ -72,12 +72,18 @@ def invalidate_worker_cache():
 
 
 def _parse_time_today(time_str: str) -> Optional[float]:
-    """解析 HH:MM 为今日的时间戳，若格式为 YYYY-MM-DD HH:MM:SS 则直接解析"""
+    """解析 HH:MM 为今日的时间戳，若格式为 YYYY-MM-DD HH:MM:SS 或纯数字时间戳则直接解析"""
     if not time_str or not str(time_str).strip():
         return None
     time_str = str(time_str).strip()
     now = datetime.now()
     try:
+        if time_str.replace('.', '', 1).isdigit():
+            val = float(time_str)
+            if val > 1e11:
+                val = val / 1000.0
+            if val > 1e8:
+                return val
         if "-" in time_str:
             dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
             return dt.timestamp()
@@ -367,6 +373,17 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                 db.add_job_log(job_id, account_key, task_id, "error", grab_text)
             except Exception:
                 pass
+        if e.code == 401:
+            try:
+                await send_system_notification(
+                    title="账号登录凭据失效",
+                    content=f"账号【{nickname}】在发起抢单时检测到登录凭据已过期或失效，抢单任务已自动挂起停止。请前往「账号管理」重新获取并更新 Token 凭据。",
+                    account_key=account_key,
+                    event=NotificationEvent.TOKEN_WARN,
+                    level=NotificationLevel.WARNING
+                )
+            except Exception:
+                pass
         return {"ok": False, "code": e.code, "message": e.msg}
     except Exception as e:
         t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -602,20 +619,67 @@ async def process_active_appointments() -> Tuple[bool, bool]:
 
                     matched_candidates.append(c)
 
-                # 按最优返利比选 (优先返利金额最高，次选返利比例最高)
+                # 按最优返利比排序 (优先返利金额最高，次选返利比例最高)
                 matched_candidates.sort(
                     key=lambda x: (float(x.get("rebate_price") or 0.0), float(x.get("rebate_rate") or 0.0)),
                     reverse=True
                 )
 
+                # 区分即刻可抢方案与等待开抢方案，防止未到开抢时间盲目调用官方接口导致“活动未开始”错误无限重复
+                grabbable_candidates = []
+                waiting_candidates = []
+                use_adv = bool(apt.get("use_advance_card"))
+
+                for c in matched_candidates:
+                    c_start_val = c.get("start_time") or c.get("start_date_timestamp") or c.get("start_timestamp")
+                    c_start_ts = _parse_time_today(str(c_start_val)) if c_start_val else None
+                    c_end_val = c.get("end_time") or c.get("end_date_timestamp") or c.get("end_timestamp")
+                    c_end_ts = _parse_time_today(str(c_end_val)) if c_end_val else None
+
+                    if c_end_ts and now_ts >= c_end_ts:
+                        # 方案已过活动结束时间
+                        continue
+
+                    is_ready = False
+                    is_adv_mode = False
+                    wait_reason = ""
+
+                    if not c_start_ts:
+                        is_ready = True
+                    elif now_ts >= c_start_ts - 1.0:
+                        # 正点开抢时刻 (允许 1 秒提前对齐)
+                        is_ready = True
+                        is_adv_mode = False
+                    elif use_adv:
+                        # 开启了超前抢单券，检查是否进入开抢前 30 分钟窗口
+                        adv_start_ts = c_start_ts - 30 * 60
+                        if now_ts >= adv_start_ts - 1.0:
+                            is_ready = True
+                            is_adv_mode = True
+                        else:
+                            is_ready = False
+                            adv_time_str = datetime.fromtimestamp(adv_start_ts).strftime("%H:%M")
+                            start_time_disp = str(c.get("start_time") or datetime.fromtimestamp(c_start_ts).strftime("%H:%M"))
+                            wait_reason = f"尚未进入超前抢单窗口 (超前开抢: {adv_time_str}, 正式开抢: {start_time_disp})"
+                    else:
+                        is_ready = False
+                        start_time_disp = str(c.get("start_time") or datetime.fromtimestamp(c_start_ts).strftime("%H:%M"))
+                        wait_reason = f"尚未到达开抢时间 (开抢时间: {start_time_disp})"
+
+                    if is_ready:
+                        grabbable_candidates.append((c, is_adv_mode))
+                    else:
+                        waiting_candidates.append((c, wait_reason))
+
                 t_now = time_service.format_now_ms()
                 probe_tag = " (整分准点放单对齐)" if is_on_minute_probe else ""
-                best_item = matched_candidates[0] if matched_candidates else None
 
-                if best_item:
+                if grabbable_candidates:
+                    best_item, is_adv = grabbable_candidates[0]
                     store_label = best_item.get("name", kw)
                     rebate_label = best_item.get("rebate_desc", "")
-                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探成功{probe_tag}: 检索到「{store_label}」有可抢名额 ({rebate_label}, 剩余库存 {best_item.get('left_number')} 份)，立即触发闪电抢单！"
+                    adv_tag = "【超前券·提前抢单】" if is_adv else ""
+                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探成功{probe_tag}: 检索到「{store_label}」有可抢名额 ({rebate_label}, 剩余库存 {best_item.get('left_number')} 份)！{adv_tag}立即触发闪电抢单！"
                     logger.info(f"店名监听 #{aid} 命中可用方案【{store_label}】({rebate_label})，立即触发抢单！")
                     if linked_log_id > 0:
                         _append_apt_log(aid, linked_log_id, step_str, sync_db=True, status="running")
@@ -631,13 +695,6 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     grab_apt["rebate_price"] = float(best_item.get("rebate_price") or 0.0)
                     grab_apt["rebate_desc"] = rebate_label
                     grab_apt["rebate_type"] = best_item.get("rebate_type", "fixed")
-
-                    is_adv = False
-                    if apt.get("use_advance_card"):
-                        s_time = best_item.get("start_time") or apt.get("start_time")
-                        s_ts = _parse_time_today(s_time)
-                        if s_ts and now_ts < s_ts:
-                            is_adv = True
 
                     res = await execute_grab_for_appointment(grab_apt, account, advance=is_adv, action_source="store_monitor")
                     t_grab = time_service.format_now_ms()
@@ -660,8 +717,28 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     else:
                         fail_msg = res.get("message") or "名额被抢占或网络响应延迟"
                         logger.warning(f"店名监听 #{aid} 抢单尝试未成功: {fail_msg}")
-                        if linked_log_id > 0:
+                        if res.get("code") == 401 or "401" in str(fail_msg):
+                            db.update_appointment(aid, {"status": "error", "outcome": fail_msg})
+                            invalidate_worker_cache()
+                            if linked_log_id > 0:
+                                _append_apt_log(aid, linked_log_id, f"[{t_grab}] 账号鉴权失效: {fail_msg}，任务已自动终止，请在「账号管理」中更新Token", sync_db=True, status="error")
+                            await send_system_notification(
+                                title="小蚕账号凭据失效",
+                                content=f"账号【{apt.get('nickname') or account_key}】鉴权失效 (HTTP 401)，任务已停止，请重新提取或更新 Token。",
+                                account_key=account_key,
+                                event=NotificationEvent.TOKEN_WARN,
+                                level=NotificationLevel.WARNING
+                            )
+                        elif linked_log_id > 0:
                             _append_apt_log(aid, linked_log_id, f"[{t_grab}] 抢单尝试返回: {fail_msg}，继续保持高频蹲守", sync_db=True, status="running")
+                elif waiting_candidates:
+                    waiting_item, wait_reason = waiting_candidates[0]
+                    w_name = waiting_item.get("name", kw)
+                    w_rebate = waiting_item.get("rebate_desc", "")
+                    w_left = waiting_item.get("left_number", 0)
+                    step_str = f"[{t_now}] 第 {poll_cnt} 次嗅探{probe_tag}: 检索到「{w_name}」有预留名额 ({w_rebate}, 剩余库存 {w_left} 份)，{wait_reason}，静默蹲守中..."
+                    if linked_log_id > 0:
+                        _append_apt_log(aid, linked_log_id, step_str, sync_db=(poll_cnt == 1 or poll_cnt % 3 == 0 or is_on_minute_probe), status="running")
                 else:
                     # 未找到符合条件的方案
                     store_count = len(total_found_stores)
@@ -671,6 +748,23 @@ async def process_active_appointments() -> Tuple[bool, bool]:
 
             except Exception as se:
                 logger.warning(f"店名监听 #{aid} 执行异常: {se}")
+                is_401 = (getattr(se, "code", None) == 401) or ("401" in str(se) and "Unauthorized" in str(se))
+                if is_401:
+                    err_msg = getattr(se, "msg", None) or "登录凭据已过期或鉴权失效 (HTTP 401 Unauthorized)"
+                    db.update_appointment(aid, {"status": "error", "outcome": err_msg})
+                    invalidate_worker_cache()
+                    if linked_log_id > 0:
+                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        _append_apt_log(aid, linked_log_id, f"[{t_err}] 账号鉴权失效: {err_msg}，任务已自动终止，请更新Token", sync_db=True, status="error")
+                    await send_system_notification(
+                        title="小蚕账号凭据失效",
+                        content=f"账号【{apt.get('nickname') or account_key}】鉴权失效 (HTTP 401)，监听已自动挂起停止，请重新更新凭据。",
+                        account_key=account_key,
+                        event=NotificationEvent.TOKEN_WARN,
+                        level=NotificationLevel.WARNING
+                    )
+                    continue
+
                 is_waf = is_waf_blocked() or (getattr(se, "code", None) == 403) or ("WAF" in str(se))
                 if is_waf:
                     cooldown = get_waf_cooldown_seconds() or 180
@@ -755,22 +849,46 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     _append_apt_log(aid, linked_log_id, step_str, sync_db=sync_needed, status="running")
 
                 if target_left and int(target_left) > 0:
-                    # 关键修复：智能识别超前抢单窗口期
-                    # 若用户开启了超前抢单券，且当前时间仍在正点开抢之前，必须携带 advance=True，否则官方返回活动未开始 (错误码 4)
-                    is_adv = False
-                    if apt.get("use_advance_card"):
-                        start_ts = _parse_time_today(apt.get("start_time"))
-                        if start_ts and now_ts < start_ts:
-                            is_adv = True
+                    start_time_str = apt.get("start_time") or pdetail.get("start_time")
+                    start_ts = _parse_time_today(str(start_time_str)) if start_time_str else None
+                    use_adv = bool(apt.get("use_advance_card"))
 
-                    adv_tag = "【超前券·提前抢单】" if is_adv else ""
-                    fire_str = f"[{t_now}] 捕获到目标名额放单 (剩余: {target_left} 份)！{adv_tag}立即触发闪电抢单..."
-                    logger.info(f"监听任务 #{aid} 捕获到名额放单 (剩余: {target_left})！{adv_tag}立即触发闪电抢单...")
-                    if linked_log_id > 0:
-                        _append_apt_log(aid, linked_log_id, fire_str, sync_db=True, status="running")
-                    res = await execute_grab_for_appointment(apt, account, advance=is_adv, action_source="store_monitor")
-                    if not res["ok"]:
-                        logger.warning(f"监听捕获后抢单失败: {res['message']}，继续保持监听")
+                    can_grab_now = False
+                    is_adv = False
+                    wait_reason = ""
+
+                    if not start_ts:
+                        can_grab_now = True
+                    elif now_ts >= start_ts - 1.0:
+                        can_grab_now = True
+                        is_adv = False
+                    elif use_adv:
+                        adv_start_ts = start_ts - 30 * 60
+                        if now_ts >= adv_start_ts - 1.0:
+                            can_grab_now = True
+                            is_adv = True
+                        else:
+                            can_grab_now = False
+                            adv_time_str = datetime.fromtimestamp(adv_start_ts).strftime("%H:%M")
+                            wait_reason = f"尚未进入超前抢单窗口 (超前开抢: {adv_time_str}, 正式开抢: {start_time_str})"
+                    else:
+                        can_grab_now = False
+                        wait_reason = f"尚未到达开抢时间 (开抢时间: {start_time_str})"
+
+                    if can_grab_now:
+                        adv_tag = "【超前券·提前抢单】" if is_adv else ""
+                        fire_str = f"[{t_now}] 捕获到目标名额放单 (剩余: {target_left} 份)！{adv_tag}立即触发闪电抢单..."
+                        logger.info(f"监听任务 #{aid} 捕获到名额放单 (剩余: {target_left})！{adv_tag}立即触发闪电抢单...")
+                        if linked_log_id > 0:
+                            _append_apt_log(aid, linked_log_id, fire_str, sync_db=True, status="running")
+                        res = await execute_grab_for_appointment(apt, account, advance=is_adv, action_source="store_monitor")
+                        if not res["ok"]:
+                            logger.warning(f"监听捕获后抢单失败: {res['message']}，继续保持监听")
+                    else:
+                        wait_str = f"[{t_now}] 第 {poll_cnt} 次名额检测: 发现剩余库存 {target_left} 份，但{wait_reason}，静默蹲守中..."
+                        logger.info(f"监听任务 #{aid} {wait_str}")
+                        if linked_log_id > 0:
+                            _append_apt_log(aid, linked_log_id, wait_str, sync_db=(poll_cnt == 1 or poll_cnt % 3 == 0 or is_on_minute_probe), status="running")
             except Exception as e:
                 logger.debug(f"轮询活动实时库存异常 (非致命): {e}")
                 is_waf = is_waf_blocked() or (getattr(e, "code", None) == 403) or ("WAF" in str(e))

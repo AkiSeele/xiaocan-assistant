@@ -99,6 +99,7 @@ def scan_wechat_credentials() -> Optional[Dict[str, Any]]:
     best_silk_id = None
     best_nickname = None
     best_exp = None
+    best_exp_ts = 0
 
     mbi_size = ctypes.sizeof(MEMORY_BASIC_INFORMATION)
 
@@ -135,13 +136,16 @@ def scan_wechat_credentials() -> Optional[Dict[str, Any]]:
                                                 base64.urlsafe_b64decode(padded).decode("utf-8", errors="ignore")
                                             )
                                             if "UserId" in payload:
-                                                best_token = t
-                                                best_user_id = str(payload["UserId"])
-                                                exp_ts = payload.get("exp")
-                                                if exp_ts:
-                                                    best_exp = time.strftime(
-                                                        "%Y-%m-%d %H:%M:%S", time.localtime(exp_ts)
-                                                    )
+                                                exp_ts = payload.get("exp") or 0
+                                                # 优先选择剩余有效期最长、最新的凭据
+                                                if exp_ts >= best_exp_ts:
+                                                    best_token = t
+                                                    best_user_id = str(payload["UserId"])
+                                                    best_exp_ts = exp_ts
+                                                    if exp_ts:
+                                                        best_exp = time.strftime(
+                                                            "%Y-%m-%d %H:%M:%S", time.localtime(exp_ts)
+                                                        )
                                     except Exception:
                                         pass
 
@@ -168,9 +172,7 @@ def scan_wechat_credentials() -> Optional[Dict[str, Any]]:
         finally:
             kernel32.CloseHandle(h_proc)
 
-        # 一旦同时拿到 Token 和 Silk ID，直接提前返回
-        if best_token and best_silk_id:
-            break
+        # 注意：不要提前中断，必须遍历全部小程序进程，以筛选出有效期最长、最新的凭据 (如半年的 180 天凭据)
 
     if best_token:
         return {

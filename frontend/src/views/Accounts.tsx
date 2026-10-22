@@ -61,7 +61,8 @@ import {
   IconBell,
   IconAlertCircle,
   IconQrCode,
-  IconEdit
+  IconEdit,
+  IconMore
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
@@ -69,6 +70,114 @@ import { useOnActivated } from '../utils/useOnActivated';
 import type { Account, AccountDetailData, AccountNotifyConfig, AccountNotifyMode, ClawBotStatus } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
+
+export interface TokenStatus {
+  status: 'valid' | 'expiring' | 'expired' | 'none';
+  label: string;
+  color: 'green' | 'amber' | 'red' | 'grey';
+  daysLeft?: number;
+  hoursLeft?: number;
+  expireTimeStr?: string;
+  isExpired: boolean;
+}
+
+export function parseTokenExpiration(token?: string, expiresAt?: string, isTokenExpired?: boolean): TokenStatus {
+  if (!token && !expiresAt) {
+    return { status: 'none', label: '未配置凭据', color: 'grey', isExpired: false };
+  }
+
+  let expTimestampMs: number | null = null;
+  let formattedDate = (expiresAt && expiresAt !== '长期有效' && expiresAt !== '无') ? expiresAt : '';
+
+  // 1. 优先尝试从 JWT Payload 中解码真实 exp
+  if (token && token.includes('.')) {
+    try {
+      const parts = token.split('.');
+      if (parts.length >= 2) {
+        const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const jsonStr = decodeURIComponent(
+          atob(payloadBase64)
+            .split('')
+            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+            .join('')
+        );
+        const payload = JSON.parse(jsonStr);
+        if (payload && typeof payload.exp === 'number') {
+          expTimestampMs = payload.exp * 1000;
+          if (!formattedDate) {
+            const d = new Date(expTimestampMs);
+            const pad = (n: number) => (n < 10 ? '0' + n : String(n));
+            formattedDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+          }
+        }
+      }
+    } catch {
+      // 容错处理
+    }
+  }
+
+  // 2. 若未从 JWT 中提取到时间戳，尝试解析 expiresAt 字符串
+  if (!expTimestampMs && formattedDate) {
+    const parsed = Date.parse(formattedDate.replace(/-/g, '/'));
+    if (!isNaN(parsed)) {
+      expTimestampMs = parsed;
+    }
+  }
+
+  if (!expTimestampMs) {
+    if (expiresAt === '长期有效') {
+      return { status: 'valid', label: '长期有效', color: 'green', isExpired: false, expireTimeStr: '长期有效' };
+    }
+    if (isTokenExpired) {
+      return { status: 'expired', label: '凭据已过期', color: 'red', daysLeft: 0, expireTimeStr: formattedDate || '已过期', isExpired: true };
+    }
+    return { status: 'valid', label: '凭据正常', color: 'green', isExpired: false, expireTimeStr: formattedDate || '长期有效' };
+  }
+
+  const nowMs = Date.now();
+  const diffMs = expTimestampMs - nowMs;
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffMs <= 0 || isTokenExpired) {
+    const expiredDaysAgo = Math.max(1, Math.abs(Math.floor(diffMs / (1000 * 60 * 60 * 24))));
+    const daysAgoText = (diffMs <= 0 && expiredDaysAgo > 0) ? `已过期 ${expiredDaysAgo} 天` : '凭据已过期';
+    return {
+      status: 'expired',
+      label: daysAgoText,
+      color: 'red',
+      daysLeft: 0,
+      hoursLeft: 0,
+      expireTimeStr: formattedDate,
+      isExpired: true,
+    };
+  }
+
+  // 微信小程序凭据有效期通常为 48 小时（2天），仅在不足 24 小时（即当日到期）时才转为黄色预警
+  // 剩余大于 24 小时时属于正常健康状态（绿色标签）
+  if (diffHours <= 24) {
+    const hourLabel = diffHours <= 1 ? '今日到期' : `${diffHours} 小时后到期`;
+    return {
+      status: 'expiring',
+      label: hourLabel,
+      color: 'amber',
+      daysLeft: diffDays,
+      hoursLeft: diffHours,
+      expireTimeStr: formattedDate,
+      isExpired: false,
+    };
+  }
+
+  return {
+    status: 'valid',
+    label: `剩余 ${diffDays} 天`,
+    color: 'green',
+    daysLeft: diffDays,
+    hoursLeft: diffHours,
+    expireTimeStr: formattedDate,
+    isExpired: false,
+  };
+}
 
 export const Accounts: React.FC = () => {
   const accounts = useAppStore((s) => s.accounts);
@@ -78,8 +187,29 @@ export const Accounts: React.FC = () => {
   const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
   const accountsRef = useRef<HTMLDivElement>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [targetUpdateAccount, setTargetUpdateAccount] = useState<Account | null>(null);
   const [activeTab, setActiveTab] = useState('sniffer');
   const [refreshing, setRefreshing] = useState(false);
+
+  // 统计已过期的小蚕账号
+  const expiredAccounts = useMemo(() => {
+    return accounts.filter((a) => {
+      if (a.platform === 'meituan') return false;
+      const s = parseTokenExpiration(a.token, a.expires_at, a.is_token_expired);
+      return s.isExpired;
+    });
+  }, [accounts]);
+
+  const handleOpenUpdateModal = (acc: Account) => {
+    setTargetUpdateAccount(acc);
+    setModalVisible(true);
+    setActiveTab('wechat');
+    setCustomNickname(acc.nickname || '');
+    setCustomSilkId(acc.silk_id || '');
+    setRawText('');
+    setParsedInfo(null);
+    hasNotifiedCaptureRef.current = false;
+  };
 
   // 美团官方账号聚合与绑定状态
   const [targetBindAccount, setTargetBindAccount] = useState<Account | null>(null);
@@ -383,6 +513,7 @@ export const Accounts: React.FC = () => {
   }, [detailData?.cards]);
 
   const handleOpenModal = () => {
+    setTargetUpdateAccount(null);
     setModalVisible(true);
     setActiveTab('wechat');
     setRawText('');
@@ -478,6 +609,7 @@ export const Accounts: React.FC = () => {
       }
 
       const saveRes = await api.createAccount({
+        key: targetUpdateAccount?.key,
         silk_id: (customSilkId || '').trim() || parsedInfo.silk_id,
         nickname: (customNickname || '').trim() || parsedInfo.nickname,
         avatar: '',
@@ -839,11 +971,42 @@ export const Accounts: React.FC = () => {
         </Space>
       </div>
 
+      {expiredAccounts.length > 0 && (
+        <Banner
+          type="danger"
+          closeIcon={null}
+          className="mb-4 rounded-xl border border-red-500/30 shadow-xs"
+          description={
+            <div className="flex items-center justify-between flex-wrap gap-3 w-full py-0.5">
+              <div className="flex-1 min-w-[280px]">
+                <div className="font-semibold text-semi-color-danger text-sm">
+                  检测到 {expiredAccounts.length} 个账号的登录凭据已过期失效
+                </div>
+                <div className="text-xs text-semi-color-text-2 mt-0.5">
+                  受影响账号：{expiredAccounts.map((a) => `【${a.nickname}】`).join('、')}。凭据过期会导致抢单与资产查询报 401 鉴权失效，请尽快重新直连提取或更新凭据。
+                </div>
+              </div>
+              <Button
+                theme="solid"
+                type="danger"
+                size="small"
+                icon={<IconRefresh />}
+                onClick={() => handleOpenUpdateModal(expiredAccounts[0])}
+                className="shrink-0"
+              >
+                立即更新凭据
+              </Button>
+            </div>
+          }
+        />
+      )}
+
       <div ref={accountsRef}>
         <Row gutter={[16, 16]}>
           {accounts.filter((a) => a.platform !== 'meituan').map((acc: Account) => {
             const isSelected = acc.key === currentAccountKey;
             const isMeituanBound = Boolean(acc.meituan_token);
+            const tokenStatus = parseTokenExpiration(acc.token, acc.expires_at, acc.is_token_expired);
 
             return (
               <Col xs={24} sm={12} lg={8} key={acc.key}>
@@ -856,7 +1019,9 @@ export const Accounts: React.FC = () => {
                   <Card
                     shadows="hover"
                     className={`gsap-account-card rounded-xl transition-colors duration-150 relative overflow-hidden border cursor-pointer ${
-                      isSelected
+                      tokenStatus.isExpired
+                        ? 'border-red-500/60 bg-red-500/5 hover:border-red-500 shadow-xs'
+                        : isSelected
                         ? 'border-semi-color-primary bg-[var(--semi-color-primary-light-default)]/20 shadow-xs'
                         : 'border-semi-color-border hover:border-semi-color-primary-light-active bg-semi-color-bg-1'
                     }`}
@@ -870,6 +1035,30 @@ export const Accounts: React.FC = () => {
                       <Tag color={acc.is_plus ? "amber" : "blue"} size="small">
                         {acc.is_plus ? `SVIP${acc.vip_level || 1}` : `VIP${acc.vip_level || 1}`}
                       </Tag>
+
+                      {/* 凭据有效期与过期状态标签 (支持一键点击重新登录覆盖) */}
+                      <Tooltip
+                        content={
+                          tokenStatus.isExpired
+                            ? `小蚕登录凭据已于 ${tokenStatus.expireTimeStr || '近期'} 过期失效，点击重新登录并覆盖`
+                            : tokenStatus.status === 'expiring'
+                            ? `小蚕登录凭据将于 ${tokenStatus.expireTimeStr} 到期 (仅剩 ${tokenStatus.hoursLeft ? `${tokenStatus.hoursLeft} 小时` : `${tokenStatus.daysLeft} 天`})，点击重新登录并覆盖`
+                            : `小蚕登录凭据有效期至: ${tokenStatus.expireTimeStr || '长期有效'}，点击可随时重新登录覆盖`
+                        }
+                      >
+                        <Tag
+                          color={tokenStatus.color}
+                          size="small"
+                          className="cursor-pointer hover:opacity-85 transition-opacity"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenUpdateModal(acc);
+                          }}
+                          prefixIcon={tokenStatus.isExpired ? <IconAlertCircle size="small" /> : tokenStatus.status === 'expiring' ? <IconAlertCircle size="small" /> : <IconTick size="small" />}
+                        >
+                          {tokenStatus.label}
+                        </Tag>
+                      </Tooltip>
 
                       {acc.notify_mode === 'custom' && (() => {
                         let ch = '';
@@ -919,13 +1108,20 @@ export const Accounts: React.FC = () => {
                           </Text>
                         )}
                       </div>
-                      <div className="flex items-center gap-1.5 mt-0.5 text-xs text-semi-color-text-2">
-                        <span>Silk ID: {acc.silk_id || '未配置'}</span>
-                        {!acc.silk_id && (
-                          <Tooltip content="该账号暂无关联 Silk ID，点击卡片底部「同步」按钮可直连官方自动补全">
-                            <Tag color="red" size="small">缺失ID</Tag>
-                          </Tooltip>
-                        )}
+                      <div className="flex items-center justify-between text-xs text-semi-color-text-2 mt-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <span>Silk ID: {acc.silk_id || '未配置'}</span>
+                          {!acc.silk_id && (
+                            <Tooltip content="该账号暂无关联 Silk ID，点击卡片底部「同步」按钮可直连官方自动补全">
+                              <Tag color="red" size="small">缺失ID</Tag>
+                            </Tooltip>
+                          )}
+                        </div>
+                        <div className={tokenStatus.isExpired ? "text-semi-color-danger font-medium" : "text-semi-color-text-3"}>
+                          {tokenStatus.isExpired
+                            ? `已过期 (${tokenStatus.expireTimeStr?.split(' ')[0] || '失效'})`
+                            : `有效至 ${tokenStatus.expireTimeStr?.split(' ')[0] || '长期'}`}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1070,14 +1266,15 @@ export const Accounts: React.FC = () => {
                   >
                     <div>
                       {isSelected ? (
-                        <Tag color="blue" type="light" size="default" className="font-medium">
-                          当前主控账号
+                        <Tag color="blue" type="light" size="default" className="font-medium shrink-0">
+                          当前主控
                         </Tag>
                       ) : (
                         <Button
                           theme="light"
                           type="primary"
                           size="small"
+                          className="shrink-0"
                           onClick={() => {
                             setCurrentAccountKey(acc.key);
                             Toast.success(`已成功切换主控账号为【${acc.nickname}】`);
@@ -1089,62 +1286,21 @@ export const Accounts: React.FC = () => {
                     </div>
 
                     <Space spacing="tight">
-                      {/* 绑定/管理美团按钮：在账号card上明确体现 */}
-                      {!isMeituanBound ? (
-                        <Tooltip content="扫码绑定美团官方账号">
-                          <Button
-                            theme="light"
-                            type="warning"
-                            size="small"
-                            icon={<IconQrCode />}
-                            onClick={() => handleStartMeituanLogin(acc)}
-                          >
-                            绑定美团
-                          </Button>
-                        </Tooltip>
-                      ) : (
-                        <Dropdown
-                          trigger="click"
-                          position="topRight"
-                          render={
-                            <Dropdown.Menu>
-                              <Dropdown.Item icon={<IconQrCode />} onClick={() => handleStartMeituanLogin(acc)}>
-                                重新扫码授权
-                              </Dropdown.Item>
-                              <Dropdown.Item icon={<IconEdit />} onClick={() => handleOpenEditMeituanName(acc)}>
-                                修改美团备注
-                              </Dropdown.Item>
-                              <Dropdown.Divider />
-                              <Dropdown.Item
-                                type="danger"
-                                icon={<IconDelete />}
-                                onClick={() => {
-                                  Modal.confirm({
-                                    title: '确认解除美团绑定？',
-                                    content: `解除后小蚕账号【${acc.nickname}】将不再自动领取美团神券，可随时重新扫码绑定。`,
-                                    okText: '确认解除',
-                                    cancelText: '取消',
-                                    okType: 'danger',
-                                    centered: true,
-                                    onOk: () => handleUnbindMeituan(acc.key)
-                                  });
-                                }}
-                              >
-                                解除美团绑定
-                              </Dropdown.Item>
-                            </Dropdown.Menu>
-                          }
+                      {(tokenStatus.isExpired || tokenStatus.status === 'expiring') && (
+                        <Button
+                          theme="solid"
+                          type={tokenStatus.isExpired ? "danger" : "warning"}
+                          size="small"
+                          icon={<IconRefresh />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenUpdateModal(acc);
+                          }}
                         >
-                          <Button
-                            theme="light"
-                            type="warning"
-                            size="small"
-                            icon={<IconQrCode />}
-                          >
-                            美团管理
-                          </Button>
-                        </Dropdown>
+                          {tokenStatus.isExpired ? "更新凭据" : "重新登录"}
+                        </Button>
                       )}
+
                       <Tooltip content="配置消息推送">
                         <Button
                           theme="light"
@@ -1180,34 +1336,74 @@ export const Accounts: React.FC = () => {
                         />
                       </Tooltip>
 
-                      {acc.token && (
-                        <Tooltip content="复制完整 Token">
-                          <Button
-                            theme="borderless"
-                            size="small"
-                            icon={<IconCopy />}
-                            onClick={() => handleCopyToken(acc.token!)}
-                          />
-                        </Tooltip>
-                      )}
-
-                      <Tooltip content="删除账号">
-                        <Popconfirm
-                          title="确定移除此账号？"
-                          content="移除后将停止该账号名下的全部定时秒杀与店铺预约，且本地凭证将被清除。"
-                          okType="danger"
-                          okText="确定移除"
-                          cancelText="取消"
-                          onConfirm={() => handleDeleteAccount(acc.key)}
-                        >
-                          <Button
-                            theme="borderless"
-                            type="danger"
-                            size="small"
-                            icon={<IconDelete />}
-                          />
-                        </Popconfirm>
-                      </Tooltip>
+                      <Dropdown
+                        trigger="click"
+                        position="topRight"
+                        render={
+                          <Dropdown.Menu>
+                            <Dropdown.Item icon={<IconRefresh />} onClick={() => handleOpenUpdateModal(acc)}>
+                              重新登录 / 覆盖凭据
+                            </Dropdown.Item>
+                            <Dropdown.Divider />
+                            {isMeituanBound ? (
+                              <>
+                                <Dropdown.Item icon={<IconQrCode />} onClick={() => handleStartMeituanLogin(acc)}>
+                                  重新扫码美团
+                                </Dropdown.Item>
+                                <Dropdown.Item icon={<IconEdit />} onClick={() => handleOpenEditMeituanName(acc)}>
+                                  修改美团备注
+                                </Dropdown.Item>
+                                <Dropdown.Item
+                                  type="danger"
+                                  icon={<IconDelete />}
+                                  onClick={() => {
+                                    Modal.confirm({
+                                      title: '确认解除美团绑定？',
+                                      content: `解除后小蚕账号【${acc.nickname}】将不再自动领取美团神券，可随时重新扫码绑定。`,
+                                      okText: '确认解除',
+                                      cancelText: '取消',
+                                      okType: 'danger',
+                                      centered: true,
+                                      onOk: () => handleUnbindMeituan(acc.key),
+                                    });
+                                  }}
+                                >
+                                  解除美团绑定
+                                </Dropdown.Item>
+                                <Dropdown.Divider />
+                              </>
+                            ) : null}
+                            {acc.token && (
+                              <Dropdown.Item icon={<IconCopy />} onClick={() => handleCopyToken(acc.token!)}>
+                                复制完整 Token
+                              </Dropdown.Item>
+                            )}
+                            <Dropdown.Item
+                              type="danger"
+                              icon={<IconDelete />}
+                              onClick={() => {
+                                Modal.confirm({
+                                  title: '确定移除此账号？',
+                                  content: '移除后将停止该账号名下的全部定时秒杀与店铺预约，且本地凭证将被清除。',
+                                  okType: 'danger',
+                                  okText: '确定移除',
+                                  cancelText: '取消',
+                                  centered: true,
+                                  onOk: () => handleDeleteAccount(acc.key),
+                                });
+                              }}
+                            >
+                              删除小蚕账号
+                            </Dropdown.Item>
+                          </Dropdown.Menu>
+                        }
+                      >
+                        <Button
+                          theme="borderless"
+                          size="small"
+                          icon={<IconMore />}
+                        />
+                      </Dropdown>
                     </Space>
                   </div>
                 </Card>
@@ -1253,7 +1449,7 @@ export const Accounts: React.FC = () => {
       {/* 账号接入模态对话框 */}
 
       <Modal
-        title="添加小蚕账号"
+        title={targetUpdateAccount ? `重新登录 / 覆盖凭据 - 【${targetUpdateAccount.nickname}】` : "添加小蚕账号"}
         visible={modalVisible}
         onCancel={() => handleCloseModal(true)}
         footer={null}
@@ -1266,6 +1462,22 @@ export const Accounts: React.FC = () => {
           padding: '16px 20px',
         }}
       >
+        {targetUpdateAccount && (
+          <Banner
+            type="info"
+            className="mb-4"
+            description={
+              <div>
+                <div className="font-semibold text-semi-color-text-0">
+                  正在为已有账号【{targetUpdateAccount.nickname}】(Silk ID: {targetUpdateAccount.silk_id || '未配置'}) 重新登录并覆盖凭据
+                </div>
+                <div className="text-xs text-semi-color-text-2 mt-0.5">
+                  获取后将<b>直接覆盖更新该账号</b>的登录状态与有效期，历史定时任务配置与数据保持不变。
+                </div>
+              </div>
+            }
+          />
+        )}
         <Tabs activeKey={activeTab} onChange={(k) => handleTabChange(String(k))}>
           {/* TAB 1: 电脑微信直连 (免配置·首选) */}
           <TabPane
@@ -1293,8 +1505,17 @@ export const Accounts: React.FC = () => {
               </div>
 
               <div className="text-[13px] text-semi-color-text-2 max-w-[440px] mb-5 leading-relaxed">
-                步骤 1：在电脑微信中打开一次<b>【小蚕霸王餐】</b>小程序<br />
-                步骤 2：点击下方按钮，系统将自动读取凭据并完成托管
+                {targetUpdateAccount ? (
+                  <>
+                    步骤 1：在电脑微信小蚕小程序「我的」中<b>退出并重新微信登录</b>（获取全新 180 天凭据）<br />
+                    步骤 2：点击下方按钮，系统将自动读取最新凭据并<b>覆盖更新至【{targetUpdateAccount.nickname}】</b>
+                  </>
+                ) : (
+                  <>
+                    步骤 1：在电脑微信中打开一次<b>【小蚕霸王餐】</b>小程序<br />
+                    步骤 2：点击下方按钮，系统将自动读取凭据并完成托管
+                  </>
+                )}
               </div>
 
               <Space spacing="medium">
@@ -2061,50 +2282,85 @@ export const Accounts: React.FC = () => {
                     </Card>
 
                     {/* 3. 官方身份鉴权凭据 */}
-                    <Card
-                      title={
-                        <div className="flex items-center justify-between w-full">
-                          <div className="flex items-center gap-2">
-                            <IconKey className="text-semi-color-warning" />
-                            <span className="font-semibold text-sm">小蚕网络身份凭据 (x-Sivir)</span>
+                    {(() => {
+                      const detailTokenStatus = parseTokenExpiration(detailAccount.token, detailAccount.expires_at, detailAccount.is_token_expired);
+                      return (
+                        <Card
+                          title={
+                            <div className="flex items-center justify-between w-full">
+                              <div className="flex items-center gap-2">
+                                <IconKey className="text-semi-color-warning" />
+                                <span className="font-semibold text-sm">小蚕网络身份凭据 (x-Sivir)</span>
+                              </div>
+                              <Space spacing="tight">
+                                <Tag
+                                  color={detailTokenStatus.color}
+                                  size="small"
+                                  prefixIcon={detailTokenStatus.isExpired ? <IconAlertCircle size="small" /> : <IconTick size="small" />}
+                                >
+                                  {detailTokenStatus.label}
+                                </Tag>
+                                <Tag color={detailTokenStatus.isExpired ? "red" : "cyan"} size="small">
+                                  {detailTokenStatus.expireTimeStr ? `有效期至: ${detailTokenStatus.expireTimeStr}` : '长期有效'}
+                                </Tag>
+                              </Space>
+                            </div>
+                          }
+                          className="rounded-semi-border-radius-medium border border-semi-color-border shadow-xs bg-semi-color-bg-0"
+                          headerStyle={{ padding: '12px 16px', borderBottom: '1px solid var(--semi-color-border)' }}
+                          bodyStyle={{ padding: '16px' }}
+                        >
+                          <div className="space-y-3">
+                            {detailTokenStatus.isExpired ? (
+                              <Banner
+                                type="danger"
+                                description={`当前凭据已于 ${detailTokenStatus.expireTimeStr} 过期！官方接口将响应 HTTP 401 鉴权失效异常。请在电脑微信打开一次「小蚕霸王餐」小程序后点击下方「更新此凭据」，或粘贴抓包 Token 进行更新。`}
+                              />
+                            ) : (
+                              <Banner
+                                type="info"
+                                description="系统严格执行数据本地化安全规范，凭据仅保存在本机 SQLite 数据库中用于直连小蚕官方接口，绝不上报任何外部服务器。"
+                              />
+                            )}
+                            <div className="space-y-1.5">
+                              <div className="flex justify-between items-center text-xs">
+                                <Text strong type="secondary">JWT 鉴权密文 (x-Sivir Token)：</Text>
+                                <Space spacing="tight">
+                                  <Button
+                                    size="small"
+                                    theme="solid"
+                                    type={detailTokenStatus.isExpired ? "danger" : "primary"}
+                                    icon={<IconRefresh />}
+                                    onClick={() => {
+                                      setDetailVisible(false);
+                                      handleOpenUpdateModal(detailAccount);
+                                    }}
+                                  >
+                                    更新此凭据
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    theme="light"
+                                    type="primary"
+                                    icon={<IconCopy />}
+                                    onClick={() => handleCopyToken(detailAccount.token || '')}
+                                  >
+                                    复制完整 Token
+                                  </Button>
+                                </Space>
+                              </div>
+                              <Input
+                                type="password"
+                                mode="password"
+                                value={detailAccount.token || ''}
+                                readOnly
+                                className="font-mono text-xs"
+                              />
+                            </div>
                           </div>
-                          <Tag color={detailAccount.expires_at ? "cyan" : "green"} size="small">
-                            {detailAccount.expires_at ? `有效期至: ${detailAccount.expires_at}` : '长期有效'}
-                          </Tag>
-                        </div>
-                      }
-                      className="rounded-semi-border-radius-medium border border-semi-color-border shadow-xs bg-semi-color-bg-0"
-                      headerStyle={{ padding: '12px 16px', borderBottom: '1px solid var(--semi-color-border)' }}
-                      bodyStyle={{ padding: '16px' }}
-                    >
-                      <div className="space-y-3">
-                        <Banner
-                          type="info"
-                          description="系统严格执行数据本地化安全规范，凭据仅保存在本机 SQLite 数据库中用于直连小蚕官方接口，绝不上报任何外部服务器。"
-                        />
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between items-center text-xs">
-                            <Text strong type="secondary">JWT 鉴权密文 (x-Sivir Token)：</Text>
-                            <Button
-                              size="small"
-                              theme="light"
-                              type="primary"
-                              icon={<IconCopy />}
-                              onClick={() => handleCopyToken(detailAccount.token || '')}
-                            >
-                              复制完整 Token
-                            </Button>
-                          </div>
-                          <Input
-                            type="password"
-                            mode="password"
-                            value={detailAccount.token || ''}
-                            readOnly
-                            className="font-mono text-xs"
-                          />
-                        </div>
-                      </div>
-                    </Card>
+                        </Card>
+                      );
+                    })()}
                   </div>
                 )}
               </TabPane>
