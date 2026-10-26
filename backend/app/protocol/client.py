@@ -5,6 +5,7 @@
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 import uuid
@@ -66,8 +67,32 @@ class XiaoCanRPCError(Exception):
         self.raw = raw or {}
 
 
-# 官方腾讯云 WAF 熔断状态守护 (防止被封期间盲目重发延长黑名单时间)
+# 官方腾讯云 WAF 熔断状态守护 (自适应阶梯式冷却)
 _waf_blocked_until: float = 0.0
+_waf_consecutive_blocks: int = 0
+
+# 全局通信安全流控：防止瞬时并发脉冲击穿腾讯云 WAF 频控阈值
+_RPC_SEMAPHORE = asyncio.Semaphore(2)  # 全局最多允许 2 个并发 RPC 在网关同时执行
+_RPC_RATE_LOCK = asyncio.Lock()
+_last_rpc_timestamp: float = 0.0
+
+
+async def _wait_rpc_rate_limit(is_burst: bool = False):
+    """
+    普通业务请求平滑流控 (防 WAF 脉冲与频控风控)：
+    1. 秒杀爆发模式 (is_burst=True)：直接放行，零等待直射开火；
+    2. 常规请求：严格保障相邻请求间隔 0.22 ~ 0.38 秒随机浮动 (遵循项目 Rule 7 抖动规范)，彻底粉碎高频并发脉冲特征。
+    """
+    global _last_rpc_timestamp
+    if is_burst:
+        return
+    async with _RPC_RATE_LOCK:
+        now = time.time()
+        elapsed = now - _last_rpc_timestamp
+        min_interval = random.uniform(0.22, 0.38)
+        if elapsed < min_interval:
+            await asyncio.sleep(min_interval - elapsed)
+        _last_rpc_timestamp = time.time()
 
 
 def is_waf_blocked() -> bool:
@@ -78,14 +103,32 @@ def get_waf_cooldown_seconds() -> int:
     return max(0, int(_waf_blocked_until - time.time()))
 
 
-def mark_waf_blocked(duration_seconds: int = 15):
-    global _waf_blocked_until
-    _waf_blocked_until = max(_waf_blocked_until, time.time() + duration_seconds)
+def mark_waf_blocked(duration_seconds: Optional[int] = None):
+    """
+    自适应智能弹性退避：
+    采用轻量梯级 (初次 15 秒，二次 30 秒，上限 60 秒)，杜绝旧版动辄 5~10 分钟死板封锁。
+    任何一次通信成功均会立即重置并解除冷却 (实时自愈)。
+    """
+    global _waf_blocked_until, _waf_consecutive_blocks
+    _waf_consecutive_blocks += 1
+    if duration_seconds is None or duration_seconds <= 15:
+        cooldown = 15 if _waf_consecutive_blocks == 1 else (30 if _waf_consecutive_blocks == 2 else 60)
+    else:
+        cooldown = min(duration_seconds, 60)
+    _waf_blocked_until = max(_waf_blocked_until, time.time() + cooldown)
+
+
+def record_waf_success():
+    """通信成功，立即解除阻断与冷却状态 (实时动态自愈)"""
+    global _waf_blocked_until, _waf_consecutive_blocks
+    _waf_blocked_until = 0.0
+    _waf_consecutive_blocks = 0
 
 
 def clear_waf_block():
-    global _waf_blocked_until
+    global _waf_blocked_until, _waf_consecutive_blocks
     _waf_blocked_until = 0.0
+    _waf_consecutive_blocks = 0
 
 
 class XiaoCanClient:
@@ -118,14 +161,19 @@ class XiaoCanClient:
         token: Optional[str] = None,
         user_id: Optional[str] = None,
         silk_id: Optional[str] = None,
-        platform: Optional[str] = "app"
+        platform: Optional[str] = "app",
+        is_burst: bool = False,
+        priority: int = 50
     ) -> Dict[str, Any]:
-        # 1. 前置熔断保护：若当前网络处于腾讯云 WAF 冷却期，阻止盲发以防重置封锁计时
-        if is_waf_blocked():
+        # 任务优先级天梯架构与熔断隔离策略：
+        # Tier 1 (用户交互 / 秒杀抢单 / 核心操作, priority >= 70 或 is_burst=True): 100% 豁免本地熔断，绝对直连，畅通无阻！
+        # Tier 2 (常规自动化收益任务, 30 <= priority < 70): 允许真实尝试，通信成功即自愈解除熔断，不无故本地前置阻断；
+        # Tier 3 (重型后台批量全城大扫描, priority < 30): 仅重型扫描在前置礼让避让，防止高频脉冲加重网络风控。
+        if is_waf_blocked() and not is_burst and priority < 30:
             remain_sec = get_waf_cooldown_seconds()
             raise XiaoCanRPCError(
                 code=403,
-                msg=f"当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中（剩余约 {remain_sec} 秒），系统已自动熔断休眠以避免延长封禁。如需立即恢复，请切换手机热点、重启光猫更换IP或等待冷却。"
+                msg=f"重型批量任务自律退避中 (WAF防护剩余约 {remain_sec} 秒)，已自动暂停扫描以保护账号与网络安全。"
             )
 
         payload = dict(body) if body else {}
@@ -145,43 +193,58 @@ class XiaoCanClient:
             platform=plat
         )
 
-        try:
-            resp = await self.session.post(
-                GW_BASE_URL,
-                json=payload,
-                headers=headers
-            )
-            if resp.status_code == 403:
-                is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
-                if is_waf:
-                    mark_waf_blocked(duration_seconds=15)
-                hint = "已被腾讯云 WAF 防火墙拦截 [403 Forbidden]，系统已进入 15 秒频次缓冲。通常原因是：开启了海外代理/VPN/TUN模式，或当前IP触发了频控防护。请关闭全局代理、切换手机热点或稍后重试" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
-                logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
-                raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
+        # 2. 全局请求速率平滑与并发控制 (防 WAF 瞬时脉冲)
+        await _wait_rpc_rate_limit(is_burst=is_burst)
 
-            if resp.status_code != 200:
-                err_text = ""
-                try:
-                    err_json = resp.json()
-                    err_text = (err_json.get("status") or {}).get("msg") or err_json.get("detail") or err_json.get("msg") or err_json.get("error") or ""
-                except Exception:
-                    err_text = resp.text.strip()
+        async def _execute_post() -> Dict[str, Any]:
+            try:
+                resp = await self.session.post(
+                    GW_BASE_URL,
+                    json=payload,
+                    headers=headers
+                )
+                if resp.status_code == 403:
+                    is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
+                    if is_waf:
+                        mark_waf_blocked()
+                    remain_sec = get_waf_cooldown_seconds()
+                    hint = f"已被腾讯云 WAF 防火墙拦截 [403 Forbidden]，系统已进入 {remain_sec} 秒自适应频次缓冲保护。请勿高频连续点击重试，可切换手机热点或等待冷却" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
+                    logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
+                    raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
 
-                if resp.status_code == 401:
-                    hint = err_text or "登录凭据已过期或鉴权失效 (HTTP 401 Unauthorized)，请在「账号管理」中重新获取并更新 Token 凭据"
-                    logger.warning(f"RPC {server_name}.{method_name} 鉴权失效: {hint}")
-                    raise XiaoCanRPCError(code=401, msg=hint, raw={"status_code": 401, "text": resp.text[:200]})
+                if resp.status_code != 200:
+                    err_text = ""
+                    try:
+                        err_json = resp.json()
+                        err_text = (err_json.get("status") or {}).get("msg") or err_json.get("detail") or err_json.get("msg") or err_json.get("error") or ""
+                    except Exception:
+                        err_text = resp.text.strip()
 
-                msg = err_text or f"HTTP {resp.status_code} 异常"
-                logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
-                raise XiaoCanRPCError(code=resp.status_code, msg=msg, raw={"status_code": resp.status_code, "text": resp.text[:200]})
+                    if resp.status_code == 401:
+                        hint = err_text or "登录凭据已过期或鉴权失效 (HTTP 401 Unauthorized)，请在「账号管理」中重新获取并更新 Token 凭据"
+                        logger.warning(f"RPC {server_name}.{method_name} 鉴权失效: {hint}")
+                        raise XiaoCanRPCError(code=401, msg=hint, raw={"status_code": 401, "text": resp.text[:200]})
 
-            data = resp.json()
-        except XiaoCanRPCError:
-            raise
-        except Exception as e:
-            logger.error(f"RPC {server_name}.{method_name} network failure: {e}")
-            raise
+                    msg = err_text or f"HTTP {resp.status_code} 异常"
+                    logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
+                    raise XiaoCanRPCError(code=resp.status_code, msg=msg, raw={"status_code": resp.status_code, "text": resp.text[:200]})
+
+                return resp.json()
+            except XiaoCanRPCError:
+                raise
+            except Exception as e:
+                logger.error(f"RPC {server_name}.{method_name} network failure: {e}")
+                raise
+
+        # 秒杀爆发请求 (is_burst=True) 绝对零等待直射开火，不经任何流控与并发信号量，保障多账号准时并发毫秒级命中
+        if is_burst:
+            data = await _execute_post()
+        else:
+            async with _RPC_SEMAPHORE:
+                data = await _execute_post()
+
+        # 3. 请求成功，重置 WAF 连续阻断计数
+        record_waf_success()
 
         # 1. 检查网关返回的顶层 error (例如 Go micro 500/400 异常)
         if "error" in data:
@@ -752,7 +815,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """天天赚元宝每日签到打卡 (官方原生微服务 ActivityTaskMobileService.SignIn)"""
+        """元宝乐园每日签到打卡 (官方原生微服务 ActivityTaskMobileService.SignIn)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "app_id": 10
@@ -774,7 +837,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """获取天天赚元宝签到历史记录与连续签到天数 (ActivityTaskMobileService.SignInHistory)"""
+        """获取元宝乐园签到历史记录与连续签到天数 (ActivityTaskMobileService.SignInHistory)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "app_id": 10
@@ -1207,6 +1270,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormLottery",
             method_name="SilkwormLotteryMobile.RedPackRainGrabNum",
+            is_burst=False,
             body=body,
             city_code=city_code,
             token=token,
@@ -1326,6 +1390,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormVip",
             method_name="VipRightsService.GrabExtraBrandCard",
+            is_burst=True,
             body=body,
             city_code=city_code,
             token=token,
@@ -1397,6 +1462,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormVip",
             method_name="VipRightsService.GrabTencentVipQuota",
+            is_burst=True,
             body=body,
             city_code=city_code,
             token=token,
@@ -1441,6 +1507,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormVip",
             method_name="VipRightsService.GrabFreeOrderQuota",
+            is_burst=True,
             body=body,
             city_code=city_code,
             token=token,
@@ -1513,6 +1580,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormVip",
             method_name="VipRightsService.GrabRebateCardQuota",
+            is_burst=True,
             body=body,
             city_code=city_code,
             token=token,
@@ -1602,6 +1670,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="SilkwormCommunity",
             method_name="SilkwormMobileCommunityService.ExchangeGoodsV2",
+            is_burst=True,
             body=body,
             city_code=city_code,
             token=token,
@@ -1796,6 +1865,7 @@ class XiaoCanClient:
             return await self.invoke_rpc(
                 server_name="SilkwormRcs",
                 method_name="SilkwormRcsService.MeituanShangjinRegisterEvent",
+                is_burst=True,
                 body=sj_body,
                 city_code=city_code,
                 token=token,
@@ -1861,6 +1931,7 @@ class XiaoCanClient:
             return await self.invoke_rpc(
                 server_name=primary_server,
                 method_name=primary_method,
+                is_burst=True,
                 body=primary_body,
                 city_code=city_code,
                 token=token,
@@ -1879,6 +1950,7 @@ class XiaoCanClient:
                     return await self.invoke_rpc(
                         server_name=fallback_server,
                         method_name=fallback_method,
+                        is_burst=True,
                         body=fallback_body,
                         city_code=city_code,
                         token=token,
@@ -2086,6 +2158,7 @@ class XiaoCanClient:
         return await self.invoke_rpc(
             server_name="Promotion",
             method_name="PromotionService.AppointOrder",
+            is_burst=True,
             body=body,
             city_code=city_code,
             token=token,
@@ -2122,7 +2195,7 @@ class XiaoCanClient:
             user_id=user_id
         )
 
-    # ---------------- 天天赚元宝与气泡元宝收取 ---------------- #
+    # ---------------- 元宝乐园日常任务与气泡元宝收取 ---------------- #
 
     async def get_daily_tasks(
         self,
@@ -2131,7 +2204,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """获取天天赚元宝中心任务列表与完成状态 (ActivityTaskMobileService.GetDailyTask)"""
+        """获取元宝乐园任务列表与完成状态 (ActivityTaskMobileService.GetDailyTask)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "user_id": int(user_id) if user_id else 0
@@ -2154,7 +2227,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         city_code: int = 440303
     ) -> Dict[str, Any]:
-        """完成天天赚元宝中心指定任务 (如任务57抖音电商浏览30s) (ActivityTaskMobileService.CompleteTask)"""
+        """完成元宝乐园指定任务 (如任务57抖音电商浏览30s) (ActivityTaskMobileService.CompleteTask)"""
         body = {
             "silk_id": int(silk_id) if silk_id else 0,
             "user_id": int(user_id) if user_id else 0,
@@ -2314,6 +2387,69 @@ class XiaoCanClient:
         except Exception as e:
             logger.warning(f"GetUserCardList failed: {e}")
             return {"status": {"code": 0}, "list": []}
+
+    async def use_user_card(
+        self,
+        token: str,
+        silk_id: str | None = None,
+        user_id: str | None = None,
+        city_code: int = 440303,
+        card_type: int = 2,
+        number: int = 1,
+        promotion_order_id: int | None = None,
+        order_id: int | None = None
+    ) -> Dict[str, Any]:
+        """核销使用用户专属卡券/延时券 (SilkwormCardService.UseUserCard)"""
+        body: Dict[str, Any] = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "card_type": int(card_type),
+            "number": int(number),
+            "app_id": 10
+        }
+        if promotion_order_id:
+            body["promotion_order_id"] = int(promotion_order_id)
+        if order_id:
+            body["order_id"] = int(order_id)
+        return await self.invoke_rpc(
+            server_name="SilkwormCard",
+            method_name="SilkwormCardService.UseUserCard",
+            body=body,
+            city_code=city_code,
+            token=token,
+            silk_id=silk_id,
+            user_id=user_id
+        )
+
+    async def delay_promotion_quota(
+        self,
+        token: str,
+        silk_id: str | int | None = None,
+        promotion_order_id: int | None = None,
+        delay_card_number: int = 1,
+        hh_delay_card_number: int = 0,
+        city_code: int = 440303,
+        user_id: str | None = None
+    ) -> dict:
+        """
+        使用延时券延长活动订单有效期 (遵循官方 APK 逆向)
+        微服务: Silkworm.SilkwormService.DelayPromotionQuota
+        """
+        body: dict = {
+            "silk_id": int(silk_id) if silk_id else 0,
+            "promotion_order_id": int(promotion_order_id or 0),
+            "hh_delay_card_number": int(hh_delay_card_number or 0),
+            "delay_card_number": int(delay_card_number or 1)
+        }
+        return await self.invoke_rpc(
+            server_name="Silkworm",
+            method_name="SilkwormService.DelayPromotionQuota",
+            body=body,
+            city_code=city_code,
+            token=token,
+            user_id=user_id,
+            silk_id=str(silk_id) if silk_id else None,
+            platform="app"
+        )
 
     async def get_user_redpack_num(
         self,

@@ -90,8 +90,7 @@ const TASK_LABELS: Record<string, string> = {
   store_search: '商户定向搜索捡漏',
   store_cancel: '霸王餐名额取消',
   // 日常自动化任务
-  yb_task: '领天天赚元宝',
-  yb_sign: '天天赚元宝签到',
+  yb_task: '轻松赚元宝',
   collect_points: '收取未收元宝',
   daily: '元宝乐园综合打卡',
   group_lottery: '免费开红包与抽奖',
@@ -231,11 +230,14 @@ export const Dashboard: React.FC = () => {
     }
   }, [logFilterAccount]);
 
+  const hasLoadedOrdersOnceRef = useRef<boolean>(false);
+
   // 待上传外卖订单拉取 (当前账号)
   const fetchPendingOrders = useCallback(async (silent = false) => {
     const effectiveKey = currentAccountKey || accounts[0]?.key;
     if (!effectiveKey) {
       setPendingOrders([]);
+      hasLoadedOrdersOnceRef.current = true;
       return;
     }
     if (!silent) setOrdersLoading(true);
@@ -251,9 +253,10 @@ export const Dashboard: React.FC = () => {
     } catch {
       // 异常捕获
     } finally {
+      hasLoadedOrdersOnceRef.current = true;
       if (!silent) setOrdersLoading(false);
     }
-  }, [currentAccountKey, accounts]);
+  }, [currentAccountKey, accounts[0]?.key]);
 
   // 刷新本账号自动化待命任务
   const fetchAccountTasks = useCallback(async (targetKey?: string, silent = false) => {
@@ -273,7 +276,7 @@ export const Dashboard: React.FC = () => {
     } finally {
       if (!silent) setTasksLoading(false);
     }
-  }, [currentAccountKey, accounts]);
+  }, [currentAccountKey, accounts[0]?.key]);
 
   // 立即手动触发执行单项任务
   const handleRunTaskImmediately = async (taskId: string, label: string) => {
@@ -340,6 +343,8 @@ export const Dashboard: React.FC = () => {
     });
   };
 
+  const hasLoadedMessagesOnceRef = useRef<boolean>(false);
+
   // 小蚕官方消息中心数据拉取
   const fetchMessages = useCallback(async (channelId?: number, silent = false) => {
     const effectiveKey = currentAccountKey || (accounts[0]?.key ?? '');
@@ -347,6 +352,7 @@ export const Dashboard: React.FC = () => {
       setMessages([]);
       setMessageChannels([]);
       setMessagesUnreadTotal(0);
+      hasLoadedMessagesOnceRef.current = true;
       return;
     }
     const cid = channelId !== undefined ? channelId : selectedChannelId;
@@ -368,9 +374,10 @@ export const Dashboard: React.FC = () => {
     } catch {
       // 异常捕获
     } finally {
+      hasLoadedMessagesOnceRef.current = true;
       if (!silent) setMessagesLoading(false);
     }
-  }, [currentAccountKey, accounts, selectedChannelId]);
+  }, [currentAccountKey, accounts[0]?.key, selectedChannelId]);
 
   // 全部标记为已读
   const handleMarkAllRead = async () => {
@@ -399,7 +406,7 @@ export const Dashboard: React.FC = () => {
   };
 
   // 核心数据拉取
-  const loadDashboardData = async (force = false, silent = false) => {
+  const loadDashboardData = async (force = false, silent = false, syncRemote = false) => {
     const effectiveKey = currentAccountKey || (accounts[0]?.key ?? '');
     const signature = `dashboard_${effectiveKey}`;
     if (!force && lastDashboardSignatureRef.current === signature) {
@@ -413,8 +420,8 @@ export const Dashboard: React.FC = () => {
     try {
       const logQueryKey = logFilterAccount === 'all' ? undefined : logFilterAccount;
 
-      // 强制刷新或切入首页时，同步当前主控账号官方资产与蚕豆，确保统计数据与资产卡片均为最新
-      if (force && effectiveKey) {
+      // 仅在明确指定同步远端资产时（如用户手动点击刷新按钮），同步小蚕账号最新蚕豆与余额
+      if (syncRemote && effectiveKey) {
         try {
           const syncRes = await api.syncAccount(effectiveKey);
           if (syncRes && syncRes.ok) {
@@ -456,18 +463,14 @@ export const Dashboard: React.FC = () => {
 
   useEffect(() => {
     loadDashboardData();
-    fetchMessages(0);
-    fetchPendingOrders(false);
-  }, [currentAccountKey, accounts.length]);
+  }, [currentAccountKey, accounts[0]?.key]);
 
-  // 页面切入激活时自动平滑拉取最新资产、任务与执行流水数据
+  // 页面切入激活时平滑静默拉取最新数据，绝不引起视图闪烁或销毁重绘
   useOnActivated('dashboard', () => {
-    loadDashboardData(true, false);
-    fetchRecentLogs(logFilterAccount, false);
-    fetchMessages(selectedChannelId, false);
-    fetchPendingOrders(false);
-    fetchAccountTasks(undefined, false);
-  }, { throttleMs: 300 });
+    loadDashboardData(true, true, false);
+    fetchRecentLogs(logFilterAccount, true);
+    fetchAccountTasks(undefined, true);
+  }, { throttleMs: 1500 });
 
   // 当日志账号筛选切换时拉取最新日志
   useEffect(() => {
@@ -816,7 +819,7 @@ export const Dashboard: React.FC = () => {
             icon={<IconRefresh spin={loading} />}
             loading={loading}
             onClick={() => {
-              loadDashboardData(true);
+              loadDashboardData(true, false, true);
               Toast.success('已同步最新资产与任务数据');
             }}
           >
@@ -1067,7 +1070,7 @@ export const Dashboard: React.FC = () => {
             headerStyle={{ padding: '8px 14px', borderBottom: '1px solid var(--semi-color-border)', minHeight: '44px', display: 'flex', alignItems: 'center' }}
             bodyStyle={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}
           >
-            {ordersLoading && pendingOrders.length === 0 ? (
+            {!hasLoadedOrdersOnceRef.current && ordersLoading && pendingOrders.length === 0 ? (
               <div className="flex items-center justify-center py-3 text-semi-color-text-2 gap-2">
                 <Spin size="small" />
                 <span className="text-xs">检查待上传外卖订单...</span>
@@ -1722,7 +1725,7 @@ export const Dashboard: React.FC = () => {
 
                 {/* 消息列表 */}
                 <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 p-2">
-                  {messagesLoading && messages.length === 0 ? (
+                  {!hasLoadedMessagesOnceRef.current && messagesLoading && messages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-semi-color-text-2 gap-2 py-8">
                       <Spin size="middle" />
                       <span className="text-xs">拉取小蚕官方通知...</span>

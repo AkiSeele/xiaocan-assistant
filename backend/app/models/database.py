@@ -226,6 +226,8 @@ def init_db():
         c.execute("ALTER TABLE orders ADD COLUMN rebate_ratio REAL DEFAULT 0")
     if "delay_count" not in cols:
         c.execute("ALTER TABLE orders ADD COLUMN delay_count INTEGER DEFAULT 0")
+    if "delay_card_used_count" not in cols:
+        c.execute("ALTER TABLE orders ADD COLUMN delay_card_used_count INTEGER DEFAULT 0")
 
     # 自动自愈 orders 中缺失 store_icon 的记录 (从已有历史同名/同 store_id 记录回填)
     try:
@@ -310,7 +312,7 @@ def init_db():
     except Exception:
         pass
 
-    # 历史 daily 综合任务平滑迁移：自动迁移至独立原子的 yb_sign 与 yb_task，彻底消除重复调用
+    # 历史 daily 综合任务平滑迁移至 yb_task，并清理已废弃的 yb_sign 配置
     try:
         daily_enabled_keys = [
             r[0] for r in c.execute("SELECT account_key FROM task_configs WHERE task_id = 'daily' AND enabled = 1").fetchall()
@@ -318,15 +320,22 @@ def init_db():
         for a_key in daily_enabled_keys:
             c.execute("""
                 INSERT INTO task_configs (account_key, task_id, enabled, cron_time, params)
-                VALUES (?, 'yb_sign', 1, '08:10', '{}')
-                ON CONFLICT(account_key, task_id) DO UPDATE SET enabled = 1
-            """, (a_key,))
-            c.execute("""
-                INSERT INTO task_configs (account_key, task_id, enabled, cron_time, params)
                 VALUES (?, 'yb_task', 1, '08:05', '{}')
                 ON CONFLICT(account_key, task_id) DO UPDATE SET enabled = 1
             """, (a_key,))
         c.execute("UPDATE task_configs SET enabled = 0 WHERE task_id = 'daily'")
+        c.execute("DELETE FROM task_configs WHERE task_id = 'yb_sign'")
+    except Exception:
+        pass
+
+    # 自愈修复：将异常关机或超时残留的 running 孤儿日志自动更新为 aborted
+    try:
+        c.execute("""
+            UPDATE job_logs 
+            SET status = 'aborted', 
+                output = output || char(10) || '[系统自愈] 服务重启或执行中断，挂起状态已解除。'
+            WHERE status = 'running'
+        """)
     except Exception:
         pass
 
@@ -1045,10 +1054,13 @@ def auto_cancel_expired_orders(account_key: Optional[str] = None) -> int:
     sql = """
         UPDATE orders
         SET status = 'cancelled', updated_at = :now_str
-        WHERE status = 'pending' AND (
-            (timeout_time > 0 AND timeout_time < :now_ts) OR
-            (expire_time != '' AND expire_time < :now_str) OR
-            ((timeout_time <= 0 OR timeout_time IS NULL) AND (expire_time = '' OR expire_time IS NULL) AND platform_order_id = '' AND order_time > 0 AND (:now_ts - order_time) > 7200)
+        WHERE status != 'cancelled' AND (
+            (status = 'pending' AND (
+                (timeout_time > 0 AND timeout_time < :now_ts) OR
+                (expire_time != '' AND expire_time < :now_str)
+            )) OR
+            ((platform_order_id = '' OR platform_order_id IS NULL) AND timeout_time > 0 AND timeout_time < :now_ts) OR
+            ((timeout_time <= 0 OR timeout_time IS NULL) AND (expire_time = '' OR expire_time IS NULL) AND (platform_order_id = '' OR platform_order_id IS NULL) AND order_time > 0 AND (:now_ts - order_time) > 28800)
         )
     """
     params: Dict[str, Any] = {"now_str": now_str, "now_ts": now_ts}
@@ -1072,6 +1084,7 @@ def get_orders(
     limit: int = 50,
     offset: int = 0
 ) -> List[Dict[str, Any]]:
+    auto_cancel_expired_orders(account_key=account_key)
     # 查询前先执行过期超时订单自动自愈与取消
     auto_cancel_expired_orders(account_key=account_key)
 
@@ -1113,27 +1126,45 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     promo_id = int(data.get("promotion_order_id") or 0)
     sn = str(data.get("order_sn") or "")
+    acc_key = str(data.get("account_key") or "")
     with get_conn() as conn:
         existing = None
         if promo_id > 0:
-            existing = conn.execute(
-                "SELECT id, order_sn, platform_order_id, status FROM orders WHERE promotion_order_id = ? ORDER BY (platform_order_id != '') DESC, (status != 'pending') DESC, id DESC LIMIT 1",
-                (promo_id,)
-            ).fetchone()
+            if acc_key:
+                existing = conn.execute(
+                    "SELECT id, order_sn, platform_order_id, status, delay_count, delay_card_used_count, timeout_time, expire_time FROM orders WHERE promotion_order_id = ? AND account_key = ? ORDER BY (platform_order_id != '') DESC, (status != 'pending') DESC, id DESC LIMIT 1",
+                    (promo_id, acc_key)
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id, order_sn, platform_order_id, status, delay_count, delay_card_used_count, timeout_time, expire_time FROM orders WHERE promotion_order_id = ? ORDER BY (platform_order_id != '') DESC, (status != 'pending') DESC, id DESC LIMIT 1",
+                    (promo_id,)
+                ).fetchone()
         if not existing and sn:
-            existing = conn.execute(
-                "SELECT id, order_sn, platform_order_id, status FROM orders WHERE order_sn = ? LIMIT 1",
-                (sn,)
-            ).fetchone()
+            if acc_key:
+                existing = conn.execute(
+                    "SELECT id, order_sn, platform_order_id, status, delay_count, delay_card_used_count, timeout_time, expire_time FROM orders WHERE order_sn = ? AND account_key = ? LIMIT 1",
+                    (sn, acc_key)
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id, order_sn, platform_order_id, status, delay_count, delay_card_used_count, timeout_time, expire_time FROM orders WHERE order_sn = ? LIMIT 1",
+                    (sn,)
+                ).fetchone()
 
         if existing:
+            existing = dict(existing)
             target_id = existing["id"]
             # 优先采用更长/更规范的官方订单号 (如 202610131541802692184 优于 802692184)
             chosen_sn = sn if (len(sn) >= len(existing["order_sn"]) or existing["order_sn"].isdigit()) else existing["order_sn"]
-            chosen_plat_id = (data.get("platform_order_id") or "").strip() or existing["platform_order_id"] or ""
-            new_status = data.get("status", "pending")
-            if existing["status"] != "pending" and new_status == "pending":
-                new_status = existing["status"]
+            chosen_plat_id = (data.get("platform_order_id") or "").strip() or existing.get("platform_order_id") or ""
+            new_status = data.get("status") or existing.get("status") or "pending"
+            chosen_delay_count = max(int(existing.get("delay_count") or 0), int(data.get("delay_count") or 0))
+            chosen_delay_card_count = max(int(existing.get("delay_card_used_count") or 0), int(data.get("delay_card_used_count") or 0))
+            chosen_tt = max(int(existing.get("timeout_time") or 0), int(data.get("timeout_time") or 0))
+            chosen_exp = existing.get("expire_time") if (chosen_tt == int(existing.get("timeout_time") or 0) and existing.get("expire_time")) else data.get("expire_time", "")
+            if not chosen_plat_id and chosen_tt > 0 and chosen_tt < int(time.time()):
+                new_status = "cancelled"
 
             conn.execute("""
             UPDATE orders SET
@@ -1158,6 +1189,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 order_type = :order_type,
                 rebate_ratio = :rebate_ratio,
                 delay_count = :delay_count,
+                delay_card_used_count = :delay_card_used_count,
                 updated_at = :updated_at
             WHERE id = :id
             """, {
@@ -1173,17 +1205,18 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "rebate_money": float(data.get("rebate_money", 0)),
                 "original_user_rebate": float(data.get("original_user_rebate", 0)),
                 "redpack_reward_num": float(data.get("redpack_reward_num", 0)),
-                "timeout_time": int(data.get("timeout_time") or 0),
+                "timeout_time": chosen_tt,
                 "status": new_status,
                 "condition": data.get("condition", "无需评价"),
                 "receipt_img": data.get("receipt_img", ""),
                 "reject_reason": data.get("reject_reason", ""),
-                "expire_time": data.get("expire_time", ""),
+                "expire_time": chosen_exp,
                 "updated_at": now,
                 "order_time": int(data.get("order_time") or 0),
                 "order_type": int(data.get("order_type") or 0),
                 "rebate_ratio": float(data.get("rebate_ratio") or 0),
-                "delay_count": int(data.get("delay_count") or 0)
+                "delay_count": chosen_delay_count,
+                "delay_card_used_count": chosen_delay_card_count
             })
             if promo_id > 0:
                 conn.execute(
@@ -1194,8 +1227,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return get_order_by_id(target_id)
 
         cursor = conn.execute("""
-        INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time, order_type, rebate_ratio, delay_count)
-        VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time, :order_type, :rebate_ratio, :delay_count)
+        INSERT INTO orders (account_key, order_sn, promotion_order_id, platform_order_id, store_id, store_name, store_icon, platform, order_money, rebate_money, original_user_rebate, redpack_reward_num, timeout_time, status, condition, receipt_img, reject_reason, expire_time, created_at, updated_at, order_time, order_type, rebate_ratio, delay_count, delay_card_used_count)
+        VALUES (:account_key, :order_sn, :promotion_order_id, :platform_order_id, :store_id, :store_name, :store_icon, :platform, :order_money, :rebate_money, :original_user_rebate, :redpack_reward_num, :timeout_time, :status, :condition, :receipt_img, :reject_reason, :expire_time, :created_at, :updated_at, :order_time, :order_type, :rebate_ratio, :delay_count, :delay_card_used_count)
         ON CONFLICT(order_sn) DO UPDATE SET
             promotion_order_id = excluded.promotion_order_id,
             platform_order_id = excluded.platform_order_id,
@@ -1231,7 +1264,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "original_user_rebate": float(data.get("original_user_rebate", 0)),
             "redpack_reward_num": float(data.get("redpack_reward_num", 0)),
             "timeout_time": int(data.get("timeout_time") or 0),
-            "status": data.get("status", "pending"),
+            "status": "cancelled" if (not data.get("platform_order_id") and int(data.get("timeout_time") or 0) > 0 and int(data.get("timeout_time") or 0) < int(time.time())) else data.get("status", "pending"),
             "condition": data.get("condition", "无需评价"),
             "receipt_img": data.get("receipt_img", ""),
             "reject_reason": data.get("reject_reason", ""),
@@ -1241,7 +1274,8 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "order_time": int(data.get("order_time") or 0),
             "order_type": int(data.get("order_type") or 0),
             "rebate_ratio": float(data.get("rebate_ratio") or 0),
-            "delay_count": int(data.get("delay_count") or 0)
+            "delay_count": int(data.get("delay_count") or 0),
+            "delay_card_used_count": int(data.get("delay_card_used_count") or 0)
         })
         conn.commit()
         last_id = cursor.lastrowid
@@ -1252,7 +1286,8 @@ def update_order(order_id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]
     allowed = [
         "platform_order_id", "status", "receipt_img", "reject_reason",
         "order_money", "rebate_money", "original_user_rebate",
-        "redpack_reward_num", "timeout_time", "store_icon", "delay_count"
+        "redpack_reward_num", "timeout_time", "expire_time", "store_icon",
+        "delay_count", "delay_card_used_count"
     ]
     updates = []
     params: Dict[str, Any] = {"id": order_id, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}

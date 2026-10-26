@@ -41,10 +41,11 @@ const TASK_LABELS: Record<string, string> = {
   store_monitor: '实时名额监听捡漏',
   store_keyword: '商户定时搜索捡漏',
   store_search: '商户定向搜索捡漏',
-  store_cancel: '霸王餐名额取消',
+  store_cancel: '霸王餐名额取消',
+  delay_card: '使用延时券',
+  delay_voucher: '领红包延时',
   // 日常自动化任务
-  yb_task: '领天天赚元宝',
-  yb_sign: '天天赚元宝签到',
+  yb_task: '轻松赚元宝',
   collect_points: '收取未收元宝',
   daily: '元宝乐园综合打卡',
   group_lottery: '免费开红包与抽奖',
@@ -69,6 +70,8 @@ const STORE_TASK_KEYS = new Set([
   'store_keyword',
   'store_search',
   'store_cancel',
+  'delay_card',
+  'delay_voucher',
 ]);
 
 export const LogsView: React.FC = () => {
@@ -308,7 +311,10 @@ export const LogsView: React.FC = () => {
       width: 230,
       render: (tid: string) => {
         const label = TASK_LABELS[tid] || tid;
+        const isDelay = tid === 'delay_card' || tid === 'delay_voucher';
         const isStore = STORE_TASK_KEYS.has(tid);
+        const tagColor = isDelay ? 'violet' : (isStore ? 'red' : 'blue');
+        const tagText = isDelay ? '订单特权' : (isStore ? '抢单预约' : '日常调度');
         return (
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded-md bg-semi-color-fill-0 p-0.5 flex items-center justify-center shrink-0">
@@ -319,8 +325,8 @@ export const LogsView: React.FC = () => {
                 <span className="font-semibold text-xs text-semi-color-text-0 leading-tight">
                   {label}
                 </span>
-                <Tag color={isStore ? 'red' : 'blue'} size="small" shape="square" className="scale-90 origin-left">
-                  {isStore ? '抢单预约' : '日常调度'}
+                <Tag color={tagColor} size="small" shape="square" className="scale-90 origin-left">
+                  {tagText}
                 </Tag>
               </div>
             </div>

@@ -5,7 +5,6 @@ import {
   Typography,
   Tag,
   Button,
-  Space,
   Toast,
   Tabs,
   TabPane,
@@ -14,7 +13,12 @@ import {
   RadioGroup,
   Radio,
   Empty,
-  Popconfirm
+  Popconfirm,
+  Modal,
+  Spin,
+  Banner,
+  InputNumber,
+  Tooltip
 } from '@douyinfe/semi-ui';
 import { gsap, useGSAP } from '../utils/animations';
 
@@ -28,10 +32,9 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { useOnActivated } from '../utils/useOnActivated';
-import type { Order } from '../types';
+import type { Order, DelayCardInfo } from '../types';
 
 const { Title, Text } = Typography;
-
 
 const getConditionTagColor = (condition?: string): 'green' | 'cyan' | 'blue' | 'amber' | 'grey' => {
   if (!condition) return 'green';
@@ -68,6 +71,23 @@ const formatRemainingTime = (remainingSec: number | null | undefined): string =>
   return `剩 ${Math.max(1, minutes)}分钟`;
 };
 
+const calcRemainingSec = (row?: Order, currentNowSec: number = Math.floor(Date.now() / 1000)): number | null => {
+  if (!row) return null;
+  let tt = Number(row.timeout_time || 0);
+  if (!tt && row.expire_time) {
+    const parsed = Date.parse(row.expire_time.replace(/-/g, '/'));
+    if (!isNaN(parsed) && parsed > 0) {
+      tt = Math.floor(parsed / 1000);
+    }
+  }
+  if (!tt && row.order_time) {
+    // 遵循官方 APK 逆向: 基准时效为 8 小时 (28800秒)
+    tt = Number(row.order_time) + 28800 + (row.delay_count ? 7200 : 0) + (row.delay_card_used_count ? row.delay_card_used_count * 3600 : 0);
+  }
+  if (!tt) return null;
+  return tt - currentNowSec;
+};
+
 export const OrdersView: React.FC = () => {
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const accounts = useAppStore((s) => s.accounts);
@@ -82,8 +102,22 @@ export const OrdersView: React.FC = () => {
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [delayingOrderId, setDelayingOrderId] = useState<number | null>(null);
+  const [delayCardModalVisible, setDelayCardModalVisible] = useState(false);
+  const [currentDelayOrder, setCurrentDelayOrder] = useState<Order | null>(null);
+  const [delayCardInfo, setDelayCardInfo] = useState<DelayCardInfo | null>(null);
+  const [loadingCardInfo, setLoadingCardInfo] = useState(false);
+  const [selectedCardCount, setSelectedCardCount] = useState<number>(1);
+  const [submittingDelayCard, setSubmittingDelayCard] = useState(false);
   const [cancellingOrderId, setCancellingOrderId] = useState<number | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<number | null>(null);
+  const [currentNowSec, setCurrentNowSec] = useState<number>(() => Math.floor(Date.now() / 1000));
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentNowSec(Math.floor(Date.now() / 1000));
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
 
 
   // 纯净视口高度自适应：监听表格卡片容器，杜绝 DOM querySelector 与强制同步重排
@@ -192,11 +226,15 @@ export const OrdersView: React.FC = () => {
   };
 
   const handleDelayVoucher = async (order: Order) => {
+    if (order.platform_order_id) {
+      Toast.warning('已绑定外卖单号的订单无法申请延时');
+      return;
+    }
     setDelayingOrderId(order.id);
     try {
       const res = await api.delayOrderVoucher(order.id);
       if (res.ok) {
-        Toast.success(res.message || '领红包延时特权已激活，凭证有效期已延长');
+        Toast.success(res.message || '官方领红包延时特权已激活，提交凭证有效期已顺延 2 小时');
         fetchOrders(undefined, true);
       } else {
         Toast.error(res.message || '延时申请失败');
@@ -205,6 +243,53 @@ export const OrdersView: React.FC = () => {
       Toast.error(`延时操作异常: ${e.response?.data?.detail || e.message || e}`);
     } finally {
       setDelayingOrderId(null);
+    }
+  };
+
+  const handleOpenDelayCardModal = async (order: Order) => {
+    if (order.platform_order_id) {
+      Toast.warning('已绑定外卖单号的订单无法使用延时券');
+      return;
+    }
+    setCurrentDelayOrder(order);
+    setDelayCardModalVisible(true);
+    setLoadingCardInfo(true);
+    try {
+      const res = await api.getDelayCardInfo(order.id);
+      setDelayCardInfo(res);
+      const defaultCount = res.max_usable_count > 0 ? 1 : 0;
+      setSelectedCardCount(defaultCount);
+    } catch (err: any) {
+      Toast.error(`获取延时券信息失败: ${err.response?.data?.detail || err.message || err}`);
+    } finally {
+      setLoadingCardInfo(false);
+    }
+  };
+
+  const handleConfirmUseDelayCard = async () => {
+    if (!currentDelayOrder) return;
+    if (selectedCardCount < 1) {
+      Toast.warning('请选择至少 1 张延时券');
+      return;
+    }
+    if (delayCardInfo && selectedCardCount > delayCardInfo.max_usable_count) {
+      Toast.warning(`使用数量不能超过当前最大允许数量 (${delayCardInfo.max_usable_count} 张)`);
+      return;
+    }
+    setSubmittingDelayCard(true);
+    try {
+      const res = await api.useDelayCard(currentDelayOrder.id, selectedCardCount);
+      if (res.ok) {
+        Toast.success(res.message || `成功使用 ${selectedCardCount} 张延时券`);
+        setDelayCardModalVisible(false);
+        fetchOrders(undefined, true);
+      } else {
+        Toast.error(res.message || '延时券使用失败');
+      }
+    } catch (err: any) {
+      Toast.error(`延时券使用异常: ${err.response?.data?.detail || err.message || err}`);
+    } finally {
+      setSubmittingDelayCard(false);
     }
   };
 
@@ -263,46 +348,45 @@ export const OrdersView: React.FC = () => {
 
   const columns: ColumnProps<Order>[] = [
     {
-      title: '店铺与订单号',
+      title: '店铺与小蚕单号',
       dataIndex: 'store_name',
-      width: 340,
+      width: 320,
       render: (name: string, row?: Order) => {
         const platInfo = getPlatformBadge(row?.platform);
         const avatarSrc = row?.store_icon || DEFAULT_PLATFORM_ICONS[row?.platform || 'meituan'];
         return (
-          <div className="flex items-start gap-3 max-w-[340px]">
+          <div className="flex items-start gap-3 py-1 max-w-[320px]">
             <Avatar
               size="medium"
               shape="square"
               src={avatarSrc}
               color={platInfo.avatarColor}
-              className="flex-shrink-0"
+              className="flex-shrink-0 mt-0.5 rounded-md"
             >
               {name?.[0] || '外'}
             </Avatar>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Tag color={platInfo.color} size="small" shape="square" className="flex-shrink-0">
                   {platInfo.label}
                 </Tag>
                 <Typography.Text
                   ellipsis={{ showTooltip: true }}
-                  style={{ maxWidth: 220, cursor: 'pointer' }}
                   strong
-                  className="text-[14px] hover:text-semi-color-primary transition-colors"
+                  className="text-sm font-semibold text-semi-color-text-0 hover:text-semi-color-primary transition-colors cursor-pointer"
                   title="点击复制店铺名"
                   onClick={() => handleCopyText(name, '店铺名称')}
                 >
                   {name}
                 </Typography.Text>
               </div>
-              <div className="flex items-center gap-1 mt-1 text-xs text-semi-color-text-2 font-mono">
-                <span className="truncate max-w-[180px]">单号: {row?.order_sn}</span>
+              <div className="flex items-center gap-1.5 mt-1 text-xs text-semi-color-text-2 font-mono">
+                <span className="truncate max-w-[190px]">单号: {row?.order_sn}</span>
                 <Button
                   theme="borderless"
                   icon={<IconCopy size="small" />}
                   size="small"
-                  className="p-0.5 ml-1 h-5 flex-shrink-0"
+                  className="p-0.5 h-4 w-4 flex-shrink-0 text-semi-color-text-2 hover:text-semi-color-primary"
                   onClick={() => row && handleCopyText(row.order_sn, '小蚕单号')}
                 />
               </div>
@@ -314,37 +398,34 @@ export const OrdersView: React.FC = () => {
     {
       title: '实付与返利',
       dataIndex: 'order_money',
-      width: 170,
+      width: 180,
       render: (_: any, row?: Order) => {
         const hasRedpack = Boolean(row?.redpack_reward_num && row.redpack_reward_num > 0);
+        const redpackAmount = hasRedpack
+          ? ((row!.redpack_reward_num!) > 5 ? (row!.redpack_reward_num!) / 100 : (row!.redpack_reward_num!)).toFixed(2)
+          : null;
         const isPercentOrder =
           row?.order_type === 12 ||
           Boolean(row?.rebate_ratio && row.rebate_ratio > 0) ||
           Number(row?.order_money || 0) <= 0;
         const hasRealOrderMoney = Number(row?.order_money || 0) > 0;
         return (
-          <div>
-            <div className="text-xs text-semi-color-text-2">
-              {isPercentOrder && !hasRealOrderMoney ? (
-                <>
-                  返利模式：<Text strong>{row?.rebate_ratio ? `按实付 ${row.rebate_ratio}% 返` : '按比例返现'}</Text>
-                </>
-              ) : (
-                <>
-                  门槛实付：<Text strong>¥{row?.order_money}</Text>
-                </>
+          <div className="space-y-1 py-1">
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-base font-bold text-semi-color-danger font-mono tracking-tight">
+                ¥{row?.rebate_money}
+              </span>
+              {redpackAmount && (
+                <span className="text-xs font-semibold text-semi-color-warning font-mono">
+                  +¥{redpackAmount}红包
+                </span>
               )}
             </div>
-            <div className="text-sm font-semibold text-semi-color-danger mt-0.5 flex items-center gap-1 flex-wrap">
-              <span>
-                {isPercentOrder && !hasRealOrderMoney && row?.status !== 'completed'
-                  ? `最高返：¥${row?.rebate_money}`
-                  : `返利：¥${row?.rebate_money}`}
-              </span>
-              {hasRedpack && (
-                <Tag size="small" color="red">
-                  +{((row!.redpack_reward_num!) > 5 ? (row!.redpack_reward_num!) / 100 : (row!.redpack_reward_num!)).toFixed(2)} 红包
-                </Tag>
+            <div className="text-sm text-semi-color-text-1 font-mono">
+              {isPercentOrder && !hasRealOrderMoney ? (
+                <span>按比例返: {row?.rebate_ratio ? `${row.rebate_ratio}%` : '比例返'}</span>
+              ) : (
+                <span>门槛实付: ¥{row?.order_money}</span>
               )}
             </div>
           </div>
@@ -352,92 +433,167 @@ export const OrdersView: React.FC = () => {
       },
     },
     {
-      title: '外卖单号 / 审核状态',
-      dataIndex: 'status',
+      title: '外卖单号',
+      dataIndex: 'platform_order_id',
+      width: 200,
+      render: (platOrderId: string) => {
+        const hasExtId = !!platOrderId;
+        if (!hasExtId) {
+          return (
+            <span className="text-sm text-semi-color-text-0">
+              未绑定单号
+            </span>
+          );
+        }
+        return (
+          <div className="flex items-center gap-1.5 py-1">
+            <span className="text-sm font-mono text-semi-color-text-0 truncate max-w-[170px]" title={platOrderId}>
+              {platOrderId}
+            </span>
+            <Button
+              theme="borderless"
+              icon={<IconCopy size="small" />}
+              size="small"
+              className="p-0.5 h-4 w-4 flex-shrink-0 text-semi-color-text-2 hover:text-semi-color-primary"
+              onClick={() => handleCopyText(platOrderId, '外卖单号')}
+            />
+          </div>
+        );
+      },
+    },
+    {
+      title: '剩余时间',
+      dataIndex: 'timeout_time',
       width: 240,
+      render: (_: any, row?: Order) => {
+        if (!row) return null;
+        const status = row.status;
+        const hasExtId = !!row.platform_order_id;
+        const remainingSec = calcRemainingSec(row, currentNowSec);
+        const countdownStr = formatRemainingTime(remainingSec);
+        const hasDelayed = Boolean(
+          (row.delay_count && row.delay_count > 0) ||
+          (row.timeout_time && row.order_time && (row.timeout_time - row.order_time) >= 25200)
+        );
+        const cardUsed = Number(row.delay_card_used_count || 0);
+
+        if (status === 'pending') {
+          if (countdownStr === '已超时' || (remainingSec !== null && remainingSec <= 0)) {
+            return (
+              <span className="text-sm text-semi-color-text-0 font-mono">
+                已超时关闭
+              </span>
+            );
+          }
+          const isUrgent = remainingSec !== null && remainingSec < 1800;
+          return (
+            <div className="space-y-0.5 py-1">
+              <div className={`text-sm font-semibold font-mono ${isUrgent ? 'text-semi-color-danger' : 'text-semi-color-warning'}`}>
+                {countdownStr}
+              </div>
+              <div className="text-xs text-semi-color-text-2 font-mono flex items-center gap-1 flex-wrap">
+                <span>截止 {row.expire_time ? row.expire_time.slice(5, 16) : '-'}</span>
+                {hasDelayed && (
+                  <Tag color="violet" size="small" shape="square" className="!px-1 !py-0 text-xs">
+                    延时2h
+                  </Tag>
+                )}
+                {cardUsed > 0 && (
+                  <Tag color="amber" size="small" shape="square" className="!px-1 !py-0 text-xs">
+                    已用券{cardUsed}张
+                  </Tag>
+                )}
+              </div>
+            </div>
+          );
+        }
+        if (status === 'completed') {
+          if (!hasExtId) {
+            return <span className="text-sm text-semi-color-text-0">已关闭</span>;
+          }
+          return <span className="text-sm text-semi-color-text-2">-</span>;
+        }
+        if (status === 'cancelled') {
+          return <span className="text-sm text-semi-color-text-0">已关闭</span>;
+        }
+        if (status === 'auditing') {
+          return <span className="text-sm text-semi-color-warning">审核中</span>;
+        }
+        if (status === 'rejected') {
+          return <span className="text-sm text-semi-color-danger">已驳回</span>;
+        }
+        return <span className="text-sm text-semi-color-text-2">-</span>;
+      },
+    },
+    {
+      title: '订单状态',
+      dataIndex: 'status',
+      width: 120,
       render: (status: string, row?: Order) => {
         const hasExtId = !!row?.platform_order_id;
-        let badgeColor: 'green' | 'amber' | 'blue' | 'red' | 'grey' | 'cyan' = 'grey';
-        let statusText = '未知状态';
-
         if (status === 'completed') {
-          badgeColor = 'green';
-          statusText = `已返利 ¥${row?.rebate_money}`;
-        } else if (status === 'auditing') {
-          badgeColor = 'amber';
-          statusText = '平台审核中';
-        } else if (status === 'pending') {
-          if (hasExtId) {
-            badgeColor = 'cyan';
-            statusText = '已下单待反馈';
-          } else {
-            badgeColor = 'blue';
-            statusText = '待提交外卖单号';
-          }
-        } else if (status === 'rejected') {
-          badgeColor = 'red';
-          statusText = row?.reject_reason ? `已驳回: ${row.reject_reason}` : '已驳回';
-        } else if (status === 'cancelled') {
-          badgeColor = 'grey';
-          statusText = '已取消';
-        }
-
-        const nowSec = Math.floor(Date.now() / 1000);
-        const remainingSec = row?.timeout_time ? row.timeout_time - nowSec : null;
-        const countdownStr = formatRemainingTime(remainingSec);
-        const hasDelayed = Boolean(row?.delay_count && row.delay_count > 0);
-
-        return (
-          <div className="max-w-[240px]">
-            <Space spacing="tight" wrap>
-              <Tag color={badgeColor} size="small">
-                {statusText}
+          if (!hasExtId) {
+            return (
+              <Tag color="grey" size="small" shape="square">
+                已取消
               </Tag>
-              {status === 'pending' && countdownStr && (
-                <Tag color={countdownStr === '已超时' ? 'red' : 'amber'} size="small">
-                  {countdownStr}
-                </Tag>
-              )}
-              {hasDelayed && (
-                <Tag color="violet" size="small">
-                  已延时2h
-                </Tag>
-              )}
-            </Space>
-            <div className="mt-1.5 text-xs font-mono">
-              {hasExtId ? (
-                <div className="flex items-center gap-1 text-semi-color-text-1">
-                  <span className="truncate max-w-[170px]" title={row?.platform_order_id}>
-                    单号: {row?.platform_order_id}
-                  </span>
-                  <Button
-                    theme="borderless"
-                    icon={<IconCopy size="small" />}
-                    size="small"
-                    className="p-0.5 ml-0.5 h-5 flex-shrink-0"
-                    onClick={() => row && handleCopyText(row.platform_order_id!, '外卖单号')}
-                  />
-                </div>
-              ) : (
-                <span className="text-semi-color-text-3">未绑定外卖单号</span>
-              )}
-            </div>
-          </div>
-        );
+            );
+          }
+          return (
+            <Tag color="green" size="small" shape="square">
+              已到账
+            </Tag>
+          );
+        }
+        if (status === 'auditing') {
+          return (
+            <Tag color="orange" size="small" shape="square">
+              审核中
+            </Tag>
+          );
+        }
+        if (status === 'pending') {
+          if (hasExtId) {
+            return (
+              <Tag color="cyan" size="small" shape="square">
+                已下单·待反馈
+              </Tag>
+            );
+          }
+          return (
+            <Tag color="blue" size="small" shape="square">
+              待下单
+            </Tag>
+          );
+        }
+        if (status === 'rejected') {
+          return (
+            <Tooltip content={row?.reject_reason || '平台已驳回'} position="top">
+              <Tag color="red" size="small" shape="square">
+                已驳回
+              </Tag>
+            </Tooltip>
+          );
+        }
+        if (status === 'cancelled') {
+          return (
+            <Tag color="grey" size="small" shape="square">
+              已取消
+            </Tag>
+          );
+        }
+        return <Tag color="grey" size="small" shape="square">{status}</Tag>;
       },
     },
     {
-      title: '评价门槛',
+      title: '评价要求',
       dataIndex: 'condition',
       width: 140,
       render: (cond: string) => {
-        const cleanCond = String(cond || '无需评价')
-          .replace(/[（(].*?需含字含图.*?[）)]/g, '')
-          .replace(/[（(]需含字含图[）)]/g, '')
-          .trim() || '无需评价';
+        const text = cond || '无需评价';
         return (
-          <Tag color={getConditionTagColor(cleanCond)} size="small">
-            {cleanCond}
+          <Tag color={getConditionTagColor(text)} size="small" shape="square">
+            {text}
           </Tag>
         );
       },
@@ -445,15 +601,17 @@ export const OrdersView: React.FC = () => {
     {
       title: '下单时间',
       dataIndex: 'created_at',
-      width: 170,
+      width: 140,
       render: (timeStr: string) => (
-        <Text size="small" type="secondary">{timeStr}</Text>
+        <span className="text-sm text-semi-color-text-2 font-mono">
+          {timeStr ? timeStr.slice(5, 16) : '-'}
+        </span>
       ),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 190,
+      width: 180,
       fixed: 'right',
       render: (_: any, row?: Order) => {
         if (!row) return null;
@@ -463,29 +621,41 @@ export const OrdersView: React.FC = () => {
           row.order_type === 12 ||
           Boolean(row.rebate_ratio && row.rebate_ratio > 0) ||
           Number(row.order_money || 0) <= 0;
-        const hasDelayed = Boolean(row.delay_count && row.delay_count > 0);
+        const hasDelayed = Boolean(
+          (row.delay_count && row.delay_count > 0) ||
+          (row.timeout_time && row.order_time && (row.timeout_time - row.order_time) >= 25200)
+        );
 
         if (status === 'pending') {
-          if (!hasExtId) {
-            return (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {!isPercentOrder && (
-                  hasDelayed ? (
-                    <Tag color="violet" size="small">已延时2h</Tag>
-                  ) : (
+          return (
+            <div className="flex items-center gap-2 flex-wrap">
+              {!isPercentOrder && !hasExtId && (
+                <>
+                  {!hasDelayed ? (
                     <Button
                       theme="light"
                       type="warning"
                       size="small"
                       loading={delayingOrderId === row.id}
                       onClick={() => handleDelayVoucher(row)}
-                      title="使用延时券延长有效期2小时"
-                      className="!py-0.5 !px-1.5 text-xs h-6"
+                      title="领红包免费延长有效期 2 小时"
+                    >
+                      领红包延时2h
+                    </Button>
+                  ) : (
+                    <Button
+                      theme="light"
+                      type="warning"
+                      size="small"
+                      onClick={() => handleOpenDelayCardModal(row)}
+                      title="使用卡包内的延时券延长提交时间"
                     >
                       使用延时券
                     </Button>
-                  )
-                )}
+                  )}
+                </>
+              )}
+              {!hasExtId ? (
                 <Popconfirm
                   title="确认取消该霸王餐报名？"
                   content="取消后将释放当前占用的抢单名额，该操作不可撤销。"
@@ -499,18 +669,15 @@ export const OrdersView: React.FC = () => {
                     type="danger"
                     size="small"
                     loading={cancellingOrderId === row.id}
-                    className="!py-0.5 !px-1.5 text-xs h-6"
                   >
                     取消报名
                   </Button>
                 </Popconfirm>
-              </div>
-            );
-          } else {
-            return (
-              <Tag color="cyan" size="small">已锁单待核对</Tag>
-            );
-          }
+              ) : (
+                <span className="text-sm text-semi-color-text-2">-</span>
+              )}
+            </div>
+          );
         }
 
         if (status === 'completed' || status === 'cancelled') {
@@ -529,7 +696,6 @@ export const OrdersView: React.FC = () => {
                 size="small"
                 icon={<IconDelete size="small" />}
                 loading={deletingOrderId === row.id}
-                className="!py-0.5 !px-1.5 text-xs h-6"
               >
                 删除订单
               </Button>
@@ -538,14 +704,14 @@ export const OrdersView: React.FC = () => {
         }
 
         if (status === 'auditing') {
-          return <Tag color="amber" size="small">平台审核中</Tag>;
+          return <span className="text-xs text-semi-color-text-2">平台审核中</span>;
         }
 
         if (status === 'rejected') {
-          return <Tag color="red" size="small">已驳回</Tag>;
+          return <span className="text-xs text-semi-color-danger">已驳回</span>;
         }
 
-        return <Text size="small" type="secondary">-</Text>;
+        return <span className="text-xs text-semi-color-text-3">-</span>;
       },
     }
   ];
@@ -727,7 +893,123 @@ export const OrdersView: React.FC = () => {
           />
         </div>
       </Card>
+
+      {/* 延时券二次确认弹窗 (标准 Semi Design 规范) */}
+      <Modal
+        title="使用延时券"
+        visible={delayCardModalVisible}
+        onCancel={() => setDelayCardModalVisible(false)}
+        onOk={handleConfirmUseDelayCard}
+        okText="确定使用"
+        cancelText="取消"
+        okType="warning"
+        confirmLoading={submittingDelayCard}
+        okButtonProps={{
+          disabled: !delayCardInfo || delayCardInfo.max_usable_count <= 0
+        }}
+        width={560}
+        centered
+      >
+        {loadingCardInfo ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-3">
+            <Spin size="large" />
+            <Text type="secondary" size="small">正在获取卡包延时资产...</Text>
+          </div>
+        ) : (
+          <div className="space-y-4 pt-1">
+            <Banner
+              type="info"
+              fullMode={false}
+              description={
+                <div>
+                  <div className="font-medium text-semi-color-text-0">
+                    延时券单张可延长 1 小时提交订单时间
+                  </div>
+                  <div className="text-xs text-semi-color-text-2 mt-0.5">
+                    根据平台规则，使用延时券最迟可延长到次日早上 6 点整。
+                  </div>
+                </div>
+              }
+            />
+
+            {/* 订单与卡包资产概览 */}
+            <div className="bg-semi-color-fill-0 border border-semi-color-border rounded-lg p-3 space-y-2">
+              <div className="flex justify-between items-start text-sm gap-3">
+                <Text type="secondary" className="whitespace-nowrap flex-shrink-0 pt-0.5">所属商户</Text>
+                <Text strong className="text-right text-semi-color-text-0 break-words flex-1 font-semibold leading-snug">
+                  {currentDelayOrder?.store_name || '-'}
+                </Text>
+              </div>
+              <div className="flex justify-between items-center text-sm">
+                <Text type="secondary">当前提交截止时间</Text>
+                <Text className="font-mono">{delayCardInfo?.expire_time || '-'}</Text>
+              </div>
+              <div className="flex justify-between items-center text-sm">
+                <Text type="secondary">次日 06:00 截止上限</Text>
+                <Tag color="grey" size="small">{delayCardInfo?.next_6am_str || '-'}</Tag>
+              </div>
+              <div className="flex justify-between items-center text-sm pt-1 border-t border-semi-color-border">
+                <Text type="secondary">卡包可用延时券</Text>
+                <div>
+                  <Text strong className="text-semi-color-warning text-base font-bold font-mono">
+                    {delayCardInfo?.available_delay_cards ?? 0}
+                  </Text>
+                  <Text type="secondary" size="small"> 张</Text>
+                </div>
+              </div>
+            </div>
+
+            {/* 使用数量选择区 */}
+            <div className="border border-semi-color-border rounded-lg p-3.5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-semi-color-text-0">选择使用延时券数量</div>
+                  <div className="text-xs text-semi-color-text-2 mt-0.5">
+                    当前最多允许使用 {delayCardInfo?.max_usable_count ?? 0} 张
+                  </div>
+                </div>
+
+                <InputNumber
+                  min={1}
+                  max={Math.max(1, delayCardInfo?.max_usable_count || 1)}
+                  value={selectedCardCount}
+                  onChange={(val) => {
+                    const maxVal = delayCardInfo?.max_usable_count || 1;
+                    const num = typeof val === 'number' ? Math.max(1, Math.min(val, maxVal)) : 1;
+                    setSelectedCardCount(num);
+                  }}
+                  style={{ width: 140 }}
+                  size="default"
+                  disabled={!delayCardInfo || delayCardInfo.max_usable_count <= 0}
+                  suffix="张"
+                />
+              </div>
+
+              {/* 预计延长结果预览 */}
+              {delayCardInfo && delayCardInfo.max_usable_count > 0 && (
+                <div className="text-xs bg-semi-color-fill-1 rounded p-2 flex justify-between items-center">
+                  <Text type="secondary">使用后预计截止时间:</Text>
+                  <Text strong className="text-semi-color-primary font-mono">
+                    {new Date((delayCardInfo.timeout_time + selectedCardCount * 3600) * 1000).toLocaleString('zh-CN', { hour12: false })}
+                  </Text>
+                </div>
+              )}
+            </div>
+
+            {delayCardInfo && delayCardInfo.max_usable_count <= 0 && (
+              <Banner
+                type="warning"
+                fullMode={false}
+                description={
+                  delayCardInfo.available_delay_cards <= 0
+                    ? '当前卡包内暂无可用延时券，请先在官方 App 领取或兑换延时券。'
+                    : '当前订单超时时间已逼近次日 06:00 阈值，已达到最迟延时上限，无法继续使用延时券。'
+                }
+              />
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };
-export default OrdersView;

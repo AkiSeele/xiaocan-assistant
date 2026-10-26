@@ -126,6 +126,18 @@ async def run_dual_rebate_monitor(
     latitude = acc.get("latitude") or "22.548361"
     nickname = acc.get("nickname") or account_key
 
+    # 前置动态协同检查：若当前账号正在执行高优任务 (红包雨、秒杀、预约抢单)，动态监听其完成事件
+    from .scheduler import get_running_high_priority_tasks, wait_for_any_high_priority_finish
+    high_tasks = get_running_high_priority_tasks(account_key, min_priority=40)
+    if high_tasks:
+        t_w_start = time.time()
+        log_lines.append(f"[{time.strftime('%H:%M:%S')}] [动态协同] 检测到当前账号正在执行高优任务 ({', '.join(high_tasks)})，动态监听其完成...")
+        await wait_for_any_high_priority_finish(account_key, min_priority=40, timeout=45.0)
+        waited_s = time.time() - t_w_start
+        micro_jitter = random.uniform(0.4, 0.8)
+        await asyncio.sleep(micro_jitter)
+        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 高优任务已执行完毕 (动态等待 {waited_s:.1f} 秒)，微缓冲 {micro_jitter:.1f} 秒后立即启动双返利扫描...")
+
     # 3. 动态调用美团双返利流式扫描
     from ..api.endpoints import scan_dual_rebate_stores, _get_store_branch_key
     try:

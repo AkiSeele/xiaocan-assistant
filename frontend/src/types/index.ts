@@ -278,9 +278,11 @@ export interface Order {
   reject_reason?: string;
   expire_time?: string;
   timeout_time?: number;
+  order_time?: number;
   order_type?: number;
   rebate_ratio?: number;
   delay_count?: number;
+  delay_card_used_count?: number;
   created_at: string;
   updated_at?: string;
 }
@@ -775,3 +777,17 @@ export interface XiaoCanMessagesResponse {
   message?: string;
 }
 
+
+export interface DelayCardInfo {
+  ok: boolean;
+  order_id: number;
+  promotion_order_id?: number;
+  has_completed_reward_delay: boolean;
+  available_delay_cards: number;
+  timeout_time: number;
+  expire_time: string;
+  allowed_hours_to_6am: number;
+  max_usable_count: number;
+  delay_card_used_count: number;
+  next_6am_str: string;
+}

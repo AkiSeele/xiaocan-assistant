@@ -52,7 +52,7 @@ TASK_META = {
         "fixed_time": True,
         "time_label": "三场 09/14/18点"
     },
-    "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场整点放量红包雨自动接入与高频额度抓取", "category": "member", "default_time": "10:00", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点"},
+    "redpack_rain": {"id": "redpack_rain", "label": "整点红包雨", "tip": "每日六场红包雨于开场后第5分钟 (10:05/11:05/12:05/14:05/16:05/19:05) 错峰自动接入抓取，彻底避让整点并发与风控", "category": "member", "default_time": "10:05", "fixed_time": True, "time_label": "六场 10/11/12/14/16/19点 (xx:05错峰)"},
     "svip_rebate": {"id": "svip_rebate", "label": "抢SVIP专属返利券", "tip": "SVIP专属大额返利券每日 09:00:00 准点秒杀 (官方特权: SVIP2+ 或 VIP5+ 均可享受)", "category": "member", "vip": "SVIP2+ / VIP5+", "default_time": "09:00", "fixed_time": True, "time_label": "09:00 固定"},
     "brand_flash": {"id": "brand_flash", "label": "抢SVIP大牌券", "tip": "每日 09:30:00 准点抢额外放量大牌神券（独立通道，绝不消耗每月保底张数）", "category": "member", "vip": "SVIP2+ / VIP5+", "default_time": "09:30", "fixed_time": True, "time_label": "09:30 固定"},
     "media_vip": {"id": "media_vip", "label": "抢每月影音VIP", "tip": "影音会员VIP周卡(网易云音乐/腾讯视频等)每日三场 (10/17/20点)，智能检测本月余量与历史记录", "category": "member", "vip": "SVIP4+ / VIP5+", "default_time": "10:00", "fixed_time": True, "time_label": "三场 10/17/20点"},
@@ -437,12 +437,10 @@ async def get_account_cards_endpoint(key: str, status: int = Query(0, descriptio
 async def remove_account(key: str):
     """删除/退出小蚕账号，彻底清除内存会话与关联数据"""
     db.delete_account(key)
-    remaining = db.get_all_accounts()
-    if not remaining:
-        with db.get_conn() as conn:
-            conn.execute("DELETE FROM orders WHERE account_key = ? OR account_key = 'acc_default'", (key,))
-            conn.execute("DELETE FROM store_appointments WHERE account_key = ?", (key,))
-            conn.commit()
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM orders WHERE account_key = ? OR account_key = 'acc_default'", (key,))
+        conn.execute("DELETE FROM store_appointments WHERE account_key = ?", (key,))
+        conn.commit()
     scheduler.reload_schedules()
     return {"ok": True, "message": "账号已安全退出并清除数据"}
 
@@ -2750,7 +2748,10 @@ async def scan_dual_rebate_stores(
     account_key: Optional[str] = Query(None),
     platform: Optional[str] = Query("meituan"),
     keyword: Optional[str] = Query(None),
-    max_stores: int = Query(300)
+    max_stores: int = Query(300),
+    delay_min: Optional[float] = Query(None),
+    delay_max: Optional[float] = Query(None),
+    page_delay: Optional[float] = Query(None)
 ):
     """
     美团外卖同店双返利高精度智能扫描：
@@ -2771,6 +2772,18 @@ async def scan_dual_rebate_stores(
         max_stores = 300
     # 强制限定为美团外卖
     platform = "meituan"
+
+    # 计算翻页抖动区间延迟 (默认 1.5s ~ 3.0s)
+    d_min = 1.5
+    d_max = 3.0
+    if delay_min is not None and delay_min > 0:
+        d_min = float(delay_min)
+    elif page_delay is not None and page_delay > 0:
+        d_min = float(page_delay)
+    if delay_max is not None and delay_max >= d_min:
+        d_max = float(delay_max)
+    else:
+        d_max = max(d_min, 3.0)
 
     # 0. 前置 WAF 拦截状态检查，避免在冷却期盲目发起大规模扫描
     if is_waf_blocked():
@@ -3100,8 +3113,9 @@ async def scan_dual_rebate_stores(
 
         offset += batch_size * page_size
         round_idx += 1
-        # 防 WAF 频次风控：微批次之间增加平滑随机延时 (350ms ~ 650ms)
-        await asyncio.sleep(random.uniform(0.35, 0.65))
+        # 防 WAF 频次风控：微批次之间根据用户设置的区间随机取抖动值
+        sleep_dur = random.uniform(d_min, d_max)
+        await asyncio.sleep(sleep_dur)
 
     # 赏金按比例返现池深度保障：
     # 若在流式循环中获取到的比例方案偏少 (< 20条) 或接口发生抖动，执行独立赏金池补全
@@ -3113,7 +3127,7 @@ async def scan_dual_rebate_stores(
             if is_waf_blocked():
                 break
             try:
-                await asyncio.sleep(random.uniform(0.3, 0.5))
+                await asyncio.sleep(random.uniform(d_min, d_max))
                 sj_extra = await client.search_shangjin_stores(
                     keyword="",
                     latitude=lat,
@@ -3831,13 +3845,13 @@ async def list_orders(
     else:
         query_st = 99
 
-    # 尝试从小蚕官方 RPC 同步最新真实订单
+    # 尝试从小蚕官方 RPC 同步最新真实订单 (固定同步全部 order_status=99，保证单号与最新状态全量校准)
     try:
         rpc_res = await client.get_order_list(
             token=token,
             silk_id=silk_id,
             user_id=user_id,
-            order_status=query_st,
+            order_status=99,
             offset=0,
             number=50,
             city_code=city_code
@@ -3916,23 +3930,42 @@ async def list_orders(
             else:
                 order_platform = "meituan"
 
-            # 官方状态枚举校准：0=待上传, 1=审核中, 2=已完成, 3=已驳回, 4=已取消, 99=全部
-            raw_st = o.get("order_status", 0)
-            platform_order_id = str(o.get("platform_order_id") or "").strip()
+            # 官方状态枚举校准 (严格遵循官方小蚕 APK 逆向与服务端真实业务):
+            # 0=待上传/待绑定, 1=审核中, 2=已完成/已返现, 3=已驳回, 4=用户主动取消, 5=超时取消/订单关闭
+            raw_st = int(o.get("order_status", 0) or 0)
+            cancel_time = int(o.get("cancel_time") or 0)
+            timeout_time_val = int(o.get("timeout_time") or 0)
+            now_ts = int(time.time())
 
-            if raw_st == 2:
-                status_str = "completed"
-            elif raw_st == 4:
+            platform_order_id = str(
+                o.get("platform_order_id")
+                or o.get("source_order_id")
+                or o.get("store_platform_order_id")
+                or o.get("platform_order_sn")
+                or o.get("third_order_id")
+                or ""
+            ).strip()
+
+            if cancel_time > 0 or raw_st in (4, 5):
                 status_str = "cancelled"
+            elif raw_st == 2:
+                status_str = "completed"
             elif raw_st == 1:
                 status_str = "auditing"
             elif raw_st == 3:
                 status_str = "rejected"
             elif raw_st == 0:
-                # 官方状态 0 统一为 pending (待上传大类，包含未绑单号与已绑单号待反馈)
-                status_str = "pending"
+                # 待上传 / 待提交
+                # 若未绑定外卖单号且已过 timeout_time，则判定为超时取消关闭
+                if not platform_order_id and timeout_time_val > 0 and timeout_time_val < now_ts:
+                    status_str = "cancelled"
+                else:
+                    status_str = "pending"
             else:
-                status_str = "completed" if raw_st in (5, 6) else "pending"
+                if not platform_order_id and timeout_time_val > 0 and timeout_time_val < now_ts:
+                    status_str = "cancelled"
+                else:
+                    status_str = "pending"
 
             if is_percent_order:
                 cond_str = "无需评价"
@@ -3948,7 +3981,13 @@ async def list_orders(
             c_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ot)) if ot else time.strftime("%Y-%m-%d %H:%M:%S")
             tt = o.get("timeout_time")
             exp_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(tt)) if tt else ""
-            delay_count_val = int(o.get("delay_count") or o.get("hh_delay_count") or 0)
+            ot_num = int(ot or 0)
+            tt_num = int(tt or 0)
+            is_delayed_reward = (
+                int(o.get("delay_count") or o.get("hh_delay_count") or 0) > 0 or
+                (tt_num > 0 and ot_num > 0 and (tt_num - ot_num) >= 25200)
+            )
+            delay_count_val = 1 if is_delayed_reward else 0
 
             db.save_order({
                 "account_key": account_key,
@@ -3977,8 +4016,8 @@ async def list_orders(
             })
 
 
-        # 若本次查询为「待上传」(query_st == 0) 或全部，核验本地与官方待处理列表
-        if query_st == 0 and account_key:
+        # 核验本地与官方待处理列表，处理超时未绑定自动关闭
+        if account_key:
             official_pending_sns = {str(o.get("order_id_str") or o.get("promotion_order_id") or "") for o in raw_orders if o}
             local_pending = db.get_orders(account_key=account_key, status="pending", limit=100)
             now_str = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -4302,6 +4341,16 @@ async def delay_order_voucher(order_id: int):
     plat = (target_order.get("platform") or "meituan").lower()
     task_type = 3 if "ele" in plat else 4
 
+    store_name = target_order.get("store_name") or "霸王餐店铺"
+    acc_name = acc.get("nickname") or account_key or "当前账号"
+    job_id = f"delay_voucher_{order_id}_{int(time.time())}"
+    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    steps = [
+        f"[{now_str}] 启动领红包延时特权: 店铺【{store_name}】(官方订单 #{promo_order_id})",
+        f"[{now_str}] 账号核验: 账号【{acc_name}】",
+        f"[{now_str}] 发起营销任务 RPC: SilkwormMarketing.CompleteTaskEvent (task_type={task_type})"
+    ]
+
     try:
         res = await client.complete_task_event(
             token=acc["token"],
@@ -4325,6 +4374,14 @@ async def delay_order_voucher(order_id: int):
                 "expire_time": new_exp
             })
 
+        t_end = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_end}] 官方特权已激活: 凭据上传有效期已顺延 {delay_hours} 小时")
+        steps.append(f"[{t_end}] 流程完成 - 订单记录已更新")
+        try:
+            db.add_job_log(job_id, account_key, "delay_voucher", "success", "\n".join(steps))
+        except Exception:
+            pass
+
         msg = f"官方领红包延时特权已成功激活！凭据上传有效期已顺延 {delay_hours} 小时" if (is_delayed or raw_delay_time > 0) else "已成功向官方提交延时请求"
         return {
             "ok": True,
@@ -4334,12 +4391,205 @@ async def delay_order_voucher(order_id: int):
             "raw": res
         }
     except XiaoCanRPCError as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 官方接口返回异常: {e.msg} (错误码: {e.code})")
+        try:
+            db.add_job_log(job_id, account_key, "delay_voucher", "error", "\n".join(steps))
+        except Exception:
+            pass
         logger.warning(f"领红包延时接口返回异常: {e}")
         raise HTTPException(status_code=400, detail=f"官方接口响应: {e.msg} (错误码: {e.code})")
     except Exception as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 延时操作服务异常: {str(e)}")
+        try:
+            db.add_job_log(job_id, account_key, "delay_voucher", "error", "\n".join(steps))
+        except Exception:
+            pass
         logger.error(f"领红包延时请求失败: {e}")
         raise HTTPException(status_code=500, detail=f"领红包延时网络或服务异常: {str(e)}")
 
+
+
+@router.get("/orders/{order_id}/delay-card-info")
+async def get_order_delay_card_info(order_id: int):
+    """
+    获取订单延时券可用状态及次日 06:00 临界阈值
+    已绑定外卖单号的订单彻底拦截不可使用延时券
+    """
+    target_order = db.get_order_by_id(order_id)
+    if not target_order:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    if target_order.get("platform_order_id"):
+        raise HTTPException(status_code=400, detail="已绑定外卖单号的订单无法使用延时券")
+
+    account_key = target_order.get("account_key")
+    acc = db.get_account_by_key(account_key) if account_key else None
+    if not acc or not acc.get("token"):
+        all_accs = db.get_all_accounts()
+        valid_accs = [a for a in all_accs if a.get("token")]
+        if valid_accs:
+            acc = valid_accs[0]
+        else:
+            raise HTTPException(status_code=400, detail="对应小蚕账号凭据已失效或未登录")
+
+    # 获取用户卡包中可用的延时券数量 (status: 0 未使用)
+    available_cards = 0
+    try:
+        cards_res = await client.get_user_card_list(
+            token=acc["token"],
+            silk_id=acc.get("silk_id"),
+            user_id=acc.get("user_id"),
+            city_code=acc.get("city_code") or 440303,
+            status=0,
+            number=100
+        )
+        card_items = cards_res.get("list") or cards_res.get("cards") or []
+        for c in card_items:
+            card_obj = c.get("card") if isinstance(c.get("card"), dict) else {}
+            ctype = int(c.get("card_type") or c.get("type") or card_obj.get("card_type") or card_obj.get("type") or 0)
+            cname = str(c.get("card_name") or c.get("name") or card_obj.get("name") or card_obj.get("title") or "")
+            cdesc = str(c.get("desc") or card_obj.get("desc") or "")
+            if ctype == 2 or "延时" in cname or "延时" in cdesc:
+                available_cards += int(c.get("count") or c.get("number") or 1)
+        logger.info(f"订单 #{order_id} 延时券检测: 查得卡券共 {len(card_items)} 张，识别可用延时券 {available_cards} 张")
+    except Exception as e:
+        logger.warning(f"获取卡包延时券数量失败: {e}")
+    timeout_time = int(target_order.get("timeout_time") or 0)
+    if timeout_time <= 0 and target_order.get("order_time"):
+        timeout_time = int(target_order["order_time"]) + 7200
+
+    # 计算次日 06:00 阈值限制
+    now_ts = int(time.time())
+    base_ts = max(timeout_time, now_ts)
+    dt_base = datetime.fromtimestamp(base_ts)
+    if dt_base.hour < 6:
+        limit_dt = dt_base.replace(hour=6, minute=0, second=0, microsecond=0)
+    else:
+        limit_dt = (dt_base + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+    limit_ts = int(limit_dt.timestamp())
+    remaining_sec = max(0, limit_ts - timeout_time)
+    allowed_hours = remaining_sec // 3600
+    max_usable = min(available_cards, allowed_hours)
+    next_6am_str = limit_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    promo_order_id = target_order.get("promotion_order_id") or 0
+    return {
+        "ok": True,
+        "order_id": order_id,
+        "promotion_order_id": promo_order_id,
+        "has_completed_reward_delay": int(target_order.get("delay_count") or 0) > 0,
+        "available_delay_cards": available_cards,
+        "timeout_time": timeout_time,
+        "expire_time": target_order.get("expire_time") or "",
+        "allowed_hours_to_6am": allowed_hours,
+        "max_usable_count": max(0, max_usable),
+        "delay_card_used_count": int(target_order.get("delay_card_used_count") or 0),
+        "next_6am_str": next_6am_str
+    }
+
+
+@router.post("/orders/{order_id}/use-delay-card")
+async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(default={})):
+    """
+    使用延时券延长活动订单有效期 (每张延长 1 小时，最晚延至次日 06:00)
+    微服务: Silkworm.SilkwormService.DelayPromotionQuota
+    """
+    target_order = db.get_order_by_id(order_id)
+    if not target_order:
+        raise HTTPException(status_code=404, detail="订单记录不存在")
+
+    if target_order.get("platform_order_id"):
+        raise HTTPException(status_code=400, detail="已绑定外卖单号的订单无法使用延时券")
+
+    count = int(data.get("count") or 1)
+    if count < 1:
+        raise HTTPException(status_code=400, detail="延时券使用数量必须大于等于 1")
+
+    account_key = target_order.get("account_key")
+    acc = db.get_account_by_key(account_key) if account_key else None
+    if not acc or not acc.get("token"):
+        all_accs = db.get_all_accounts()
+        valid_accs = [a for a in all_accs if a.get("token")]
+        if valid_accs:
+            acc = valid_accs[0]
+        else:
+            raise HTTPException(status_code=400, detail="对应小蚕账号凭据已失效或未登录")
+
+    promo_order_id = target_order.get("promotion_order_id") or 0
+    if not promo_order_id:
+        order_sn = target_order.get("order_sn", "")
+        m = re.search(r'(\d{8,10})$', order_sn)
+        if m:
+            promo_order_id = int(m.group(1))
+
+    if not promo_order_id:
+        raise HTTPException(status_code=400, detail="该订单缺少官方活动订单号 promotion_order_id，无法使用延时券")
+
+    store_name = target_order.get("store_name") or "霸王餐店铺"
+    acc_name = acc.get("nickname") or account_key or "当前账号"
+    job_id = f"delay_card_{order_id}_{int(time.time())}"
+    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    steps = [
+        f"[{now_str}] 启动使用延时券: 店铺【{store_name}】(官方订单 #{promo_order_id}, 申请使用 {count} 张延时券)",
+        f"[{now_str}] 账号核验: 账号【{acc_name}】",
+        f"[{now_str}] 发起官方延时 RPC: Silkworm.SilkwormService.DelayPromotionQuota (delay_card_number={count})"
+    ]
+
+    try:
+        res = await client.delay_promotion_quota(
+            token=acc["token"],
+            silk_id=acc.get("silk_id"),
+            user_id=acc.get("user_id"),
+            promotion_order_id=promo_order_id,
+            delay_card_number=count,
+            city_code=acc.get("city_code") or 440303
+        )
+        curr_tt = int(target_order.get("timeout_time") or 0)
+        new_tt = curr_tt + count * 3600
+        new_exp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_tt)) if new_tt > 0 else ""
+        used_count = int(target_order.get("delay_card_used_count") or 0) + count
+        db.update_order(order_id, {
+            "timeout_time": new_tt,
+            "expire_time": new_exp,
+            "delay_card_used_count": used_count
+        })
+
+        t_end = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_end}] 官方延时成功: 凭证有效期已延长 {count} 小时，最新截止时间: {new_exp}")
+        steps.append(f"[{t_end}] 流程完成 - 订单状态与卡包延时券记录已更新")
+        try:
+            db.add_job_log(job_id, account_key, "delay_card", "success", "\n".join(steps))
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "message": f"成功使用 {count} 张延时券，订单提交有效期已顺延 {count} 小时",
+            "timeout_time": new_tt,
+            "expire_time": new_exp,
+            "delay_card_used_count": used_count,
+            "raw": res
+        }
+    except XiaoCanRPCError as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 官方接口返回异常: {e.msg} (错误码: {e.code})")
+        try:
+            db.add_job_log(job_id, account_key, "delay_card", "error", "\n".join(steps))
+        except Exception:
+            pass
+        logger.warning(f"使用延时券官方接口返回异常: {e}")
+        raise HTTPException(status_code=400, detail=f"官方接口响应: {e.msg} (错误码: {e.code})")
+    except Exception as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 延时操作服务异常: {str(e)}")
+        try:
+            db.add_job_log(job_id, account_key, "delay_card", "error", "\n".join(steps))
+        except Exception:
+            pass
+        logger.error(f"使用延时券网络或服务异常: {e}")
+        raise HTTPException(status_code=500, detail=f"使用延时券请求异常: {str(e)}")
 
 
 @router.post("/orders/{order_id}/use-free-card")

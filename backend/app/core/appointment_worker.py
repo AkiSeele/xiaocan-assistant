@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any
 
 from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds
+from .scheduler import mark_task_started, mark_task_finished
 from .notifier import send_system_notification
 from .notification import NotificationEvent, NotificationLevel
 from . import time_service
@@ -125,130 +126,256 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
     }
     source_label = source_labels.get(action_source, "自动抢单")
 
-    log_steps = []
-    t_start = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    log_steps.append(f"[{t_start}] 启动抢单流水: 店铺【{store_name}】(活动ID: {promotion_id}, 平台: {platform_name}, 触发方式: {source_label})")
-
+    mark_task_started(account_key, task_id)
     try:
-        lat = float(account.get("latitude") or 0.0)
-    except Exception:
-        lat = 0.0
-    try:
-        lon = float(account.get("longitude") or 0.0)
-    except Exception:
-        lon = 0.0
+        log_steps = []
+        t_start = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        log_steps.append(f"[{t_start}] 启动抢单流水: 店铺【{store_name}】(活动ID: {promotion_id}, 平台: {platform_name}, 触发方式: {source_label})")
 
-    t_step1 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    log_steps.append(f"[{t_step1}] 步骤 1/4: 账号鉴权及定位核验 - 账号【{nickname}】，定位经纬度 ({lat:.5f}, {lon:.5f})，城市代码 {city_code}")
-    # 红包使用策略解析与防失效自愈降级 (优先使用提前 25 秒预加载并锁定的红包，消除开抢时的网络延时)
-    redpack_id = apt.get("cached_redpack_id")
-    redpack_mode = apt.get("redpack_mode", 0)
-    rp_desc = "未使用"
-    if redpack_id is not None:
-        rp_desc = f"预锁定红包 #{redpack_id}"
-    elif redpack_mode == 0:
-        # 自动使用最高额度红包 (对齐微信小程序/省心版)
         try:
-            max_rp = await client.get_user_max_redpack(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-            rep_pack = max_rp.get("rep_pack") or {}
-            if not rep_pack and max_rp.get("platform_red_packs"):
-                rep_pack = max_rp["platform_red_packs"][0]
-            if rep_pack and rep_pack.get("user_red_pack_id"):
-                redpack_id = int(rep_pack["user_red_pack_id"])
-                rp_val = float(rep_pack.get("reward_num", 0) or 0) / 100
-                rp_desc = f"智能匹配最优红包 #{redpack_id} (金额: ¥{rp_val:.2f})"
-            else:
-                rp_desc = "未找到可用平台红包，以无红包模式发起"
-        except Exception as rpe:
-            rp_desc = f"自动查询红包跳过: {rpe}"
-    elif redpack_mode == 1:
-        specified_rp_id = None
-        if apt.get("redpack_id"):
-            try:
-                specified_rp_id = int(apt["redpack_id"])
-            except Exception:
-                pass
-
-        if specified_rp_id:
-            # 核验指定红包是否仍有效且未在移动端核销
-            is_valid_specified = False
-            unused_list = []
-            try:
-                rp_res = await client.get_app_redpack_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, page=1, page_size=50)
-                unused_list = rp_res.get("unused_items") or []
-                for item in unused_list:
-                    if int(item.get("user_red_pack_id") or 0) == specified_rp_id:
-                        is_valid_specified = True
-                        redpack_id = specified_rp_id
-                        rp_name = item.get("name") or apt.get("redpack_name") or ""
-                        item_val = float(item.get("reward_num", 0) or 0) / 100
-                        rp_desc = f"指定红包 #{redpack_id} ({rp_name}, 金额: ¥{item_val:.2f})"
-                        break
-            except Exception as e:
-                logger.warning(f"核验指定红包有效性异常: {e}")
-                redpack_id = specified_rp_id
-                rp_desc = f"指定红包 #{redpack_id}"
-                is_valid_specified = True
-
-            if not is_valid_specified:
-                # 触发防核销自愈降级替换：预选红包已在移动端被使用或过期
-                logger.warning(f"预约任务 #{aid} 指定红包 #{specified_rp_id} 已在端外使用或失效，启动平滑自愈替换...")
-                best_replacement = None
-                if unused_list:
-                    sorted_unused = sorted(unused_list, key=lambda x: float(x.get("reward_num") or 0), reverse=True)
-                    best_replacement = sorted_unused[0]
-
-                if best_replacement and best_replacement.get("user_red_pack_id"):
-                    redpack_id = int(best_replacement["user_red_pack_id"])
-                    best_val = float(best_replacement.get("reward_num", 0) or 0) / 100
-                    rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，已自愈平滑替换为当前最优红包 #{redpack_id} (金额: ¥{best_val:.2f})"
-                else:
-                    redpack_id = None
-                    rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，当前无其他可用红包，自愈降级为无红包模式"
-        else:
-            rp_desc = "未指定有效红包ID，以无红包模式发起"
-    else:
-        rp_desc = "用户设置不使用红包"
-
-    t_step2 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    log_steps.append(f"[{t_step2}] 步骤 2/4: 红包策略决策 - {rp_desc}")
-
-    try:
-        t_step3 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_steps.append(f"[{t_step3}] 步骤 3/4: 发起官方抢单 RPC 握手 - promotion_id={promotion_id}, store_platform={platform_code}, advance={advance}")
-
-        res = await client.grab_promotion_quota(
-            promotion_id=apt["promotion_id"],
-            token=token,
-            silk_id=silk_id,
-            user_id=user_id,
-            city_code=city_code,
-            store_platform=platform_code,
-            if_advance_order=advance,
-            latitude=lat,
-            longitude=lon,
-            redpack_id=redpack_id,
-            store_id=str(apt.get("store_id") or ""),
-            store_name=str(apt.get("store_name") or ""),
-            wm_poi_id=str(apt.get("wm_poi_id") or "")
-        )
-        
-        # 严格校验小蚕官方订单编号 (成功时必须返回 promotion_order_id > 0)
-        order_id = res.get("promotion_order_id") or (res.get("order") or {}).get("promotion_order_id") or 0
-        try:
-            order_id = int(order_id)
+            lat = float(account.get("latitude") or 0.0)
         except Exception:
-            order_id = 0
+            lat = 0.0
+        try:
+            lon = float(account.get("longitude") or 0.0)
+        except Exception:
+            lon = 0.0
 
-        linked_log_id = int(apt.get("log_id") or 0)
+        t_step1 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        log_steps.append(f"[{t_step1}] 步骤 1/4: 账号鉴权及定位核验 - 账号【{nickname}】，定位经纬度 ({lat:.5f}, {lon:.5f})，城市代码 {city_code}")
+        # 红包使用策略解析与防失效自愈降级 (优先使用提前 25 秒预加载并锁定的红包，消除开抢时的网络延时)
+        redpack_id = apt.get("cached_redpack_id")
+        redpack_mode = apt.get("redpack_mode", 0)
+        rp_desc = "未使用"
+        if redpack_id is not None:
+            rp_desc = f"预锁定红包 #{redpack_id}"
+        elif redpack_mode == 0:
+            # 自动使用最高额度红包 (对齐微信小程序/省心版)
+            try:
+                max_rp = await client.get_user_max_redpack(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
+                rep_pack = max_rp.get("rep_pack") or {}
+                if not rep_pack and max_rp.get("platform_red_packs"):
+                    rep_pack = max_rp["platform_red_packs"][0]
+                if rep_pack and rep_pack.get("user_red_pack_id"):
+                    redpack_id = int(rep_pack["user_red_pack_id"])
+                    rp_val = float(rep_pack.get("reward_num", 0) or 0) / 100
+                    rp_desc = f"智能匹配最优红包 #{redpack_id} (金额: ¥{rp_val:.2f})"
+                else:
+                    rp_desc = "未找到可用平台红包，以无红包模式发起"
+            except Exception as rpe:
+                rp_desc = f"自动查询红包跳过: {rpe}"
+        elif redpack_mode == 1:
+            specified_rp_id = None
+            if apt.get("redpack_id"):
+                try:
+                    specified_rp_id = int(apt["redpack_id"])
+                except Exception:
+                    pass
 
-        if order_id <= 0:
-            err_msg = (res.get("status") or {}).get("msg") or res.get("msg") or "未返回有效订单号，官方抢单未生效"
+            if specified_rp_id:
+                # 核验指定红包是否仍有效且未在移动端核销
+                is_valid_specified = False
+                unused_list = []
+                try:
+                    rp_res = await client.get_app_redpack_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code, page=1, page_size=50)
+                    unused_list = rp_res.get("unused_items") or []
+                    for item in unused_list:
+                        if int(item.get("user_red_pack_id") or 0) == specified_rp_id:
+                            is_valid_specified = True
+                            redpack_id = specified_rp_id
+                            rp_name = item.get("name") or apt.get("redpack_name") or ""
+                            item_val = float(item.get("reward_num", 0) or 0) / 100
+                            rp_desc = f"指定红包 #{redpack_id} ({rp_name}, 金额: ¥{item_val:.2f})"
+                            break
+                except Exception as e:
+                    logger.warning(f"核验指定红包有效性异常: {e}")
+                    redpack_id = specified_rp_id
+                    rp_desc = f"指定红包 #{redpack_id}"
+                    is_valid_specified = True
+
+                if not is_valid_specified:
+                    # 触发防核销自愈降级替换：预选红包已在移动端被使用或过期
+                    logger.warning(f"预约任务 #{aid} 指定红包 #{specified_rp_id} 已在端外使用或失效，启动平滑自愈替换...")
+                    best_replacement = None
+                    if unused_list:
+                        sorted_unused = sorted(unused_list, key=lambda x: float(x.get("reward_num") or 0), reverse=True)
+                        best_replacement = sorted_unused[0]
+
+                    if best_replacement and best_replacement.get("user_red_pack_id"):
+                        redpack_id = int(best_replacement["user_red_pack_id"])
+                        best_val = float(best_replacement.get("reward_num", 0) or 0) / 100
+                        rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，已自愈平滑替换为当前最优红包 #{redpack_id} (金额: ¥{best_val:.2f})"
+                    else:
+                        redpack_id = None
+                        rp_desc = f"预设红包 #{specified_rp_id} 已在移动端使用，当前无其他可用红包，自愈降级为无红包模式"
+            else:
+                rp_desc = "未指定有效红包ID，以无红包模式发起"
+        else:
+            rp_desc = "用户设置不使用红包"
+
+        t_step2 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        log_steps.append(f"[{t_step2}] 步骤 2/4: 红包策略决策 - {rp_desc}")
+
+        try:
+            t_step3 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            log_steps.append(f"[{t_step3}] 步骤 3/4: 发起官方抢单 RPC 握手 - promotion_id={promotion_id}, store_platform={platform_code}, advance={advance}")
+
+            res = await client.grab_promotion_quota(
+                promotion_id=apt["promotion_id"],
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                city_code=city_code,
+                store_platform=platform_code,
+                if_advance_order=advance,
+                latitude=lat,
+                longitude=lon,
+                redpack_id=redpack_id,
+                store_id=str(apt.get("store_id") or ""),
+                store_name=str(apt.get("store_name") or ""),
+                wm_poi_id=str(apt.get("wm_poi_id") or "")
+            )
+        
+            # 严格校验小蚕官方订单编号 (成功时必须返回 promotion_order_id > 0)
+            order_id = res.get("promotion_order_id") or (res.get("order") or {}).get("promotion_order_id") or 0
+            try:
+                order_id = int(order_id)
+            except Exception:
+                order_id = 0
+
+            linked_log_id = int(apt.get("log_id") or 0)
+
+            if order_id <= 0:
+                err_msg = (res.get("status") or {}).get("msg") or res.get("msg") or "未返回有效订单号，官方抢单未生效"
+                t_step4 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                log_steps.append(f"[{t_step4}] 步骤 4/4: 官方接口返回未成功 - 提示: {err_msg}")
+                log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程结束 - 抢单未锁定名额")
+                logger.warning(f"预约/监听任务 #{aid} 抢单未成功: {err_msg}")
+                grab_text = "\n".join(log_steps)
+                if linked_log_id > 0:
+                    _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
+                else:
+                    try:
+                        db.add_job_log(job_id, account_key, task_id, "error", grab_text)
+                    except Exception:
+                        pass
+                return {"ok": False, "code": -1, "message": err_msg}
+
             t_step4 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            log_steps.append(f"[{t_step4}] 步骤 4/4: 官方接口返回未成功 - 提示: {err_msg}")
-            log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程结束 - 抢单未锁定名额")
-            logger.warning(f"预约/监听任务 #{aid} 抢单未成功: {err_msg}")
+            log_steps.append(f"[{t_step4}] 步骤 4/4: 抢单成功锁定 - 官方系统订单 #{order_id} 生成完毕！")
+            success_msg = f"抢单成功锁定！官方系统订单 #{order_id} 生成完毕，请前往外卖平台下单"
+
+            raw_pid_str = str(apt.get("promotion_id") or "").strip()
+            clean_pid_str = re.sub(r"_p\d+$", "", raw_pid_str)
+            try:
+                pid_int = int(clean_pid_str)
+            except Exception:
+                pid_int = 0
+            rebate_type_str = str(apt.get("rebate_type") or "").strip().lower()
+            rebate_desc_str = str(apt.get("rebate_desc") or "").strip()
+            is_percent_order = (
+                rebate_type_str == "percent"
+                or pid_int >= 10_000_000_000
+                or "%" in rebate_desc_str
+                or "比例" in rebate_desc_str
+                or bool(res.get("user_ratio"))
+                or bool(res.get("ratio"))
+                or int(res.get("order_type") or 0) == 12
+                or float(apt.get("order_money") or 0) <= 0
+            )
+
+            # 仅实付满返订单支持触发 App 原生「领红包延时 2 小时」任务特权；百分比/按比例返订单不支持该延时特权
+            if not is_percent_order:
+                try:
+                    delay_task_type = 4 if int(platform_code) == 1 else 3
+                    delay_res = await client.complete_task_event(
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        city_code=city_code,
+                        promotion_order_id=order_id,
+                        task_type=delay_task_type
+                    )
+                    is_delayed = bool(delay_res.get("if_delay") or delay_res.get("if_delay_success") or delay_res.get("ifDelay") or delay_res.get("ifDelaySuccess"))
+                    raw_d_time = int(delay_res.get("delay_time") or delay_res.get("delayTime") or 0)
+                    if is_delayed or raw_d_time > 0:
+                        d_time = raw_d_time if raw_d_time > 0 else 7200
+                        log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
+                except Exception as de:
+                    logger.info(f"领红包延时触发提示: {de}")
+
+            log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程完成 - 订单状态已置为待下单，已投递抢单成功系统通知")
+            logger.info(f"预约/监听任务 #{aid} 抢单成功: {success_msg}")
+
+            # 写入订单库
+            try:
+                ratio_val = 0.0
+                if is_percent_order:
+                    raw_r = float(res.get("user_ratio") or res.get("ratio") or 0)
+                    if raw_r > 0:
+                        ratio_val = round(raw_r / 100.0 if raw_r >= 100 else raw_r, 1)
+                    else:
+                        m_ratio = re.search(r"(\d+(?:\.\d+)?)\s*%", rebate_desc_str)
+                        if m_ratio:
+                            ratio_val = float(m_ratio.group(1))
+                delay_val = 1 if (is_delayed or raw_d_time > 0) else 0
+                now_ts_order = int(time.time())
+                tt_val = now_ts_order + d_time if (is_delayed or raw_d_time > 0) else now_ts_order + 7200
+                exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(tt_val))
+                db.save_order({
+                    "account_key": apt["account_key"],
+                    "order_sn": str(res.get("order_id_str") or order_id),
+                    "promotion_order_id": order_id,
+                    "store_id": apt["store_id"],
+                    "store_name": apt["store_name"],
+                    "store_icon": apt.get("store_icon") or "",
+                    "platform": apt.get("platform", "meituan"),
+                    "order_money": 0.0 if is_percent_order else float(apt.get("order_money", 0.0)),
+                    "rebate_money": float(apt.get("rebate_price", 0.0)),
+                    "order_type": 12 if is_percent_order else 1,
+                    "rebate_ratio": ratio_val,
+                    "status": "pending",
+                    "condition": "无需评价",
+                    "order_time": now_ts_order,
+                    "timeout_time": tt_val,
+                    "expire_time": exp_str,
+                    "delay_count": delay_val
+                })
+            except Exception as oe:
+                logger.warning(f"写入订单记录失败: {oe}")
+
+            # 发送系统通知
+            await send_system_notification(
+                title="小蚕霸王餐抢单成功",
+                content=f"账号【{account.get('nickname')}】已成功抢到【{apt['store_name']}】({apt.get('rebate_desc', '')})，订单号 #{order_id}，请及时在平台下单",
+                account_key=apt.get("account_key"),
+                event=NotificationEvent.GRAB_SUCCESS,
+                level=NotificationLevel.SUCCESS
+            )
+
+            if aid > 0:
+                db.update_appointment(aid, {
+                    "status": "success",
+                    "outcome": success_msg
+                })
+                invalidate_worker_cache()
+
             grab_text = "\n".join(log_steps)
+            if linked_log_id > 0:
+                _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="success")
+            else:
+                try:
+                    db.add_job_log(job_id, account_key, task_id, "success", grab_text)
+                except Exception:
+                    pass
+
+            return {"ok": True, "order_id": order_id, "message": success_msg}
+        except XiaoCanRPCError as e:
+            t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            log_steps.append(f"[{t_err}] 官方接口响应异常: {e.msg} (错误码: {e.code})")
+            logger.warning(f"抢单接口响应: code={e.code}, msg={e.msg}")
+            grab_text = "\n".join(log_steps)
+            linked_log_id = int(apt.get("log_id") or 0)
             if linked_log_id > 0:
                 _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
             else:
@@ -256,149 +383,34 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                     db.add_job_log(job_id, account_key, task_id, "error", grab_text)
                 except Exception:
                     pass
-            return {"ok": False, "code": -1, "message": err_msg}
-
-        t_step4 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_steps.append(f"[{t_step4}] 步骤 4/4: 抢单成功锁定 - 官方系统订单 #{order_id} 生成完毕！")
-        success_msg = f"抢单成功锁定！官方系统订单 #{order_id} 生成完毕，请前往外卖平台下单"
-
-        raw_pid_str = str(apt.get("promotion_id") or "").strip()
-        clean_pid_str = re.sub(r"_p\d+$", "", raw_pid_str)
-        try:
-            pid_int = int(clean_pid_str)
-        except Exception:
-            pid_int = 0
-        rebate_type_str = str(apt.get("rebate_type") or "").strip().lower()
-        rebate_desc_str = str(apt.get("rebate_desc") or "").strip()
-        is_percent_order = (
-            rebate_type_str == "percent"
-            or pid_int >= 10_000_000_000
-            or "%" in rebate_desc_str
-            or "比例" in rebate_desc_str
-            or bool(res.get("user_ratio"))
-            or bool(res.get("ratio"))
-            or int(res.get("order_type") or 0) == 12
-            or float(apt.get("order_money") or 0) <= 0
-        )
-
-        # 仅实付满返订单支持触发 App 原生「领红包延时 2 小时」任务特权；百分比/按比例返订单不支持该延时特权
-        if not is_percent_order:
-            try:
-                delay_task_type = 4 if int(platform_code) == 1 else 3
-                delay_res = await client.complete_task_event(
-                    token=token,
-                    silk_id=silk_id,
-                    user_id=user_id,
-                    city_code=city_code,
-                    promotion_order_id=order_id,
-                    task_type=delay_task_type
-                )
-                is_delayed = bool(delay_res.get("if_delay") or delay_res.get("if_delay_success") or delay_res.get("ifDelay") or delay_res.get("ifDelaySuccess"))
-                raw_d_time = int(delay_res.get("delay_time") or delay_res.get("delayTime") or 0)
-                if is_delayed or raw_d_time > 0:
-                    d_time = raw_d_time if raw_d_time > 0 else 7200
-                    log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
-            except Exception as de:
-                logger.info(f"领红包延时触发提示: {de}")
-
-        log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程完成 - 订单状态已置为待下单，已投递抢单成功系统通知")
-        logger.info(f"预约/监听任务 #{aid} 抢单成功: {success_msg}")
-
-        # 写入订单库
-        try:
-            ratio_val = 0.0
-            if is_percent_order:
-                raw_r = float(res.get("user_ratio") or res.get("ratio") or 0)
-                if raw_r > 0:
-                    ratio_val = round(raw_r / 100.0 if raw_r >= 100 else raw_r, 1)
-                else:
-                    m_ratio = re.search(r"(\d+(?:\.\d+)?)\s*%", rebate_desc_str)
-                    if m_ratio:
-                        ratio_val = float(m_ratio.group(1))
-            db.save_order({
-                "account_key": apt["account_key"],
-                "order_sn": str(res.get("order_id_str") or order_id),
-                "promotion_order_id": order_id,
-                "store_id": apt["store_id"],
-                "store_name": apt["store_name"],
-                "store_icon": apt.get("store_icon") or "",
-                "platform": apt.get("platform", "meituan"),
-                "order_money": 0.0 if is_percent_order else float(apt.get("order_money", 0.0)),
-                "rebate_money": float(apt.get("rebate_price", 0.0)),
-                "order_type": 12 if is_percent_order else 1,
-                "rebate_ratio": ratio_val,
-                "status": "pending",
-                "condition": "无需评价",
-                "order_time": int(time.time())
-            })
-        except Exception as oe:
-            logger.warning(f"写入订单记录失败: {oe}")
-
-        # 发送系统通知
-        await send_system_notification(
-            title="小蚕霸王餐抢单成功",
-            content=f"账号【{account.get('nickname')}】已成功抢到【{apt['store_name']}】({apt.get('rebate_desc', '')})，订单号 #{order_id}，请及时在平台下单",
-            account_key=apt.get("account_key"),
-            event=NotificationEvent.GRAB_SUCCESS,
-            level=NotificationLevel.SUCCESS
-        )
-
-        if aid > 0:
-            db.update_appointment(aid, {
-                "status": "success",
-                "outcome": success_msg
-            })
-            invalidate_worker_cache()
-
-        grab_text = "\n".join(log_steps)
-        if linked_log_id > 0:
-            _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="success")
-        else:
-            try:
-                db.add_job_log(job_id, account_key, task_id, "success", grab_text)
-            except Exception:
-                pass
-
-        return {"ok": True, "order_id": order_id, "message": success_msg}
-    except XiaoCanRPCError as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_steps.append(f"[{t_err}] 官方接口响应异常: {e.msg} (错误码: {e.code})")
-        logger.warning(f"抢单接口响应: code={e.code}, msg={e.msg}")
-        grab_text = "\n".join(log_steps)
-        linked_log_id = int(apt.get("log_id") or 0)
-        if linked_log_id > 0:
-            _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
-        else:
-            try:
-                db.add_job_log(job_id, account_key, task_id, "error", grab_text)
-            except Exception:
-                pass
-        if e.code == 401:
-            try:
-                await send_system_notification(
-                    title="账号登录凭据失效",
-                    content=f"账号【{nickname}】在发起抢单时检测到登录凭据已过期或失效，抢单任务已自动挂起停止。请前往「账号管理」重新获取并更新 Token 凭据。",
-                    account_key=account_key,
-                    event=NotificationEvent.TOKEN_WARN,
-                    level=NotificationLevel.WARNING
-                )
-            except Exception:
-                pass
-        return {"ok": False, "code": e.code, "message": e.msg}
-    except Exception as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        log_steps.append(f"[{t_err}] 抢单接口网络异常: {str(e)}")
-        logger.error(f"抢单接口网络异常: {e}")
-        grab_text = "\n".join(log_steps)
-        linked_log_id = int(apt.get("log_id") or 0)
-        if linked_log_id > 0:
-            _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
-        else:
-            try:
-                db.add_job_log(job_id, account_key, task_id, "error", grab_text)
-            except Exception:
-                pass
-        return {"ok": False, "code": -1, "message": str(e)}
+            if e.code == 401:
+                try:
+                    await send_system_notification(
+                        title="账号登录凭据失效",
+                        content=f"账号【{nickname}】在发起抢单时检测到登录凭据已过期或失效，抢单任务已自动挂起停止。请前往「账号管理」重新获取并更新 Token 凭据。",
+                        account_key=account_key,
+                        event=NotificationEvent.TOKEN_WARN,
+                        level=NotificationLevel.WARNING
+                    )
+                except Exception:
+                    pass
+            return {"ok": False, "code": e.code, "message": e.msg}
+        except Exception as e:
+            t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            log_steps.append(f"[{t_err}] 抢单接口网络异常: {str(e)}")
+            logger.error(f"抢单接口网络异常: {e}")
+            grab_text = "\n".join(log_steps)
+            linked_log_id = int(apt.get("log_id") or 0)
+            if linked_log_id > 0:
+                _append_apt_log(aid, linked_log_id, grab_text, sync_db=True, status="error")
+            else:
+                try:
+                    db.add_job_log(job_id, account_key, task_id, "error", grab_text)
+                except Exception:
+                    pass
+            return {"ok": False, "code": -1, "message": str(e)}
+    finally:
+        mark_task_finished(account_key, task_id)
 
 
 async def process_active_appointments() -> Tuple[bool, bool]:

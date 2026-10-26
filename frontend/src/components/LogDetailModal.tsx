@@ -28,10 +28,12 @@ const TASK_LABELS: Record<string, string> = {
   store_keyword: '商户定时搜索捡漏',
   store_search: '商户定向搜索捡漏',
   store_cancel: '霸王餐名额取消',
+  delay_card: '使用延时券',
+  delay_voucher: '领红包延时',
 
   // 日常自动化任务
+  yb_task: '轻松赚元宝',
   user_sign: '每日签到打卡',
-  sign_in_lottery: '天天赚元宝抽奖',
   vip_task: '会员日常成长任务',
   brand_flash: 'SVIP大牌神券秒杀',
   svip_rebate: 'SVIP专属返利券秒杀',
@@ -225,18 +227,53 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
           <div className="bg-[#1e1e1e] text-[#d4d4d4] p-4 rounded-xl font-mono text-[12px] max-h-[380px] overflow-y-auto whitespace-pre-wrap leading-relaxed shadow-inner select-text">
             {output ? (
               output.split('\n').map((line, idx) => {
-                const lineIsStep = line.includes('步骤') || line.includes('场次') || line.includes('阶段');
-                const lineIsSuccess = line.includes('成功') || line.includes('达成');
-                const lineIsError = line.includes('失败') || line.includes('异常') || line.includes('未成功') || line.includes('代码:');
+                const lineIsStep = line.includes('步骤') || line.includes('场次') || line.includes('阶段') || line.includes('开始执行') || line.includes('处理完毕');
+
+                // 状态通告、已完成/重复完成、进行中、核验等呈现黄色通知高亮
+                const lineIsNotice = 
+                  line.includes('已完成') ||
+                  line.includes('重复完成') ||
+                  line.includes('无需重复') ||
+                  line.includes('已打卡') ||
+                  line.includes('已生效') ||
+                  line.includes('已触发') ||
+                  line.includes('未完成') ||
+                  line.includes('正在') ||
+                  line.includes('检测') ||
+                  line.includes('预热') ||
+                  line.includes('持续') ||
+                  line.includes('嗅探') ||
+                  line.includes('提示') ||
+                  line.includes('拦截') ||
+                  line.includes('待命') ||
+                  line.includes('资产状态同步');
+
+                // 新鲜达成或斩获元宝入账呈现绿色高亮
+                const lineIsSuccess = 
+                  (line.includes('成功') || line.includes('达成') || line.includes('已入账') || line.includes('斩获') || line.includes('抢兑成功')) &&
+                  !line.includes('未成功') &&
+                  !line.includes('失败') &&
+                  !line.includes('已完成');
+
                 const lineIsAborted = line.includes('中断') || line.includes('重启') || line.includes('终止');
-                const lineIsRunning = line.includes('正在') || line.includes('检测') || line.includes('预热') || line.includes('持续') || line.includes('嗅探');
+
+                // 排除正常完成状态后的真正接口报错标红
+                const lineIsError = 
+                  line.includes('失败') ||
+                  line.includes('异常') ||
+                  line.includes('未成功') ||
+                  line.includes('错误') ||
+                  line.includes('403') ||
+                  line.includes('401') ||
+                  line.includes('500') ||
+                  (line.includes('代码:') && !line.includes('已完成') && !line.includes('重复完成'));
 
                 let color = '#d4d4d4';
                 if (lineIsStep) color = '#79b8ff';
+                else if (lineIsNotice) color = '#f9d770';
                 else if (lineIsSuccess) color = '#7ee787';
                 else if (lineIsAborted) color = '#e3b341';
                 else if (lineIsError) color = '#ff7b72';
-                else if (lineIsRunning) color = '#f9d770';
 
                 return (
                   <div key={idx} style={{ color }} className="py-0.5">

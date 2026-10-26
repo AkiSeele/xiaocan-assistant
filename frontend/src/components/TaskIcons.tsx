@@ -96,6 +96,15 @@ export const TaskIcon: React.FC<TaskIconProps> = ({ taskId, className = 'w-9 h-9
           <circle cx="13" cy="24" r="3" fill="#fff" />
         </svg>
       );
+    case 'delay_card':
+    case 'delay_voucher':
+      return (
+        <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}>
+          <circle cx="24" cy="24" r="18" fill="#722ed1" />
+          <circle cx="24" cy="24" r="11" fill="none" stroke="#fff" strokeWidth="2.8" />
+          <path d="M24 17v7l4.5 3.5" stroke="#fff" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
     default:
       return (
         <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}>

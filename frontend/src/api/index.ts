@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, FlashSaleShelfResponse, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, FlashSaleShelfResponse, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, DelayCardInfo, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -123,7 +123,7 @@ export const api = {
   // 店铺与附近霸王餐 (支持经纬度、平台、搜索过滤、触底流式分页)
   getStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; keyword?: string; platform?: string; condition?: string; rebate_type?: string; sort_by?: string; limit?: number; offset?: number; page_pv_id?: string }, signal?: AbortSignal) => 
     client.get<{ ok: boolean; stores: StoreItem[]; total: number; raw_total?: number; source?: string; has_more?: boolean; next_offset?: number; page_pv_id?: string; keyword?: string; error?: string }>('/store/list', { params, signal }).then(r => r.data),
-  scanDualRebateStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; platform?: string; keyword?: string; max_stores?: number }) =>
+  scanDualRebateStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; platform?: string; keyword?: string; max_stores?: number; delay_min?: number; delay_max?: number; page_delay?: number }) =>
     client.get<{
       ok: boolean;
       total_scanned_promotions: number;
@@ -174,6 +174,8 @@ export const api = {
     client.post<{ ok: boolean; order: Order; message: string }>(`/orders/${id}/submit-platform-id`, { platform_order_id: platformOrderId, receipt_img: receiptImg }).then(r => r.data),
   delayOrderVoucher: (id: number) =>
     client.post<{ ok: boolean; is_delayed: boolean; delay_time: number; message: string }>(`/orders/${id}/delay-voucher`).then(r => r.data),
+  getDelayCardInfo: (id: number) => client.get<DelayCardInfo>(`/orders/${id}/delay-card-info`).then(r => r.data),
+  useDelayCard: (id: number, count: number) => client.post<{ ok: boolean; message: string; timeout_time: number; expire_time: string; delay_card_used_count: number }>(`/orders/${id}/use-delay-card`, { count }).then(r => r.data),
   cancelOrder: (id: number) =>
     client.post<{ ok: boolean; message: string; raw?: any }>(`/orders/${id}/cancel`).then(r => r.data),
   deleteOrder: (id: number) => 

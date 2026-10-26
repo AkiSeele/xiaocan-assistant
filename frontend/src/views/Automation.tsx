@@ -1295,7 +1295,7 @@ export const Automation: React.FC = () => {
                         </Select>
                         {pd.hint && (
                           <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 4 }}>
-                            {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
+                            {pd.hint}
                           </Text>
                         )}
                       </div>
@@ -1353,7 +1353,7 @@ export const Automation: React.FC = () => {
                         </div>
                         <div
                           style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e: React.MouseEvent) => e.stopPropagation()}
                         >
                           <Switch
                             checked={isChecked}
@@ -1417,7 +1417,7 @@ export const Automation: React.FC = () => {
                       />
                       {pd.hint && (
                         <Text type="tertiary" size="small" style={{ display: 'block', marginTop: 4 }}>
-                          {pd.hint.replace(/[（(][^）)]*[）)]/g, '').trim()}
+                          {pd.hint}
                         </Text>
                       )}
                     </div>
@@ -1440,15 +1440,37 @@ export const Automation: React.FC = () => {
               </div>
             )}
 
-            {/* 同步全部账号选项 */}
+            {/* 同步全部账号选项 (系统多于1个账号时展示卡片式开关，仅1个账号时完全隐藏) */}
             {accounts.length > 1 && selectedTask.task_id !== 'flash_sale' && (
-              <div style={{ marginTop: 8 }}>
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: '12px 14px',
+                  backgroundColor: 'var(--semi-color-fill-0)',
+                  borderRadius: 'var(--semi-border-radius-medium)',
+                  border: '1px solid var(--semi-color-border)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                  transition: 'border-color 0.2s, background-color 0.2s',
+                }}
+                onClick={() => setDrawerApplyAllAccounts(!drawerApplyAllAccounts)}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <Text strong size="small" style={{ color: 'var(--semi-color-text-0)' }}>
+                    应用到全部托管账号
+                  </Text>
+                  <Text type="tertiary" size="small">
+                    保存时将此配置同步应用至当前托管的全部 {accounts.length} 个账号
+                  </Text>
+                </div>
                 <Checkbox
                   checked={drawerApplyAllAccounts}
                   onChange={(e) => setDrawerApplyAllAccounts(Boolean(e?.target?.checked))}
-                >
-                  <Text size="small">应用到全部托管账号（共 {accounts.length} 个）</Text>
-                </Checkbox>
+                  onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                />
               </div>
             )}
           </div>
@@ -1494,12 +1516,36 @@ export const Automation: React.FC = () => {
           </div>
 
           {accounts.length > 1 && (
-            <Checkbox
-              checked={timeApplyAllAccounts}
-              onChange={(e) => setTimeApplyAllAccounts(Boolean(e?.target?.checked))}
+            <div
+              style={{
+                marginTop: 14,
+                padding: '10px 12px',
+                backgroundColor: 'var(--semi-color-fill-0)',
+                borderRadius: 'var(--semi-border-radius-medium)',
+                border: '1px solid var(--semi-color-border)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+                userSelect: 'none',
+                transition: 'border-color 0.2s, background-color 0.2s',
+              }}
+              onClick={() => setTimeApplyAllAccounts(!timeApplyAllAccounts)}
             >
-              <Text size="small">同时将该时间应用到所有账号</Text>
-            </Checkbox>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <Text strong size="small" style={{ color: 'var(--semi-color-text-0)' }}>
+                  应用到全部托管账号
+                </Text>
+                <Text type="tertiary" size="small">
+                  保存时同步将该时间应用到全部 {accounts.length} 个账号
+                </Text>
+              </div>
+              <Checkbox
+                checked={timeApplyAllAccounts}
+                onChange={(e) => setTimeApplyAllAccounts(Boolean(e?.target?.checked))}
+                onClick={(e: React.MouseEvent) => e.stopPropagation()}
+              />
+            </div>
           )}
         </div>
       </Modal>

@@ -20,6 +20,8 @@ import {
   Empty,
   Spin,
   Tooltip,
+  Popover,
+  InputNumber,
   Banner,
   Badge,
   Row,
@@ -39,7 +41,8 @@ import {
   IconChevronRight,
   IconPlus,
   IconCopy,
-  IconMapPin
+  IconMapPin,
+  IconHelpCircle
 } from '@douyinfe/semi-icons';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -396,6 +399,28 @@ export const StoreSniping: React.FC = () => {
     }
   }, [assetDetail, currentAccountKey, fetchAccountAssets]);
 
+  const handleRefreshAssets = useCallback(async () => {
+    if (!currentAccountKey) {
+      Toast.warning('未选择当前小蚕账号');
+      return;
+    }
+    await fetchAccountAssets(currentAccountKey, true);
+    if (cardFilterStatus !== 0) {
+      try {
+        setCardsLoading(true);
+        const res = await api.getAccountCards(currentAccountKey, cardFilterStatus);
+        if (res.ok) {
+          setAssetDetail(prev => prev ? { ...prev, cards: res.cards || [] } : null);
+        }
+      } catch {
+        // ignore
+      } finally {
+        setCardsLoading(false);
+      }
+    }
+    Toast.success('资产明细已刷新');
+  }, [currentAccountKey, fetchAccountAssets, cardFilterStatus]);
+
   useEffect(() => {
     if (currentAccountKey) {
       fetchAccountAssets(currentAccountKey);
@@ -545,6 +570,48 @@ export const StoreSniping: React.FC = () => {
     }
     return 300;
   });
+  const [dualDelayMin, setDualDelayMin] = useState<number>(() => {
+    try {
+      const cached = localStorage.getItem('xiaocan_dual_delay_min');
+      if (cached) {
+        const parsed = parseFloat(cached);
+        if (!isNaN(parsed) && parsed >= 0.4) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return 1.5;
+  });
+  const [dualDelayMax, setDualDelayMax] = useState<number>(() => {
+    try {
+      const cached = localStorage.getItem('xiaocan_dual_delay_max');
+      if (cached) {
+        const parsed = parseFloat(cached);
+        if (!isNaN(parsed) && parsed >= 0.4) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return 3.0;
+  });
+
+  const handleDualDelayMinChange = useCallback((val: number) => {
+    setDualDelayMin(val);
+    try {
+      localStorage.setItem('xiaocan_dual_delay_min', String(val));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleDualDelayMaxChange = useCallback((val: number) => {
+    setDualDelayMax(val);
+    try {
+      localStorage.setItem('xiaocan_dual_delay_max', String(val));
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // 档位选择与多任务
 
@@ -758,7 +825,9 @@ export const StoreSniping: React.FC = () => {
         account_key: currentAccountKey,
         platform: 'all',
         keyword: targetKw || undefined,
-        max_stores: targetMax
+        max_stores: targetMax,
+        delay_min: Math.min(dualDelayMin, dualDelayMax),
+        delay_max: Math.max(dualDelayMin, dualDelayMax)
       });
       if (res.ok) {
         const sorted = (res.stores || []).slice().sort((a: StoreItem, b: StoreItem) => {
@@ -2777,9 +2846,60 @@ export const StoreSniping: React.FC = () => {
               </div>
             )}
 
-            {/* 同店双返利专属搜索与最多商家配置项 */}
+            {/* 同店双返利专属搜索、翻页延迟与商家范围配置项 */}
             {activeTabKey === 'dual_rebate' && (
               <div className="flex items-center gap-3 w-full sm:w-auto flex-shrink-0 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <Popover
+                    position="top"
+                    showArrow
+                    trigger="hover"
+                    content={
+                      <div className="p-3 max-w-xs text-xs space-y-2">
+                        <div className="font-semibold text-semi-color-text-0 text-sm">建议区间：1.5 ~ 3.0 秒（默认 1.5 ~ 3.0）</div>
+                        <div className="text-semi-color-text-1 leading-relaxed">
+                          设置原因：官方小蚕网关接入了腾讯云 WAF 防火墙，短时间内高频翻页（如连续以 1 秒内触底 20+ 页）会被安全防火墙判定为脚本爬虫，从而触发 403 频控临时封禁。
+                        </div>
+                        <div className="text-semi-color-text-2 leading-relaxed">
+                          运行机制：系统将在设置的区间内按每次翻页随机取抖动值，模拟真人滑动间隔，平稳分摊请求压力，有效杜绝风控拦截。
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div className="flex items-center gap-1 cursor-pointer">
+                      <Text type="secondary" className="text-sm font-medium whitespace-nowrap">翻页延迟:</Text>
+                      <IconHelpCircle size="small" className="text-semi-color-text-2 hover:text-semi-color-primary" />
+                    </div>
+                  </Popover>
+                  <div className="inline-flex items-center h-8 px-2 rounded-md border border-semi-color-border bg-semi-color-bg-0 text-sm">
+                    <InputNumber
+                      size="small"
+                      value={dualDelayMin}
+                      onChange={(v) => handleDualDelayMinChange(Number(v) || 1.5)}
+                      min={0.4}
+                      max={15.0}
+                      step={0.5}
+                      precision={1}
+                      hideButtons
+                      style={{ width: 54 }}
+                      className="[&_input]:!text-center [&_input]:!px-1"
+                    />
+                    <span className="text-semi-color-text-3 px-1 select-none font-medium">~</span>
+                    <InputNumber
+                      size="small"
+                      value={dualDelayMax}
+                      onChange={(v) => handleDualDelayMaxChange(Number(v) || 3.0)}
+                      min={0.4}
+                      max={20.0}
+                      step={0.5}
+                      precision={1}
+                      hideButtons
+                      style={{ width: 54 }}
+                      className="[&_input]:!text-center [&_input]:!px-1"
+                    />
+                    <span className="text-xs text-semi-color-text-2 select-none pl-1 font-medium">秒</span>
+                  </div>
+                </div>
                 <div className="flex items-center gap-1.5">
                   <Text type="secondary" className="text-sm font-medium whitespace-nowrap">商家范围:</Text>
                   <Select
@@ -3108,21 +3228,74 @@ export const StoreSniping: React.FC = () => {
                     title="美团外卖同店双返利智能检索"
                     description="模拟下拉触底流式获取附近店铺，累计商户达到设定范围即停止加载，默认按距离最近由近及远筛选同店同时支持「实付满返」与「按比例返」的美团店铺。"
                   >
-                    <div className="flex items-center justify-center gap-2 mt-4 mb-2">
-                      <Text type="secondary" className="text-sm">商家获取范围:</Text>
-                      <Select
-                        value={dualMaxStores}
-                        onChange={(v) => handleDualMaxStoresChange(Number(v))}
-                        style={{ width: 110 }}
-                        size="default"
-                      >
-                        <Select.Option value={100}>100 家</Select.Option>
-                        <Select.Option value={300}>300 家</Select.Option>
-                        <Select.Option value={500}>500 家</Select.Option>
-                        <Select.Option value={600}>600 家</Select.Option>
-                        <Select.Option value={700}>700 家</Select.Option>
-                        <Select.Option value={800}>800 家</Select.Option>
-                      </Select>
+                    <div className="flex items-center justify-center gap-4 mt-4 mb-2 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <Popover
+                          position="top"
+                          showArrow
+                          trigger="hover"
+                          content={
+                            <div className="p-3 max-w-xs text-xs space-y-2">
+                              <div className="font-semibold text-semi-color-text-0 text-sm">建议区间：1.5 ~ 3.0 秒（默认 1.5 ~ 3.0）</div>
+                              <div className="text-semi-color-text-1 leading-relaxed">
+                                设置原因：官方小蚕网关接入了腾讯云 WAF 防火墙，短时间内高频翻页（如连续以 1 秒内触底 20+ 页）会被安全防火墙判定为脚本爬虫，从而触发 403 频控临时封禁。
+                              </div>
+                              <div className="text-semi-color-text-2 leading-relaxed">
+                                运行机制：系统将在设置的区间内按每次翻页随机取抖动值，模拟真人滑动间隔，平稳分摊请求压力，有效杜绝风控拦截。
+                              </div>
+                            </div>
+                          }
+                        >
+                          <div className="flex items-center gap-1 cursor-pointer">
+                            <Text type="secondary" className="text-sm font-medium whitespace-nowrap">翻页随机延迟:</Text>
+                            <IconHelpCircle size="small" className="text-semi-color-text-2 hover:text-semi-color-primary" />
+                          </div>
+                        </Popover>
+                        <div className="inline-flex items-center h-8 px-2 rounded-md border border-semi-color-border bg-semi-color-bg-0 text-sm">
+                          <InputNumber
+                            size="small"
+                            value={dualDelayMin}
+                            onChange={(v) => handleDualDelayMinChange(Number(v) || 1.5)}
+                            min={0.4}
+                            max={15.0}
+                            step={0.5}
+                            precision={1}
+                            hideButtons
+                            style={{ width: 54 }}
+                            className="[&_input]:!text-center [&_input]:!px-1"
+                          />
+                          <span className="text-semi-color-text-3 px-1 select-none font-medium">~</span>
+                          <InputNumber
+                            size="small"
+                            value={dualDelayMax}
+                            onChange={(v) => handleDualDelayMaxChange(Number(v) || 3.0)}
+                            min={0.4}
+                            max={20.0}
+                            step={0.5}
+                            precision={1}
+                            hideButtons
+                            style={{ width: 54 }}
+                            className="[&_input]:!text-center [&_input]:!px-1"
+                          />
+                          <span className="text-xs text-semi-color-text-2 select-none pl-1 font-medium">秒</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Text type="secondary" className="text-sm">商家获取范围:</Text>
+                        <Select
+                          value={dualMaxStores}
+                          onChange={(v) => handleDualMaxStoresChange(Number(v))}
+                          style={{ width: 110 }}
+                          size="default"
+                        >
+                          <Select.Option value={100}>100 家</Select.Option>
+                          <Select.Option value={300}>300 家</Select.Option>
+                          <Select.Option value={500}>500 家</Select.Option>
+                          <Select.Option value={600}>600 家</Select.Option>
+                          <Select.Option value={700}>700 家</Select.Option>
+                          <Select.Option value={800}>800 家</Select.Option>
+                        </Select>
+                      </div>
                     </div>
                     <Button
                       theme="solid"
@@ -3584,9 +3757,9 @@ export const StoreSniping: React.FC = () => {
             <Button
               theme="light"
               size="small"
-              icon={<IconRefresh spin={assetStats.loading} />}
-              loading={assetStats.loading}
-              onClick={() => fetchAccountAssets()}
+              icon={<IconRefresh spin={assetStats.loading || cardsLoading} />}
+              loading={assetStats.loading || cardsLoading}
+              onClick={handleRefreshAssets}
             >
               刷新明细
             </Button>
