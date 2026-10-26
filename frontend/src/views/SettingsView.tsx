@@ -883,7 +883,7 @@ export const SettingsView: React.FC = () => {
   };
 
   const aboutDescriptions = [
-    { key: '系统版本', value: <Tag color="green" size="small">v1.0.1 企业纯净自研版</Tag> },
+    { key: '系统版本', value: <Tag color="green" size="small">v1.0.2 企业纯净自研版</Tag> },
     { key: '授权状态', value: <Tag color="cyan" size="small">终身免费开放 · 零车位与商业化限制</Tag> },
     { key: '前端技术栈', value: <Tag color="blue" size="small">React 19 + TypeScript + Semi Design + Tailwind CSS v4 + GSAP</Tag> },
     { key: '后端技术栈', value: <Tag color="purple" size="small">FastAPI + APScheduler + 逆向 RPC 驱动 + 腾讯 iLink 灰度协议 + OneBot V11</Tag> },
