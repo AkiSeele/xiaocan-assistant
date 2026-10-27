@@ -104,7 +104,7 @@ def generate_headers(
 
     if token:
         clean_token = token.replace("Bearer ", "").strip()
-        headers["Authorization"] = f"Bearer {clean_token}"
+        # 腾讯云 WAF 安全规则对重复鉴权头敏感：小蚕网关采用原生 x-Sivir 与 token 字段鉴权，去除冗余 Authorization 杜绝 WAF 403 拦截
         headers["token"] = clean_token
         headers["x-Sivir"] = clean_token
 
