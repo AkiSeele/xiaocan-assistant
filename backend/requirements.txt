@@ -7,3 +7,5 @@ python-multipart>=0.0.9
 aiofiles>=24.1.0
 qrcode[pil]>=8.0
 cryptography>=43.0.0
+# TLS 指纹伪装层 (GitHub issue #14): okhttp JA3 自定义指纹; 未安装时 app/protocol/client.py 自动回退 httpx
+curl-cffi>=0.9
