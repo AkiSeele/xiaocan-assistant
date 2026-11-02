@@ -34,6 +34,8 @@ import {
 } from '@douyinfe/semi-ui';
 import { useGSAP, gsap } from '../utils/animations';
 
+
+
 import {
   IconPlus,
   IconDelete,
@@ -958,6 +960,8 @@ export const Accounts: React.FC = () => {
               </Button>
             </Popconfirm>
           )}
+
+          
 
           {/* 添加小蚕账号 */}
           <Button
@@ -3020,7 +3024,7 @@ export const Accounts: React.FC = () => {
 
       {/* 美团优惠券明细 Modal */}
       <Modal
-        title={`美团领券明细 - ${selectedCouponAccount?.nickname || ''}`}
+        title={`今日美团卡券明细 - ${selectedCouponAccount?.nickname || ''}`}
         visible={couponModalVisible}
         onCancel={() => setCouponModalVisible(false)}
         footer={
@@ -3033,10 +3037,28 @@ export const Accounts: React.FC = () => {
       >
         <div style={{ maxHeight: 420, overflowY: 'auto' }}>
           {(() => {
-            const list = selectedCouponAccount?.meituan_last_claimed_details || selectedCouponAccount?.last_claimed_details || [];
-            if (!list || list.length === 0) {
+            const rawList = selectedCouponAccount?.meituan_last_claimed_details || selectedCouponAccount?.last_claimed_details || [];
+            if (!rawList || rawList.length === 0) {
               return <Empty title="暂无优惠券明细" description="该账号尚未记录领券明细或今日领券未返回具体明细。" />;
             }
+
+            // 严格排序：外卖券排在最前面，根据满减门槛从小到大排序
+            const list = rawList.slice().sort((a, b) => {
+              const aName = (a.couponName || a.name || '') + (a.tabName || '');
+              const bName = (b.couponName || b.name || '') + (b.tabName || '');
+              const aWaimai = aName.includes('外卖') ? 0 : 1;
+              const bWaimai = bName.includes('外卖') ? 0 : 1;
+              if (aWaimai !== bWaimai) return aWaimai - bWaimai;
+
+              const aLimit = a.priceLimit ?? (parseFloat(a.priceLimitYuan || '0') * 100);
+              const bLimit = b.priceLimit ?? (parseFloat(b.priceLimitYuan || '0') * 100);
+              if (aLimit !== bLimit) return aLimit - bLimit;
+
+              const aVal = a.couponValue ?? (parseFloat(a.couponValueYuan || '0') * 100);
+              const bVal = b.couponValue ?? (parseFloat(b.couponValueYuan || '0') * 100);
+              return bVal - aVal;
+            });
+
             return (
               <div className="space-y-2">
                 {list.map((c, idx) => (
@@ -3046,7 +3068,9 @@ export const Accounts: React.FC = () => {
                   >
                     <div className="min-w-0 pr-3">
                       <div className="flex items-center gap-2 mb-1">
-                        <Tag color="orange" size="small">{c.tabName || '优惠券'}</Tag>
+                        <Tag color={c.tabName?.includes('外卖') ? 'orange' : 'cyan'} size="small">
+                          {c.tabName || '优惠券'}
+                        </Tag>
                         <Text strong className="text-sm truncate">{c.name || (c as any).couponName}</Text>
                       </div>
                       <Text type="tertiary" className="text-xs">{c.valid_period || (c as any).validPeriod || '在有效期内'}</Text>
@@ -3065,7 +3089,9 @@ export const Accounts: React.FC = () => {
       </Modal>
 
       {/* 修改美团备注名称 Modal */}
-      <Modal
+            
+
+<Modal
         title={`修改美团账号备注 - ${editingMeituanAccount?.nickname || ''}`}
         visible={editMeituanModalVisible}
         onCancel={() => setEditMeituanModalVisible(false)}

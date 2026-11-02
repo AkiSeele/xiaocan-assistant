@@ -114,12 +114,15 @@ def get_node_executable() -> str:
     if which_node_exe and which_node_exe not in candidates:
         candidates.append(which_node_exe)
 
-    # 3. Unix / Linux / macOS 常见安装路径探测
+    # 3. Unix / Linux / macOS / Android Termux 常见安装路径探测
+    termux_prefix = os.environ.get("PREFIX", "")
     unix_paths = [
         "/usr/local/bin/node",
         "/opt/homebrew/bin/node",
         "/usr/bin/node",
         "/bin/node",
+        "/data/data/com.termux/files/usr/bin/node",
+        os.path.join(termux_prefix, "bin", "node") if termux_prefix else "",
     ]
     for p in unix_paths:
         if os.path.isfile(p) and p not in candidates:
@@ -248,6 +251,13 @@ def run_node_command(args: List[str], timeout: int = 35) -> Dict[str, Any]:
             "success": False,
             "error": "TIMEOUT",
             "message": f"调用命令超时 ({timeout}秒)"
+        }
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "success": False,
+            "error": "NODE_NOT_FOUND",
+            "message": "宿主机未检测到 Node.js (node 命令不存在)。若在手机(Termux)运行，请执行: pkg install nodejs-lts 安装 Node 环境以启用美团风控签名。"
         }
     except Exception as e:
         return {

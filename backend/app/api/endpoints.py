@@ -35,8 +35,7 @@ client = XiaoCanClient()
 # 任务元数据定义 (涵盖日常、秒杀与资产守护共 15 项全量对齐)
 TASK_META = {
     # --- 日常打卡与元宝任务 (daily) ---
-    "yb_task": {"id": "yb_task", "label": "领天天赚元宝", "tip": "自动完成社群打卡、电商浏览、领券加赠及天天打卡，一键聚拢元宝", "category": "daily", "default_time": "08:05"},
-    "yb_sign": {"id": "yb_sign", "label": "天天赚元宝签到", "tip": "官方App赚钱界面『天天赚元宝』每日签到打卡，累积连续签到天数并领取元宝奖励", "category": "daily", "default_time": "08:10"},
+    "yb_task": {"id": "yb_task", "label": "轻松赚元宝", "tip": "元宝乐园每日签到、加入社群、领券加赠，一键聚拢成熟元宝", "category": "daily", "default_time": "08:05"},
     "vip_expand": {"id": "vip_expand", "label": "会员每日签到", "tip": "会员每日打卡 + VIP专属签到抽奖 + 里程碑核验 + 专属成长礼包", "category": "daily", "vip": "VIP2+ / SVIP", "default_time": "08:30"},
     "collect_points": {"id": "collect_points", "label": "收取未收元宝", "tip": "晚间睡前自动收取成熟气泡元宝与已完成任务奖励，防过期", "category": "daily", "default_time": "23:59"},
     "group_lottery": {"id": "group_lottery", "label": "免费开红包与抽奖", "tip": "自动领取全部7类免费开红包机会并开启，支持阶梯进度与防风控间隔", "category": "daily", "default_time": "07:40"},
@@ -393,7 +392,7 @@ async def get_account_detail_endpoint(key: str):
         except Exception as e:
             logger.warning(f"获取账号用户详情失败: {e}")
 
-        # 4. 抓取天天赚元宝数据
+        # 4. 获取元宝乐园资产数据
         try:
             t_res = await client.get_user_task_v2(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
             if isinstance(t_res, dict) and t_res.get("data"):
@@ -633,7 +632,7 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.info(f"同步小蚕官方用户详情失败 (使用默认): {e}")
 
-        # 同步天天赚元宝原生资产
+        # 同步元宝乐园原生资产
         try:
             task_res = await client.get_user_task_v2(token=token, silk_id=silk_id, user_id=user_id)
             tdata = task_res.get("data") or {}
@@ -672,10 +671,26 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
     saved = db.save_account(acc_payload)
     key = saved["key"]
 
+    # 记录账号凭据捕获/录入流水 (方便在 Web 端流水中心直观确认)
+    try:
+        job_id = f"job_auth_{key}_{int(time.time())}"
+        now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        client_mode = cred.get("client_mode") or "app"
+        mode_text = "代理嗅探捕获" if client_mode == "proxy" else ("微信监听捕获" if client_mode == "wechat" else "账号录入更新")
+        auth_steps = [
+            f"[{now_str}] 账号凭据成功入库: 【{saved.get('nickname', key)}】({mode_text})",
+            f"[{now_str}] 会员特权: {'SVIP' if saved.get('is_plus') else 'VIP'}{saved.get('vip_level', 1)} (成长值: {saved.get('vip_score', 0)})",
+            f"[{now_str}] 资产现况: 蚕豆余额 {float(saved.get('silk', 0)):.2f} / 元宝 {int(saved.get('yb_point', 0)):,}",
+            f"[{now_str}] 自动化调度: 默认任务已自动初始化并装载至调度中心"
+        ]
+        db.add_job_log(job_id, key, "token_capture", "success", "\n".join(auth_steps))
+    except Exception as ae:
+        logger.warning(f"记录账号凭据捕获流水异常: {ae}")
+
     configs = db.get_task_configs(key)
     if not configs:
         for tid, meta in TASK_META.items():
-            default_on = tid in ("yb_sign", "yb_task", "vip_expand", "brand_flash")
+            default_on = tid in ("yb_task", "vip_expand", "brand_flash")
             db.save_task_config(key, tid, enabled=default_on, cron_time=meta["default_time"])
     scheduler.reload_schedules()
     return saved
@@ -699,18 +714,37 @@ async def sync_account_endpoint(key: str):
             "message": f"同步失败: {msg}"
         }
 
+    job_id = f"job_sync_{key}_{int(time.time())}"
+    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    steps = [
+        f"[{now_str}] 启动账号官方资产同步: 【{acc.get('nickname', key)}】",
+        f"[{now_str}] 贯通鉴权 Token: 凭据有效",
+        f"[{now_str}] 向小蚕官方同步用户资料、VIP等级、蚕豆余额与元宝资产..."
+    ]
     try:
         enriched = await _enrich_and_save_account(acc)
+        t_ok = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_ok}] 官方资产同步完毕: 蚕豆 {float(enriched.get('silk', 0)):.2f} / 元宝 {int(enriched.get('yb_point', 0)):,} / VIP等级 {enriched.get('vip_level', 1)}")
+        try:
+            db.add_job_log(job_id, key, "account_sync", "success", "\n".join(steps))
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "account": enriched,
+            "message": f"成功同步账号【{enriched.get('nickname')}】的最新官方资产与资料！"
+        }
     except Exception as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 同步官方资产异常: {e}")
+        try:
+            db.add_job_log(job_id, key, "account_sync", "error", "\n".join(steps))
+        except Exception:
+            pass
         return {
             "ok": False,
             "message": f"同步异常: {e}"
         }
-    return {
-        "ok": True,
-        "account": enriched,
-        "message": f"成功同步账号【{enriched.get('nickname')}】的最新官方资产与资料！"
-    }
 
 
 def _save_scanned_account_sync(cred: Dict[str, Any]) -> Dict[str, Any]:
@@ -1119,6 +1153,13 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
     if cost_silk > yb_point:
         return {"ok": False, "message": f"账户可用元宝不足 ({yb_point:,} < {cost_silk:,})"}
 
+    job_id = f"job_ex_{exchange_id}_{int(time.time())}"
+    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    steps = [
+        f"[{now_str}] 启动元宝秒杀直接兑换: 【{goods_name}】(商品ID #{exchange_id})",
+        f"[{now_str}] 账号核验: 【{acc.get('nickname', account_key)}】(当前可用元宝: {yb_point:,})",
+        f"[{now_str}] 计划消耗元宝: {cost_silk:,} 元宝"
+    ]
     try:
         res = await client.exchange_goods_v2(
             exchange_id=int(exchange_id),
@@ -1140,6 +1181,13 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
             level=NotificationLevel.SUCCESS
         )
 
+        t_ok = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_ok}] 官方兑换成功！扣除 {cost_silk:,} 元宝，剩余可用元宝 {remaining:,}")
+        try:
+            db.add_job_log(job_id, account_key, "flash_exchange", "success", "\n".join(steps))
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "message": f"成功兑换【{goods_name}】！消耗 {cost_silk:,} 元宝",
@@ -1147,8 +1195,20 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
             "data": res
         }
     except XiaoCanRPCError as ce:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 官方兑换响应: {ce.msg} (错误码: {ce.code})")
+        try:
+            db.add_job_log(job_id, account_key, "flash_exchange", "error", "\n".join(steps))
+        except Exception:
+            pass
         return {"ok": False, "message": f"{ce.msg} (代码: {ce.code})", "code": ce.code}
     except Exception as e:
+        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        steps.append(f"[{t_err}] 兑换网络异常: {e}")
+        try:
+            db.add_job_log(job_id, account_key, "flash_exchange", "error", "\n".join(steps))
+        except Exception:
+            pass
         return {"ok": False, "message": f"兑换网络异常: {str(e)}"}
 
 
@@ -1233,7 +1293,7 @@ async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
                 tid for tid, meta in TASK_META.items()
                 if meta.get("category") == "daily" and bool(cfg_map.get(tid, {}).get("enabled", False))
             ]
-            run_task_ids = active_daily_ids if active_daily_ids else ["yb_sign", "yb_task", "vip_expand", "group_lottery"]
+            run_task_ids = active_daily_ids if active_daily_ids else ["yb_task", "vip_expand", "group_lottery"]
 
         for tid in run_task_ids:
             if tid == "meituan_coupon":
@@ -1243,7 +1303,7 @@ async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
             try:
                 res = await asyncio.wait_for(
                     scheduler.execute_task_job(acc_key, tid, trigger_type="batch_daily"),
-                    timeout=15.0
+                    timeout=25.0
                 )
                 is_ok = bool(res.get("ok", False))
                 out_msg = res.get("output", "")
@@ -1473,6 +1533,13 @@ def cancel_meituan_auth(data: Dict[str, Any] = Body(...)):
         from ..meituan.runner import auth_manager
         auth_manager.cancel_session(session_id)
     return {"ok": True, "message": "授权会话已取消"}
+
+
+@router.get("/meituan/promotions")
+async def get_meituan_promotions_endpoint():
+    """获取美团官方专属加码神券专场清单"""
+    from ..meituan.promotions import MEITUAN_SPECIAL_PROMOTIONS
+    return {"ok": True, "promotions": MEITUAN_SPECIAL_PROMOTIONS}
 
 
 @router.post("/meituan/claim/run")
@@ -1922,7 +1989,7 @@ def _parse_store_promotion_item(
 
     same_group_id = int(p.get("same_group_id") or 0)
     if_use_red_pack = bool(p.get("if_use_red_pack", True))
-    address = (
+    raw_addr_val = (
         store_obj.get("address") or 
         store_obj.get("address_detail") or 
         store_obj.get("store_address") or 
@@ -1931,6 +1998,11 @@ def _parse_store_promotion_item(
         p.get("address_detail") or 
         p.get("store_address") or 
         ""
+    )
+    address = _infer_store_specific_address(
+        name=store_name,
+        raw_addr=raw_addr_val,
+        dist_text=dist_text
     )
 
     return {
@@ -1968,7 +2040,49 @@ def _parse_store_promotion_item(
     }
 
 
-def _normalize_shangjin_item(poi: Dict[str, Any], user_lat: Optional[float] = None, user_lon: Optional[float] = None) -> List[Dict[str, Any]]:
+def _infer_store_specific_address(
+    name: str,
+    raw_addr: str = "",
+    city_name: str = "",
+    dist_text: str = ""
+) -> str:
+    """
+    智能解析商户具体位置信息：
+    1. 优先采用官方下发的真实门牌地址；
+    2. 若官方未下发（如美团赏金按比例返现接口），深度解析商户名中蕴含的核心分店与商圈标识（如“万松园店”、“金桥永旺店”）；
+    3. 结合城市与外卖配送测距，拼接成清晰精准的具体外卖送达位置，彻底杜绝无具体位置的生硬文案。
+    """
+    raw = (raw_addr or "").strip()
+    if raw and raw not in ("依据外卖平台定位", "外卖配送范围", "附近", "待获取", "暂无地址"):
+        return raw
+
+    clean = (name or "").replace("（", "(").replace("）", ")").replace("【", "[").replace("】", "]")
+    m = re.search(r'\(([^)]+)\)|\[([^\]]+)\]', clean)
+    branch = ""
+    if m:
+        candidate = (m.group(1) or m.group(2) or "").strip()
+        if not any(k in candidate for k in ["免配送", "全天", "营业", "折扣", "特惠", "减", "满", "好评"]):
+            branch = candidate
+
+    if not branch:
+        m2 = re.search(r'[\-·・_]\s*([^\s\-·・_()]+?店)', clean)
+        if m2:
+            branch = m2.group(1).strip()
+
+    dist_info = f" · 距您约{dist_text}" if (dist_text and dist_text not in ("附近", "0m", "0km", "")) else ""
+    city_prefix = f"{city_name} · " if (city_name and city_name not in ("全国", "未知", "")) else ""
+
+    if branch:
+        loc_desc = branch if branch.endswith("店") else f"{branch}分店"
+        return f"{city_prefix}{loc_desc} (外卖送达{dist_info})"
+
+    if city_name and city_name not in ("全国", "未知", ""):
+        return f"{city_name}外卖配送范围{dist_info}"
+
+    return f"外卖配送覆盖商圈{dist_info}"
+
+
+def _normalize_shangjin_item(poi: Dict[str, Any], user_lat: Optional[float] = None, user_lon: Optional[float] = None, city_name: str = "") -> List[Dict[str, Any]]:
     """标准化解析官方美团赏金按比例返现 POI 数据 (SilkwormRcsService.MeituanShangjinGetPoiList)"""
     name = str(poi.get("name") or "").strip()
     icon = poi.get("picture") or ""
@@ -2050,7 +2164,12 @@ def _normalize_shangjin_item(poi: Dict[str, Any], user_lat: Optional[float] = No
             "days_order_limit": 1,
             "same_group_id": 0,
             "if_use_red_pack": True,
-            "address": ""
+            "address": _infer_store_specific_address(
+                name=name,
+                raw_addr=str(poi.get("address") or poi.get("store_address") or poi.get("poi_address") or "").strip(),
+                city_name=city_name,
+                dist_text=dist_text
+            )
         }
         items.append(item)
     return items
@@ -2098,7 +2217,7 @@ async def get_stores(
     platform: Optional[str] = Query("all"),
     condition: Optional[str] = Query("all"),
     rebate_type: Optional[str] = Query("all"),
-    sort_by: Optional[str] = Query("distance"),
+    sort_by: Optional[str] = Query("default"),
     offset: int = Query(0),
     limit: int = Query(50),
     page_pv_id: Optional[str] = Query(None)
@@ -2117,7 +2236,7 @@ async def get_stores(
     platform = _safe_val(platform, "all")
     condition = _safe_val(condition, "all")
     rebate_type = _safe_val(rebate_type, "all")
-    sort_by = _safe_val(sort_by, "distance")
+    sort_by = _safe_val(sort_by, "default")
     offset = int(_safe_val(offset, 0))
     limit = int(_safe_val(limit, 50))
     page_pv_id = _safe_val(page_pv_id, "")
@@ -2178,6 +2297,15 @@ async def get_stores(
             "has_more": False,
             "message": "抢单定位坐标格式无效，请重新设置定位"
         }
+
+    city_name = ""
+    try:
+        from ..core.tianditu import infer_city_from_coords
+        c_tuple = infer_city_from_coords(lat, lon)
+        if c_tuple and len(c_tuple) >= 2:
+            city_name = c_tuple[1]
+    except Exception:
+        pass
 
     stores = []
     source = "feed"
@@ -2254,15 +2382,46 @@ async def get_stores(
                         current_pv_id = returned_pv
                     pois = sjr.get("poi_list") or []
                     total_raw_count += len(pois)
-                    if len(pois) >= 10:
+                    if len(pois) > 0:
                         has_more_shangjin = True
                     for poi in pois:
-                        sj_items = _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon)
+                        sj_items = _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon, city_name=city_name)
                         for item in sj_items:
                             dedup_k = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
                             if dedup_k not in seen_pids:
                                 seen_pids.add(dedup_k)
                                 stores.append(item)
+
+                    # 若首屏检索且有游标，串联拉取第 2 批赏金商户增加候选丰富度
+                    if offset == 0 and returned_pv and len(pois) >= 5:
+                        try:
+                            sj2 = await client.search_shangjin_stores(
+                                keyword=kw,
+                                latitude=lat,
+                                longitude=lon,
+                                token=token,
+                                silk_id=silk_id,
+                                user_id=user_id,
+                                city_code=city_code,
+                                sort_type=3,
+                                page_pv_id=returned_pv
+                            )
+                            if isinstance(sj2, dict):
+                                returned_pv2 = sj2.get("page_pv_id") or sj2.get("meituan_pv_id")
+                                if returned_pv2:
+                                    current_pv_id = returned_pv2
+                                pois2 = sj2.get("poi_list") or []
+                                total_raw_count += len(pois2)
+                                if len(pois2) > 0:
+                                    has_more_shangjin = True
+                                for poi in pois2:
+                                    for item in _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon, city_name=city_name):
+                                        dedup_k = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
+                                        if dedup_k not in seen_pids:
+                                            seen_pids.add(dedup_k)
+                                            stores.append(item)
+                        except Exception as e_sj2:
+                            logger.warning(f"搜索次屏赏金补充拉取异常: {e_sj2}")
                 elif isinstance(sjr, Exception):
                     logger.warning(f"赏金按比例返现检索批次异常: {sjr}")
 
@@ -2275,7 +2434,7 @@ async def get_stores(
                     if sr_total > (off + len(raw_proms)):
                         has_more_search = True
                     for p in raw_proms:
-                        promos = _extract_all_promos_from_raw(p, is_search=True, only_meituan=False, user_lat=lat, user_lon=lon)
+                        promos = _extract_all_promos_from_raw(p, is_search=True, only_meituan=False, user_lat=lat, user_lon=lon, city_name=city_name)
                         for item in promos:
                             dedup_k = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
                             if dedup_k not in seen_pids:
@@ -2291,7 +2450,7 @@ async def get_stores(
                     if isinstance(fr, dict):
                         feed_items = fr.get("feed_items") or fr.get("items") or fr.get("promotion_list") or []
                         for p in feed_items:
-                            promos = _extract_all_promos_from_raw(p, is_search=False, only_meituan=False, user_lat=lat, user_lon=lon)
+                            promos = _extract_all_promos_from_raw(p, is_search=False, only_meituan=False, user_lat=lat, user_lon=lon, city_name=city_name)
                             for item in promos:
                                 sname = item.get("name", "").lower()
                                 rdesc = item.get("rebate_desc", "").lower()
@@ -2328,92 +2487,234 @@ async def get_stores(
             logger.error(f"小蚕官方实时搜索异常: {e}")
             return {"ok": False, "stores": [], "total": 0, "source": source, "has_more": False, "error": f"小蚕官方实时搜索接口异常: {e}"}
 
-    # 分支二：常规商圈浏览，通过并发多批次抓取扩展至 100+ 家
+    # 分支二：常规商圈浏览
     else:
-        source = "feed"
-        try:
-            # 官方 GetFeedPromotions 排序参数：
-            # sort = 1 为「距离最近」由近及远原生排序 (默认)
-            # sort = 0 为「综合排序」官方原生推荐排序
-            official_sort = 1 if sort_by == "distance" else 0
+        official_sort = 1 if sort_by == "distance" else 0
+        seen_promotions = set()
+        total_raw_count = 0
+        step = 35
 
-            # 每次拉取并发 3 批 (offset, offset+35, offset+70)，确保每次触底都能获得足够的新商户增量
-            step = 35
-            offsets = [offset, offset + step, offset + (step * 2)]
-            tasks = [
-                client.get_store_list(
+        # 子分支 A：用户明确选择「按比例返」(rebate_type == 'percent' 或 'ratio')，且平台为全部或美团
+        if rebate_type in ("percent", "ratio") and (platform in ("all", "meituan")):
+            source = "shangjin_stream"
+            try:
+                # 官方美团赏金接口每次返回 5 个商户，连续流式拉取 4 批维持单次 20 个商户的体验
+                shangjin_batches = 4
+                curr_pv = current_pv_id
+                has_more_shangjin = False
+
+                # 若为首屏 (offset == 0)，同时并发拉取 1 批 Feed 推荐 (前 35 条中含有的比例返商户与真实地址)
+                feed_task = client.get_store_list(
                     city_code=city_code,
                     longitude=str(lon),
                     latitude=str(lat),
-                    offset=off,
-                    limit=step,
+                    offset=0,
+                    limit=35,
                     token=token,
                     silk_id=silk_id,
                     user_id=user_id,
                     sort=official_sort
-                )
-                for off in offsets
-            ]
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            seen_promotions = set()
-            total_raw_count = 0
-            for br in batch_results:
-                if isinstance(br, dict):
-                    feed_items = br.get("feed_items") or br.get("items") or br.get("promotion_list") or []
-                    total_raw_count += len(feed_items)
-                    for p in feed_items:
-                        promos = _extract_all_promos_from_raw(p, is_search=False, only_meituan=False, user_lat=lat, user_lon=lon)
-                        for item in promos:
+                ) if offset == 0 else None
+
+                for b_idx in range(shangjin_batches):
+                    sjr = await client.search_shangjin_stores(
+                        keyword="",
+                        latitude=lat,
+                        longitude=lon,
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        city_code=city_code,
+                        sort_type=3,
+                        page_pv_id=curr_pv
+                    )
+                    if isinstance(sjr, dict):
+                        curr_pv = sjr.get("page_pv_id") or sjr.get("meituan_pv_id") or curr_pv
+                        pois = sjr.get("poi_list") or []
+                        total_raw_count += len(pois)
+                        if len(pois) > 0:
+                            has_more_shangjin = True
+                        for poi in pois:
+                            sj_items = _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon, city_name=city_name)
+                            for item in sj_items:
+                                dedup_key = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
+                                if dedup_key not in seen_promotions:
+                                    seen_promotions.add(dedup_key)
+                                    stores.append(item)
+                        if len(pois) < 5:
+                            # 官方已无后续赏金商户，终止流式拉取
+                            break
+                    elif isinstance(sjr, Exception):
+                        logger.warning(f"赏金流式拉取批次异常: {sjr}")
+                        break
+
+                current_pv_id = curr_pv
+
+                # 合并首屏 Feed 中的比例返商户
+                if feed_task:
+                    try:
+                        f_res = await feed_task
+                        if isinstance(f_res, dict):
+                            feed_items = f_res.get("feed_items") or f_res.get("items") or []
+                            for p in feed_items:
+                                promos = _extract_all_promos_from_raw(p, is_search=False, only_meituan=False, user_lat=lat, user_lon=lon, city_name=city_name)
+                                for item in promos:
+                                    if item.get("rebate_type") == "percent":
+                                        dedup_key = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
+                                        if dedup_key not in seen_promotions:
+                                            seen_promotions.add(dedup_key)
+                                            stores.append(item)
+                    except Exception as e_feed:
+                        logger.warning(f"首屏 Feed 比例商户拉取异常: {e_feed}")
+
+                has_more = has_more_shangjin
+                next_offset = offset + len(stores)
+                logger.info(f"赏金按比例返现流式返回: offset={offset}, stores={len(stores)}, has_more={has_more}, pv_id={current_pv_id}")
+            except Exception as e:
+                logger.error(f"拉取赏金按比例返现商户失败: {e}")
+                return {"ok": False, "stores": [], "total": 0, "source": source, "has_more": False, "error": f"小蚕官方接口调用异常: {e}"}
+
+        # 子分支 B：用户浏览全部商圈 (rebate_type == 'all')
+        elif rebate_type == "all":
+            source = "feed_and_shangjin"
+            try:
+                # 1. 并发拉取 2 批 Feed (0, 35) 或 (offset, offset+35)
+                offsets = [offset, offset + step]
+                feed_tasks = [
+                    client.get_store_list(
+                        city_code=city_code,
+                        longitude=str(lon),
+                        latitude=str(lat),
+                        offset=off,
+                        limit=step,
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        sort=official_sort
+                    )
+                    for off in offsets
+                ]
+                # 2. 同时执行赏金流式拉取以丰富按比例返现活动商户
+                shangjin_curr_pv = current_pv_id
+                shangjin_task = client.search_shangjin_stores(
+                    keyword="",
+                    latitude=lat,
+                    longitude=lon,
+                    token=token,
+                    silk_id=silk_id,
+                    user_id=user_id,
+                    city_code=city_code,
+                    sort_type=3,
+                    page_pv_id=shangjin_curr_pv
+                ) if platform in ("all", "meituan") else None
+
+                all_tasks = feed_tasks + ([shangjin_task] if shangjin_task else [])
+                all_results = await asyncio.gather(*all_tasks, return_exceptions=True)
+                feed_results = all_results[:len(feed_tasks)]
+                sj_first = all_results[len(feed_tasks)] if shangjin_task else None
+
+                # 收集 Feed 商户
+                for br in feed_results:
+                    if isinstance(br, dict):
+                        feed_items = br.get("feed_items") or br.get("items") or br.get("promotion_list") or []
+                        total_raw_count += len(feed_items)
+                        for p in feed_items:
+                            promos = _extract_all_promos_from_raw(p, is_search=False, only_meituan=False, user_lat=lat, user_lon=lon, city_name=city_name)
+                            for item in promos:
+                                dedup_key = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
+                                if dedup_key not in seen_promotions:
+                                    seen_promotions.add(dedup_key)
+                                    stores.append(item)
+
+                # 收集第 1 批赏金商户并串联第 2 批
+                if isinstance(sj_first, dict):
+                    shangjin_curr_pv = sj_first.get("page_pv_id") or sj_first.get("meituan_pv_id") or shangjin_curr_pv
+                    pois_1 = sj_first.get("poi_list") or []
+                    total_raw_count += len(pois_1)
+                    for poi in pois_1:
+                        sj_items = _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon, city_name=city_name)
+                        for item in sj_items:
                             dedup_key = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
                             if dedup_key not in seen_promotions:
                                 seen_promotions.add(dedup_key)
                                 stores.append(item)
-                elif isinstance(br, Exception):
-                    logger.warning(f"并发拉取批次异常 (非致命): {br}")
-            # 只要本次批次中官方返回了非空数据，说明后续仍有商户可供拉取
-            has_more = total_raw_count > 0
-            next_offset = offset + (step * len(offsets))
-            logger.info(f"商圈Feed合并返回: offset={offset}, total={len(stores)}, has_more={has_more}")
-        except Exception as e:
-            logger.error(f"拉取小蚕官方店铺列表失败: {e}")
-            return {"ok": False, "stores": [], "total": 0, "source": source, "has_more": False, "error": f"小蚕官方接口调用异常: {e}"}
 
-    # 平台过滤 (支持美团/饿了么/京东全量平台)
-    if platform and platform != "all":
-        if platform in ("jingdong", "jd"):
-            stores = [s for s in stores if s.get("platform") in ("jingdong", "jd") or s.get("store_platform") == 3]
-        elif platform in ("eleme", "taobao"):
-            stores = [s for s in stores if s.get("platform") in ("eleme", "taobao") or s.get("store_platform") == 2]
-        elif platform == "meituan":
-            stores = [s for s in stores if s.get("platform") == "meituan" or s.get("store_platform") == 1]
+                    if shangjin_curr_pv and len(pois_1) >= 5:
+                        try:
+                            sj_second = await client.search_shangjin_stores(
+                                keyword="",
+                                latitude=lat,
+                                longitude=lon,
+                                token=token,
+                                silk_id=silk_id,
+                                user_id=user_id,
+                                city_code=city_code,
+                                sort_type=3,
+                                page_pv_id=shangjin_curr_pv
+                            )
+                            if isinstance(sj_second, dict):
+                                shangjin_curr_pv = sj_second.get("page_pv_id") or sj_second.get("meituan_pv_id") or shangjin_curr_pv
+                                pois_2 = sj_second.get("poi_list") or []
+                                total_raw_count += len(pois_2)
+                                for poi in pois_2:
+                                    sj_items = _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon, city_name=city_name)
+                                    for item in sj_items:
+                                        dedup_key = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
+                                        if dedup_key not in seen_promotions:
+                                            seen_promotions.add(dedup_key)
+                                            stores.append(item)
+                        except Exception:
+                            pass
+
+                current_pv_id = shangjin_curr_pv
+                has_more = (total_raw_count > 0)
+                next_offset = offset + (step * len(offsets))
+                logger.info(f"商圈全量Feed与赏金合并返回: offset={offset}, total={len(stores)}, has_more={has_more}, pv_id={current_pv_id}")
+            except Exception as e:
+                logger.error(f"拉取商圈全量推荐失败: {e}")
+                return {"ok": False, "stores": [], "total": 0, "source": source, "has_more": False, "error": f"小蚕官方接口调用异常: {e}"}
+
+        # 子分支 C：实付满返或饿了么/京东单平台常规 Feed
         else:
-            stores = [s for s in stores if s.get("platform") == platform]
+            source = "feed"
+            try:
+                offsets = [offset, offset + step, offset + (step * 2)]
+                tasks = [
+                    client.get_store_list(
+                        city_code=city_code,
+                        longitude=str(lon),
+                        latitude=str(lat),
+                        offset=off,
+                        limit=step,
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        sort=official_sort
+                    )
+                    for off in offsets
+                ]
+                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for br in batch_results:
+                    if isinstance(br, dict):
+                        feed_items = br.get("feed_items") or br.get("items") or br.get("promotion_list") or []
+                        total_raw_count += len(feed_items)
+                        for p in feed_items:
+                            promos = _extract_all_promos_from_raw(p, is_search=False, only_meituan=False, user_lat=lat, user_lon=lon, city_name=city_name)
+                            for item in promos:
+                                dedup_key = f"{item.get('platform')}_{item['store_id']}_{item['promotion_id']}"
+                                if dedup_key not in seen_promotions:
+                                    seen_promotions.add(dedup_key)
+                                    stores.append(item)
+                    elif isinstance(br, Exception):
+                        logger.warning(f"并发拉取批次异常 (非致命): {br}")
+                has_more = total_raw_count > 0
+                next_offset = offset + (step * len(offsets))
+                logger.info(f"商圈满返Feed返回: offset={offset}, total={len(stores)}, has_more={has_more}")
+            except Exception as e:
+                logger.error(f"拉取小蚕官方店铺列表失败: {e}")
+                return {"ok": False, "stores": [], "total": 0, "source": source, "has_more": False, "error": f"小蚕官方接口调用异常: {e}"}
 
-    # 评价条件过滤
-    if condition and condition != "all":
-        if condition == "no_review":
-            stores = [s for s in stores if s.get("condition") == "无需评价"]
-        elif condition == "good_review":
-            stores = [s for s in stores if s.get("condition") != "无需评价"]
-
-    # 返利模式过滤 (全部 / 实付满返 / 按比例返)
-    if rebate_type and rebate_type != "all":
-        if rebate_type in ("fixed", "amount"):
-            stores = [s for s in stores if s.get("rebate_type") == "fixed"]
-        elif rebate_type in ("percent", "ratio"):
-            stores = [s for s in stores if s.get("rebate_type") == "percent"]
-
-    # 排序处理 (注意：未知或全国通用距离按 9999999 排到最后，避免 0m 霸榜置顶)
-    if sort_by == "distance":
-        stores.sort(key=lambda x: (x.get("distance", 0) if x.get("distance", 0) > 0 else 9999999))
-    elif sort_by == "rebate":
-        stores.sort(key=lambda x: x["rebate_price"], reverse=True)
-    elif sort_by == "rate":
-        stores.sort(key=lambda x: x["rebate_rate"], reverse=True)
-    elif sort_by == "left":
-        stores.sort(key=lambda x: x["left_number"], reverse=True)
-
-    # 4. 同名商家多任务合并 (同平台同分店深度聚合，跨平台严格独立拆分)
+    # 4. 同名商家多任务深度合并 (在方案类型过滤前先聚合，确保满返真实门牌地址能100%穿透共享给同店比例方案)
     # 按「同平台 + 同分店唯一标识」聚合，美团/饿了么/京东即使同店同名也作为独立商户卡片展示，档位绝不跨平台混淆
     merged_stores = []
     store_map = {}
@@ -2549,23 +2850,43 @@ async def get_stores(
                     existing["days_order_limit"] = s.get("days_order_limit", 1)
                     existing["same_group_id"] = s.get("same_group_id", 0)
                     existing["if_use_red_pack"] = s.get("if_use_red_pack", True)
-                    if s.get("address") and not existing.get("address"):
-                        existing["address"] = s["address"]
                 elif existing.get("start_time") in ("00:00", "", None) and s.get("start_time") and s.get("start_time") != "00:00":
                     existing["start_time"] = s["start_time"]
                     existing["end_time"] = s["end_time"]
 
-                # 无论是否为最佳方案，只要当前活动具备有效门牌地址，即刻为商户补齐地址
-                if s.get("address") and not existing.get("address"):
-                    existing["address"] = s["address"]
+                # 深度地址互通：若已有地址只是商圈推断或为空，而当前活动具备真实门牌地址，立即升级覆盖
+                current_addr = (s.get("address") or "").strip()
+                existing_addr = (existing.get("address") or "").strip()
+                is_curr_real = current_addr and ("外卖送达" not in current_addr and "配送范围" not in current_addr)
+                is_exist_real = existing_addr and ("外卖送达" not in existing_addr and "配送范围" not in existing_addr)
 
-    # 再次保障每个店铺名下的档位只属于本平台，并拆分 fixed_plans 与 percent_plans
+                if is_curr_real and not is_exist_real:
+                    existing["address"] = current_addr
+                elif not existing_addr and current_addr:
+                    existing["address"] = current_addr
+
+    # 再次保障每个店铺名下的档位只属于本平台，拆分 fixed_plans 与 percent_plans，并把最佳地址同步穿透给名下所有活动
     for ms in merged_stores:
         ms_plat = ms.get("platform") or "meituan"
         ms["promotions"] = [p for p in ms.get("promotions", []) if (p.get("platform") or "meituan") == ms_plat]
         ms["promotion_count"] = len(ms["promotions"])
-        f_plans = [p for p in ms.get("promotions", []) if p.get("rebate_type") == "fixed"]
-        p_plans = [p for p in ms.get("promotions", []) if p.get("rebate_type") == "percent"]
+
+        # 查找 promotions 中是否存在真实门牌地址
+        best_addr = (ms.get("address") or "").strip()
+        for p in ms["promotions"]:
+            p_addr = (p.get("address") or "").strip()
+            if p_addr and ("外卖送达" not in p_addr and "配送范围" not in p_addr):
+                best_addr = p_addr
+                break
+        ms["address"] = best_addr
+
+        # 同步给名下所有 promotion 档位，确保切换档位或百分比筛选时地址永不丢失
+        for p in ms["promotions"]:
+            if not p.get("address") or ("外卖送达" in p.get("address") or "配送范围" in p.get("address")):
+                p["address"] = best_addr
+
+        f_plans = [p for p in ms["promotions"] if p.get("rebate_type") == "fixed"]
+        p_plans = [p for p in ms["promotions"] if p.get("rebate_type") == "percent"]
         ms["fixed_plans"] = f_plans
         ms["percent_plans"] = p_plans
         if f_plans:
@@ -2575,6 +2896,76 @@ async def get_stores(
                 ms["end_time"] = f_plans[0]["end_time"]
         if p_plans:
             ms["percent_plan"] = p_plans[0]
+
+    # 5. 后置精准过滤 (基于已深度聚合的商户与方案进行，确保百分比商户完整继承同店真实门牌地址)
+    filtered_stores = merged_stores
+
+    # 平台过滤 (支持美团/饿了么/京东全量平台)
+    if platform and platform != "all":
+        if platform in ("jingdong", "jd"):
+            filtered_stores = [s for s in filtered_stores if s.get("platform") in ("jingdong", "jd") or s.get("store_platform") == 3]
+        elif platform in ("eleme", "taobao"):
+            filtered_stores = [s for s in filtered_stores if s.get("platform") in ("eleme", "taobao") or s.get("store_platform") == 2]
+        elif platform == "meituan":
+            filtered_stores = [s for s in filtered_stores if s.get("platform") == "meituan" or s.get("store_platform") == 1]
+        else:
+            filtered_stores = [s for s in filtered_stores if s.get("platform") == platform]
+
+    # 评价条件过滤
+    if condition and condition != "all":
+        if condition == "no_review":
+            filtered_stores = [s for s in filtered_stores if any(p.get("condition") == "无需评价" for p in s.get("promotions", [])) or s.get("condition") == "无需评价"]
+        elif condition == "good_review":
+            filtered_stores = [s for s in filtered_stores if any(p.get("condition") != "无需评价" for p in s.get("promotions", [])) or s.get("condition") != "无需评价"]
+
+    # 返利模式过滤 (全部 / 实付满返 / 按比例返)
+    if rebate_type and rebate_type != "all":
+        if rebate_type in ("fixed", "amount"):
+            filtered_stores = [s for s in filtered_stores if len(s.get("fixed_plans", [])) > 0 or s.get("rebate_type") == "fixed"]
+            # 若主展示方案不是满返方案，择优切换至首选满返方案
+            for s in filtered_stores:
+                if s.get("rebate_type") != "fixed" and s.get("fixed_plans"):
+                    best_f = s["fixed_plans"][0]
+                    s["promotion_id"] = best_f["promotion_id"]
+                    s["order_money"] = best_f["order_money"]
+                    s["rebate_price"] = best_f["rebate_price"]
+                    s["rebate_rate"] = best_f["rebate_rate"]
+                    s["rebate_desc"] = best_f["rebate_desc"]
+                    s["rebate_type"] = best_f["rebate_type"]
+                    s["rebate_type_text"] = best_f["rebate_type_text"]
+                    s["condition"] = best_f["condition"]
+                    s["left_number"] = best_f["left_number"]
+                    s["start_time"] = best_f["start_time"]
+                    s["end_time"] = best_f["end_time"]
+        elif rebate_type in ("percent", "ratio"):
+            filtered_stores = [s for s in filtered_stores if len(s.get("percent_plans", [])) > 0 or s.get("rebate_type") == "percent"]
+            # 若主展示方案不是比例方案，择优切换至首选比例方案
+            for s in filtered_stores:
+                if s.get("rebate_type") != "percent" and s.get("percent_plans"):
+                    best_p = s["percent_plans"][0]
+                    s["promotion_id"] = best_p["promotion_id"]
+                    s["order_money"] = best_p["order_money"]
+                    s["rebate_price"] = best_p["rebate_price"]
+                    s["rebate_rate"] = best_p["rebate_rate"]
+                    s["rebate_desc"] = best_p["rebate_desc"]
+                    s["rebate_type"] = best_p["rebate_type"]
+                    s["rebate_type_text"] = best_p["rebate_type_text"]
+                    s["condition"] = best_p["condition"]
+                    s["left_number"] = best_p["left_number"]
+                    s["start_time"] = best_p["start_time"]
+                    s["end_time"] = best_p["end_time"]
+
+    # 排序处理 (注意：未知或全国通用距离按 9999999 排到最后，避免 0m 霸榜置顶)
+    if sort_by == "distance":
+        filtered_stores.sort(key=lambda x: (x.get("distance", 0) if x.get("distance", 0) > 0 else 9999999))
+    elif sort_by == "rebate":
+        filtered_stores.sort(key=lambda x: x["rebate_price"], reverse=True)
+    elif sort_by == "rate":
+        filtered_stores.sort(key=lambda x: x["rebate_rate"], reverse=True)
+    elif sort_by == "left":
+        filtered_stores.sort(key=lambda x: x["left_number"], reverse=True)
+
+    merged_stores = filtered_stores
 
     return {
         "ok": True,
@@ -2594,7 +2985,8 @@ def _extract_all_promos_from_raw(
     is_search: bool = False,
     only_meituan: bool = False,
     user_lat: Optional[float] = None,
-    user_lon: Optional[float] = None
+    user_lon: Optional[float] = None,
+    city_name: str = ""
 ) -> List[Dict[str, Any]]:
     """
     从单条推荐或搜索结果记录中，完整提取出所有返利方案 (plan_activity_info_list)：
@@ -2604,7 +2996,7 @@ def _extract_all_promos_from_raw(
     """
     # 官方美团赏金按比例返现 POI (source == 5 或具备 wm_poi_id 无独立 promotion_id)
     if p.get("source") == 5 or (p.get("wm_poi_id") and not p.get("promotion_id")):
-        return _normalize_shangjin_item(p, user_lat=user_lat, user_lon=user_lon)
+        return _normalize_shangjin_item(p, user_lat=user_lat, user_lon=user_lon, city_name=city_name)
 
     store_obj = p.get("store") or {}
     tp = p.get("tp_promotion") or {}
@@ -2774,6 +3166,9 @@ async def scan_dual_rebate_stores(
     platform = "meituan"
 
     # 计算翻页抖动区间延迟 (默认 1.5s ~ 3.0s)
+    delay_min = _safe_val(delay_min, None)
+    delay_max = _safe_val(delay_max, None)
+    page_delay = _safe_val(page_delay, None)
     d_min = 1.5
     d_max = 3.0
     if delay_min is not None and delay_min > 0:
@@ -2901,9 +3296,11 @@ async def scan_dual_rebate_stores(
                 pois = sj_res.get("poi_list") or []
                 for poi in pois:
                     search_promos.extend(_normalize_shangjin_item(poi, user_lat=lat, user_lon=lon))
-                # 若赏金商户返回满一页，继续拉取下一页以确保双返利覆盖完整
+                # 连续流式拉取剩余的赏金商户（彻底修复原判断 >= 10 导致单批 5 个商户永远无法翻页的严重缺陷）
                 pv_id = sj_res.get("page_pv_id")
-                if pv_id and len(pois) >= 10:
+                shangjin_kw_rounds = 0
+                while pv_id and len(pois) > 0 and shangjin_kw_rounds < 3:
+                    shangjin_kw_rounds += 1
                     try:
                         sj2 = await client.search_shangjin_stores(
                             keyword=kw_clean,
@@ -2917,10 +3314,16 @@ async def scan_dual_rebate_stores(
                             page_pv_id=pv_id
                         )
                         if isinstance(sj2, dict):
-                            for poi2 in sj2.get("poi_list") or []:
+                            pv_id = sj2.get("page_pv_id") or pv_id
+                            pois = sj2.get("poi_list") or []
+                            for poi2 in pois:
                                 search_promos.extend(_normalize_shangjin_item(poi2, user_lat=lat, user_lon=lon))
+                            if len(pois) < 5:
+                                break
+                        else:
+                            break
                     except Exception:
-                        pass
+                        break
             logger.info(f"双返利专属搜索关键词 '{kw_clean}' 精准命中 {len(search_promos)} 条活动 (含满减与按比例返)")
         except Exception as e:
             logger.warning(f"双返利专属搜索失败: {e}")
@@ -3051,6 +3454,39 @@ async def scan_dual_rebate_stores(
                         seen_promo_keys.add(pkey)
                         store_groups[skey].append(promo)
                         all_raw_promotions.append(promo)
+
+            # 串联拉取第 2 批赏金商户以保持比例方案与满返商户的比例均衡
+            if shangjin_pv and len(pois) >= 5:
+                try:
+                    sj_next = await client.search_shangjin_stores(
+                        keyword="",
+                        latitude=lat,
+                        longitude=lon,
+                        token=token,
+                        silk_id=silk_id,
+                        user_id=user_id,
+                        city_code=city_code,
+                        sort_type=3,
+                        page_pv_id=shangjin_pv
+                    )
+                    if isinstance(sj_next, dict):
+                        shangjin_pv = sj_next.get("page_pv_id") or shangjin_pv
+                        for poi_n in (sj_next.get("poi_list") or []):
+                            for promo_n in _normalize_shangjin_item(poi_n, user_lat=lat, user_lon=lon):
+                                sname_n = (promo_n.get("name") or "").strip()
+                                if not sname_n:
+                                    continue
+                                skey_n = _get_store_branch_key("meituan", sname_n)
+                                seen_store_keys.add(skey_n)
+                                if skey_n not in store_groups:
+                                    store_groups[skey_n] = []
+                                pkey_n = f"{promo_n.get('platform')}_{promo_n.get('store_id')}_{promo_n.get('promotion_id')}"
+                                if pkey_n not in seen_promo_keys:
+                                    seen_promo_keys.add(pkey_n)
+                                    store_groups[skey_n].append(promo_n)
+                                    all_raw_promotions.append(promo_n)
+                except Exception:
+                    pass
         else:
             logger.warning(f"赏金按比例返现接口异常 (round={round_idx}): {sj_res}")
 
@@ -3118,16 +3554,16 @@ async def scan_dual_rebate_stores(
         await asyncio.sleep(sleep_dur)
 
     # 赏金按比例返现池深度保障：
-    # 若在流式循环中获取到的比例方案偏少 (< 20条) 或接口发生抖动，执行独立赏金池补全
+    # 若在流式循环中获取到的比例方案少于 40 条，执行深度赏金池补偿拉取，确保双返利候选商户全面覆盖
     existing_percent_promos = [p for p in all_raw_promotions if p.get("rebate_type") == "percent"]
-    if len(existing_percent_promos) < 20 and not is_waf_blocked():
+    if len(existing_percent_promos) < 40 and not is_waf_blocked():
         logger.info(f"赏金比例返现活动数量较少 ({len(existing_percent_promos)}条)，执行独立赏金池补偿拉取...")
-        shangjin_extra_pv = ""
-        for _ in range(4):
+        shangjin_extra_pv = shangjin_pv
+        for _ in range(10):
             if is_waf_blocked():
                 break
             try:
-                await asyncio.sleep(random.uniform(d_min, d_max))
+                await asyncio.sleep(random.uniform(0.3, 0.6))
                 sj_extra = await client.search_shangjin_stores(
                     keyword="",
                     latitude=lat,
@@ -3140,7 +3576,7 @@ async def scan_dual_rebate_stores(
                     page_pv_id=shangjin_extra_pv
                 )
                 if isinstance(sj_extra, dict):
-                    shangjin_extra_pv = sj_extra.get("page_pv_id") or shangjin_extra_pv
+                    shangjin_extra_pv = sj_extra.get("page_pv_id") or sj_extra.get("meituan_pv_id") or shangjin_extra_pv
                     pois = sj_extra.get("poi_list") or []
                     for poi in pois:
                         promos = _normalize_shangjin_item(poi, user_lat=lat, user_lon=lon)
@@ -3157,7 +3593,7 @@ async def scan_dual_rebate_stores(
                                 seen_promo_keys.add(pkey)
                                 store_groups[skey].append(promo)
                                 all_raw_promotions.append(promo)
-                    if not pois:
+                    if len(pois) < 5:
                         break
             except Exception as e_sj:
                 logger.warning(f"独立赏金池补偿拉取异常: {e_sj}")
@@ -4185,12 +4621,24 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
         if m:
             promo_order_id = int(m.group(1))
 
-    # 尝试直连小蚕官方 RPC 提交外卖单号
+    # 尝试直连小蚕官方 RPC 提交外卖单号并全流程记入流水
     upstream_res = None
-    account_key = target_order.get("account_key")
+    account_key = target_order.get("account_key") or ""
     acc = db.get_account_by_key(account_key) if account_key else None
     token = acc.get("token") if acc else None
 
+    store_name = target_order.get("store_name") or "霸王餐店铺"
+    platform_name = "美团" if target_order.get("platform") == "meituan" else "饿了么"
+    rebate_money = float(target_order.get("rebate_money") or 0.0)
+    job_id = f"job_bind_{order_id}_{int(time.time())}"
+    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    steps = [
+        f"[{now_str}] 启动回填外卖单号: 店铺【{store_name}】({platform_name})",
+        f"[{now_str}] 待绑定外卖单号: {platform_order_id} (预期返现 ¥{rebate_money:.2f})",
+        f"[{now_str}] 账号核验: 【{acc.get('nickname') if acc else account_key}】(活动订单 #{promo_order_id})"
+    ]
+
+    rpc_success = True
     if promo_order_id and token:
         try:
             upstream_res = await client.invoke_rpc(
@@ -4206,8 +4654,13 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
                 token=token
             )
             logger.info(f"小蚕官方提交外卖单号结果: {upstream_res}")
+            t_res = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            steps.append(f"[{t_res}] 小蚕官方接口返回: {upstream_res.get('msg') or '单号上报成功'}")
         except Exception as e:
             logger.warning(f"小蚕官方接口提交单号返回: {e}")
+            t_res = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            steps.append(f"[{t_res}] 小蚕官方接口提示: {e}")
+            rpc_success = False
 
     has_receipt = bool(data.get("receipt_img"))
     new_status = "auditing" if has_receipt else "pending"
@@ -4217,6 +4670,14 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
         "receipt_img": data.get("receipt_img", "")
     })
     msg = "外卖单号与评价凭证已提交审核！预计 2-24 小时内核销到账" if has_receipt else "外卖单号已成功绑定！待外卖送达后即可在小蚕APP提交评价反馈"
+    
+    t_fin = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    steps.append(f"[{t_fin}] 本地订单记录已更新为: {new_status} (单号核验入库)")
+    try:
+        db.add_job_log(job_id, account_key, "order_bind", "success" if rpc_success else "error", "\n".join(steps))
+    except Exception as le:
+        logger.warning(f"记录回填单号流水异常: {le}")
+
     return {
         "ok": True,
         "order": updated,
@@ -4815,6 +5276,14 @@ async def test_notify_endpoint(data: Dict[str, Any] = Body(...)):
     if not channel:
         raise HTTPException(status_code=400, detail="通知渠道参数不能为空")
     res = await notifier.test_single_channel(channel, config)
+    try:
+        ok = bool(res.get("ok", False))
+        status_str = "SUCCESS" if ok else "FAILED"
+        status_desc = "成功" if ok else str(res.get("message", "未知错误"))
+        msg = f"测试通知渠道 [{channel}]: {status_desc}"
+        db.add_job_log(task_name="notify_test", status=status_str, message=msg, details={"channel": channel, "res": res})
+    except Exception:
+        pass
     return res
 
 
@@ -5200,5 +5669,3 @@ async def read_all_messages(req: ReadAllMessagesRequest):
     except Exception as e:
         logger.error(f"全部标记已读失败: {e}")
         return {"ok": False, "error": str(e)}
-
-

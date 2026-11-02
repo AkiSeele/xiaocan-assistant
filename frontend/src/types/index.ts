@@ -413,6 +413,22 @@ export interface MeituanCouponItem {
   priceLimit?: number;
   couponValue?: number;
   tabName?: string;
+  couponName?: string;
+  discountDesc?: string;
+  validPeriod?: string;
+  couponValueYuan?: string;
+  priceLimitYuan?: string;
+}
+
+export interface MeituanPromotionItem {
+  id: string;
+  name: string;
+  desc: string;
+  url: string;
+  command: string;
+  tag: string;
+  discount: string;
+  priority: number;
 }
 
 export interface MeituanAccount {

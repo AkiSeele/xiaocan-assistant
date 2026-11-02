@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Toast } from '@douyinfe/semi-ui';
-import type { Account, AccountDetailData, UserCardItem, TaskItem, FlashSaleShelfResponse, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, DelayCardInfo, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse } from '../types';
+import type { Account, AccountDetailData, UserCardItem, TaskItem, FlashSaleShelfResponse, StoreItem, StoreAppointment, NameMonitorPayload, JobLog, UserInfo, Order, DelayCardInfo, OrderStats, DashboardChartData, BatchDailyResult, SystemSettings, NotifyTestResult, LocationSearchResult, ClawBotStatus, ClawBotQrResponse, ClawBotPollResponse, ClawBotActivationResponse, AccountNotifyConfig, AccountNotifyResponse, XiaoCanMessagesResponse, MeituanAccount, MeituanAuthStartResponse, MeituanAuthPollResponse, MeituanPromotionItem } from '../types';
 
 export const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -119,6 +119,7 @@ export const api = {
   pollMeituanAuth: (sessionId: string) => client.get<MeituanAuthPollResponse>('/meituan/auth/poll', { params: { session_id: sessionId } }).then(r => r.data),
   cancelMeituanAuth: (sessionId: string) => client.post<{ ok: boolean; message: string }>('/meituan/auth/cancel', { session_id: sessionId }).then(r => r.data),
   runMeituanClaim: (data?: { account_key?: string; force?: boolean }) => client.post<{ ok: boolean; result?: any; results?: any[]; message?: string }>('/meituan/claim/run', data, { timeout: 150000 }).then(r => r.data),
+  getMeituanPromotions: () => client.get<{ ok: boolean; promotions: MeituanPromotionItem[] }>('/meituan/promotions').then(r => r.data),
 
   // 店铺与附近霸王餐 (支持经纬度、平台、搜索过滤、触底流式分页)
   getStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; keyword?: string; platform?: string; condition?: string; rebate_type?: string; sort_by?: string; limit?: number; offset?: number; page_pv_id?: string }, signal?: AbortSignal) => 
@@ -219,4 +220,5 @@ export const api = {
         offset: number;
       }>('/time')
       .then(r => r.data),
+
 };

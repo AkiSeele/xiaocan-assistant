@@ -47,6 +47,8 @@ interface TaskCardProps {
   currentAccountKey: string;
   accountTasksMap: Record<string, TaskItem[]>;
   running: boolean;
+  isTogglingAccount: (accountKey: string, taskId: string) => boolean;
+  isTogglingAll: boolean;
   onToggleAccount: (accountKey: string, taskId: string, enabled: boolean) => void;
   onToggleAllAccounts: (taskId: string, enabled: boolean) => void;
   onRun: (task: TaskItem, accountKey: string) => void;
@@ -82,12 +84,15 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
   currentAccountKey,
   accountTasksMap,
   running,
+  isTogglingAccount,
+  isTogglingAll,
   onToggleAccount,
   onToggleAllAccounts,
   onRun,
   onOpenConfig,
   onOpenTime,
 }) => {
+  const isCurrentSwitchLoading = isTogglingAccount(currentAccountKey, task.task_id) || isTogglingAll;
   const hasParams = Boolean(task.param_defs && task.param_defs.length > 0);
   const categoryMeta = getCategoryMeta(task.category);
 
@@ -189,9 +194,11 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
       }
       headerExtraContent={
         <Space align="center" spacing="tight">
-          <Tooltip content={isCurrentAccountEnabled ? '点击关闭当前主控账号' : '点击开启当前主控账号'}>
+          <Tooltip content={isCurrentSwitchLoading ? '正在更新任务状态...' : (isCurrentAccountEnabled ? '点击关闭当前主控账号' : '点击开启当前主控账号')}>
             <Switch
               checked={isCurrentAccountEnabled}
+              loading={isCurrentSwitchLoading}
+              disabled={isCurrentSwitchLoading}
               onChange={(val) => onToggleAccount(currentAccountKey, task.task_id, val)}
               size="small"
             />
@@ -336,6 +343,8 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
                 theme="borderless"
                 type="tertiary"
                 size="small"
+                loading={isTogglingAll}
+                disabled={isTogglingAll}
                 style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: '18px' }}
                 onClick={() => onToggleAllAccounts(task.task_id, !isAllAccountsEnabled)}
               >
@@ -350,36 +359,64 @@ const TaskCard: React.FC<TaskCardProps> = React.memo(({
                 accountTasksMap[acc.key]?.find((item) => item.task_id === task.task_id)?.enabled
               );
               const isCurrent = acc.key === currentAccountKey;
+              const isAccToggling = isTogglingAccount(acc.key, task.task_id) || isTogglingAll;
 
               return (
                 <Tooltip
                   key={acc.key}
-                  content={`${acc.nickname} · ${isAccEnabled ? '点击关闭此账号' : '点击开启此账号'}${isCurrent ? ' · 当前主控' : ''}`}
+                  content={
+                    isAccToggling
+                      ? `${acc.nickname} · 正在更新状态...`
+                      : `${acc.nickname} · ${isAccEnabled ? '点击关闭此账号' : '点击开启此账号'}${isCurrent ? ' · 当前主控' : ''}`
+                  }
                 >
                   <Tag
                     size="small"
                     color={isAccEnabled ? 'green' : 'grey'}
                     type={isAccEnabled ? 'light' : 'ghost'}
                     style={{
-                      cursor: 'pointer',
+                      cursor: isAccToggling ? 'wait' : 'pointer',
                       borderRadius: '4px',
                       fontSize: 11,
                       padding: '1px 6px',
+                      opacity: isAccToggling ? 0.6 : 1,
+                      transition: 'all 0.2s ease',
+                      display: 'inline-flex',
+                      alignItems: 'center',
                     }}
-                    onClick={() => onToggleAccount(acc.key, task.task_id, !isAccEnabled)}
+                    onClick={() => {
+                      if (!isAccToggling) {
+                        onToggleAccount(acc.key, task.task_id, !isAccEnabled);
+                      }
+                    }}
                   >
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        width: 5,
-                        height: 5,
-                        borderRadius: '50%',
-                        backgroundColor: isAccEnabled
-                          ? 'var(--semi-color-success)'
-                          : 'var(--semi-color-text-3)',
-                        marginRight: 4,
-                      }}
-                    />
+                    {isAccToggling ? (
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 5,
+                          height: 5,
+                          borderRadius: '50%',
+                          border: '1px solid var(--semi-color-primary)',
+                          borderTopColor: 'transparent',
+                          animation: 'semi-spin 0.8s linear infinite',
+                          marginRight: 4,
+                        }}
+                      />
+                    ) : (
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 5,
+                          height: 5,
+                          borderRadius: '50%',
+                          backgroundColor: isAccEnabled
+                            ? 'var(--semi-color-success)'
+                            : 'var(--semi-color-text-3)',
+                          marginRight: 4,
+                        }}
+                      />
+                    )}
                     {acc.nickname || '未命名'}
                     {isCurrent ? ' · 主控' : ''}
                   </Tag>
@@ -403,6 +440,15 @@ export const Automation: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState<boolean>(false);
+
+  // 任务启停异步 Loading 状态映射
+  const [togglingKeys, setTogglingKeys] = useState<Record<string, boolean>>({});
+  const [togglingAllTasks, setTogglingAllTasks] = useState<Record<string, boolean>>({});
+  const [batchCategoryToggling, setBatchCategoryToggling] = useState<'enable' | 'disable' | null>(null);
+
+  const isTogglingAccount = useCallback((accountKey: string, taskId: string) => {
+    return Boolean(togglingKeys[`${accountKey}:${taskId}`]);
+  }, [togglingKeys]);
 
   // 日志回显弹窗
   const [execResultModal, setExecResultModal] = useState<boolean>(false);
@@ -496,6 +542,10 @@ export const Automation: React.FC = () => {
 
   // 单个账号的任务开关
   const handleToggleAccount = async (accountKey: string, taskId: string, enabled: boolean) => {
+    const key = `${accountKey}:${taskId}`;
+    if (togglingKeys[key] || togglingAllTasks[taskId]) return;
+
+    setTogglingKeys((prev) => ({ ...prev, [key]: true }));
     try {
       await api.toggleTask({
         account_key: accountKey,
@@ -518,11 +568,20 @@ export const Automation: React.FC = () => {
     } catch (e: any) {
       const errMsg = e?.response?.data?.detail || e?.message || '更新任务状态失败';
       Toast.error(errMsg);
+    } finally {
+      setTogglingKeys((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     }
   };
 
   // 一键切换全部账号的某个任务
   const handleToggleAllAccounts = async (taskId: string, enabled: boolean) => {
+    if (togglingAllTasks[taskId]) return;
+
+    setTogglingAllTasks((prev) => ({ ...prev, [taskId]: true }));
     try {
       await Promise.all(
         accounts.map((acc) =>
@@ -546,6 +605,12 @@ export const Automation: React.FC = () => {
     } catch (e: any) {
       const errMsg = e?.response?.data?.detail || e?.message || '批量切换失败';
       Toast.error(errMsg);
+    } finally {
+      setTogglingAllTasks((prev) => {
+        const next = { ...prev };
+        delete next[taskId];
+        return next;
+      });
     }
   };
 
@@ -752,11 +817,13 @@ export const Automation: React.FC = () => {
 
   // 分类任务批量启停 (仅针对当前选中的Tab分类)
   const handleBatchToggleCategory = async (category: string, enable: boolean) => {
+    if (batchCategoryToggling !== null) return;
     const currentTasks = accountTasksMap[currentAccountKey] || [];
     const targetTasks = currentTasks.filter((t) => (t.category || 'daily') === category);
 
     if (targetTasks.length === 0) return;
 
+    setBatchCategoryToggling(enable ? 'enable' : 'disable');
     try {
       await Promise.all(
         targetTasks.map((t) =>
@@ -788,6 +855,8 @@ export const Automation: React.FC = () => {
       Toast.success(`已为当前账号${enable ? '开启' : '关闭'}「${catLabel}」全部 ${targetTasks.length} 项任务`);
     } catch (e) {
       Toast.error('批量操作失败');
+    } finally {
+      setBatchCategoryToggling(null);
     }
   };
 
@@ -989,7 +1058,7 @@ export const Automation: React.FC = () => {
             </span>
           </Title>
           <Tag color="blue" size="small">
-            会员签到 / 元宝抽奖 / 领气泡
+            会员签到 / 开红包抽奖 / 领气泡
           </Tag>
         </Card>
 
@@ -1026,6 +1095,8 @@ export const Automation: React.FC = () => {
               size="small"
               theme="light"
               type="tertiary"
+              loading={batchCategoryToggling === 'enable'}
+              disabled={batchCategoryToggling !== null}
               onClick={() => handleBatchToggleCategory(activeCategory, true)}
             >
               全部开启
@@ -1034,6 +1105,8 @@ export const Automation: React.FC = () => {
               size="small"
               theme="light"
               type="tertiary"
+              loading={batchCategoryToggling === 'disable'}
+              disabled={batchCategoryToggling !== null}
               onClick={() => handleBatchToggleCategory(activeCategory, false)}
             >
               全部关闭
@@ -1090,6 +1163,8 @@ export const Automation: React.FC = () => {
               currentAccountKey={currentAccountKey}
               accountTasksMap={accountTasksMap}
               running={runningTaskId === task.task_id}
+              isTogglingAccount={isTogglingAccount}
+              isTogglingAll={Boolean(togglingAllTasks[task.task_id])}
               onToggleAccount={handleToggleAccount}
               onToggleAllAccounts={handleToggleAllAccounts}
               onRun={handleRun}

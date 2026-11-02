@@ -41,7 +41,8 @@ import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
 import { TaskIcon } from '../components/TaskIcons';
 import { LogDetailModal } from '../components/LogDetailModal';
-import { useGSAP, animateStaggerEnter, gsap } from '../utils/animations';
+import { NumberAnimation } from '../components/NumberAnimation';
+import { useGSAP, animateStaggerEnter, animateSmoothSwitch, gsap } from '../utils/animations';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { JobLog, StoreAppointment, OrderStats, DashboardChartData, XiaoCanMessage, XiaoCanMessageChannel, Order, TaskItem } from '../types';
 
@@ -104,6 +105,12 @@ const TASK_LABELS: Record<string, string> = {
   expire_remind: '凭据/JWT到期预警',
   coupon_remind: '卡券/红包到期提醒',
   dual_rebate_monitor: '美团同店双返利监控',
+  // 核心业务与资产操作
+  order_bind: '回填外卖单号',
+  flash_exchange: '元宝秒杀兑换',
+  account_sync: '官方资产同步',
+  token_capture: '抓包凭据捕获',
+  notify_test: '通知推送测试',
 };
 
 // 小蚕官方消息频道元数据 (对应微服务 SilkwormMessageCenter)
@@ -158,6 +165,9 @@ export const Dashboard: React.FC = () => {
   const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const dashboardRef = useRef<HTMLDivElement>(null);
+  const ordersSectionRef = useRef<HTMLDivElement>(null);
+  const tasksListRef = useRef<HTMLDivElement>(null);
+  const rightPanelContentRef = useRef<HTMLDivElement>(null);
 
   // 核心业务数据状态
   const [messages, setMessages] = useState<XiaoCanMessage[]>([]);
@@ -203,6 +213,7 @@ export const Dashboard: React.FC = () => {
   const [enabledTaskCount, setEnabledTaskCount] = useState<number>(0);
   const [totalTaskCount, setTotalTaskCount] = useState<number>(12);
   const [loading, setLoading] = useState<boolean>(true);
+  const [dashboardRefreshKey, setDashboardRefreshKey] = useState<number>(0);
 
   // 按钮异步操作 Loading 状态 (防重复点击)
   const [batchAllLoading, setBatchAllLoading] = useState<boolean>(false);
@@ -240,6 +251,7 @@ export const Dashboard: React.FC = () => {
       hasLoadedOrdersOnceRef.current = true;
       return;
     }
+    const startTime = Date.now();
     if (!silent) setOrdersLoading(true);
     try {
       const res = await api.getOrders({
@@ -253,10 +265,22 @@ export const Dashboard: React.FC = () => {
     } catch {
       // 异常捕获
     } finally {
+      if (!silent) {
+        const elapsed = Date.now() - startTime;
+        if (elapsed < 350) {
+          await new Promise((r) => setTimeout(r, 350 - elapsed));
+        }
+      }
       hasLoadedOrdersOnceRef.current = true;
       if (!silent) setOrdersLoading(false);
     }
   }, [currentAccountKey, accounts[0]?.key]);
+
+  // 手动触发待办工单刷新 (带操作反馈与独立遮罩)
+  const handleRefreshOrders = async () => {
+    await fetchPendingOrders(false);
+    Toast.success('已同步最新霸王餐待办工单');
+  };
 
   // 刷新本账号自动化待命任务
   const fetchAccountTasks = useCallback(async (targetKey?: string, silent = false) => {
@@ -444,6 +468,7 @@ export const Dashboard: React.FC = () => {
       if (apptsRes.ok) setAppointments(apptsRes.appointments || []);
       if (statsRes.ok && statsRes.stats) setOrderStats(statsRes.stats);
       if (chartRes.ok && chartRes.data) setChartData(chartRes.data);
+      setDashboardRefreshKey((prev) => prev + 1);
 
       if (tasksRes && tasksRes.ok && tasksRes.tasks) {
         setAccountTasks(tasksRes.tasks || []);
@@ -498,19 +523,78 @@ export const Dashboard: React.FC = () => {
     { scope: dashboardRef }
   );
 
-  // 切换主控账号时，Bento 核心资产卡片与待办任务区域平滑微过渡 (纯 GPU 柔和淡入，消除抖动)
+  // 切换主控账号或刷新数据时，Bento 核心资产卡片微呼吸动效 (与 NumberAnimation 动效共振，平滑自然)
   useGSAP(
     () => {
       if (!dashboardRef.current) return;
-      const targets = dashboardRef.current.querySelectorAll('.gsap-bento-card, .gsap-pending-section');
+      const targets = dashboardRef.current.querySelectorAll('.gsap-bento-card');
       if (targets.length) {
         gsap.killTweensOf(targets);
         gsap.fromTo(
           targets,
-          { autoAlpha: 0.72 },
+          { autoAlpha: 0.8 },
           {
             autoAlpha: 1,
-            duration: 0.2,
+            duration: 0.28,
+            stagger: 0.025,
+            ease: 'power2.out',
+            overwrite: 'auto',
+            clearProps: 'opacity,visibility',
+          }
+        );
+      }
+    },
+    { scope: dashboardRef, dependencies: [currentAccountKey, dashboardRefreshKey] }
+  );
+
+  // 待办工单出现/更新时的柔和交错展开动效 (消除高度与数据硬跳变，实现如丝般顺滑的自然过渡)
+  useGSAP(
+    () => {
+      if (!ordersSectionRef.current || ordersLoading) return;
+      const orderItems = ordersSectionRef.current.querySelectorAll('.gsap-order-item');
+      if (orderItems.length > 0) {
+        gsap.killTweensOf(orderItems);
+        gsap.fromTo(
+          orderItems,
+          { autoAlpha: 0, y: 6 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 0.28,
+            stagger: 0.04,
+            ease: 'power2.out',
+            overwrite: 'auto',
+            clearProps: 'transform,opacity,visibility',
+          }
+        );
+      }
+    },
+    { scope: ordersSectionRef, dependencies: [pendingOrders, ordersLoading] }
+  );
+
+  // 右侧分栏 Tab 切换或频道筛选时的轻柔过渡 (纯 GPU 加速淡入，消除抽搐感)
+  useGSAP(
+    () => {
+      if (rightPanelContentRef.current) {
+        animateSmoothSwitch(rightPanelContentRef.current, 0, 0.2);
+      }
+    },
+    { scope: rightPanelContentRef, dependencies: [rightPanelTab, selectedChannelId] }
+  );
+
+  // 右侧运行流水更新时的平滑入场
+  useGSAP(
+    () => {
+      if (!rightPanelContentRef.current || rightPanelTab !== 'feed') return;
+      const logItems = rightPanelContentRef.current.querySelectorAll('.gsap-log-item');
+      if (logItems.length > 0) {
+        gsap.killTweensOf(logItems);
+        gsap.fromTo(
+          logItems,
+          { autoAlpha: 0.8 },
+          {
+            autoAlpha: 1,
+            duration: 0.22,
             stagger: 0.02,
             ease: 'power1.out',
             overwrite: 'auto',
@@ -519,7 +603,7 @@ export const Dashboard: React.FC = () => {
         );
       }
     },
-    { scope: dashboardRef, dependencies: [currentAccountKey] }
+    { scope: rightPanelContentRef, dependencies: [recentLogs] }
   );
 
   // 4 大核心资产 Bento 卡片鼠标移入/移出 GSAP 动效 (遵循 Semi Design 克制、严谨、轻量微动效原则)
@@ -664,6 +748,31 @@ export const Dashboard: React.FC = () => {
     return combined.slice(0, 4);
   }, [activePendingTasks]);
 
+// 自动化守护待命任务切换/刷新时的平滑微淡入
+  useGSAP(
+    () => {
+      if (!tasksListRef.current) return;
+      const taskItems = tasksListRef.current.querySelectorAll('.gsap-task-item');
+      if (taskItems.length > 0) {
+        gsap.killTweensOf(taskItems);
+        gsap.fromTo(
+          taskItems,
+          { autoAlpha: 0, y: 4 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 0.24,
+            stagger: 0.03,
+            ease: 'power2.out',
+            overwrite: 'auto',
+            clearProps: 'transform,opacity,visibility',
+          }
+        );
+      }
+    },
+    { scope: tasksListRef, dependencies: [highlightTasks, currentAccountKey] }
+  );
+
   // 一键执行当前账号日常任务 (执行当前账号已开启的日常任务)
   const handleBatchRunAll = async () => {
     if (!currentAccountKey && accounts.length === 0) {
@@ -765,7 +874,7 @@ export const Dashboard: React.FC = () => {
               </span>
               {Boolean(currentAccount?.vip_score) && (
                 <span className="hidden lg:inline text-semi-color-text-2">
-                  成长值: <span className="font-mono text-semi-color-text-1">{(currentAccount?.vip_score || 0).toLocaleString()}</span>
+                  成长值: <span className="font-mono text-semi-color-text-1"><NumberAnimation to={currentAccount?.vip_score || 0} showSeparator refreshKey={dashboardRefreshKey} className="font-mono text-semi-color-text-1" /></span>
                 </span>
               )}
             </div>
@@ -873,12 +982,16 @@ export const Dashboard: React.FC = () => {
             </div>
             <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
               <span className="text-xs sm:text-sm font-semibold text-semi-color-text-2">¥</span>
-              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                {orderStats.total_rebate.toFixed(2)}
-              </span>
+              <NumberAnimation
+                to={orderStats.total_rebate}
+                precision={2}
+                showSeparator
+                refreshKey={dashboardRefreshKey}
+                className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0"
+              />
             </div>
             <Text type="tertiary" size="small" className="text-xs block truncate">
-              已结算 <span className="text-semi-color-text-1 font-medium">{orderStats.completed_orders}</span> 笔订单
+              已结算 <NumberAnimation to={orderStats.completed_orders} precision={0} refreshKey={dashboardRefreshKey} className="text-semi-color-text-1 font-medium" /> 笔订单
             </Text>
           </Card>
         </div>
@@ -915,12 +1028,16 @@ export const Dashboard: React.FC = () => {
             </div>
             <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
               <span className="text-xs sm:text-sm font-semibold text-semi-color-text-2">¥</span>
-              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                {orderStats.pending_rebate.toFixed(2)}
-              </span>
+              <NumberAnimation
+                to={orderStats.pending_rebate}
+                precision={2}
+                showSeparator
+                refreshKey={dashboardRefreshKey}
+                className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0"
+              />
             </div>
             <Text type="tertiary" size="small" className="text-xs block truncate">
-              审核中 <span className="text-semi-color-text-1 font-medium">{orderStats.pending_orders}</span> 单 · 预计2~24h
+              审核中 <NumberAnimation to={orderStats.pending_orders} precision={0} refreshKey={dashboardRefreshKey} className="text-semi-color-text-1 font-medium" /> 单 · 预计2~24h
             </Text>
           </Card>
         </div>
@@ -957,14 +1074,18 @@ export const Dashboard: React.FC = () => {
             </div>
             <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
               <span className="text-xs sm:text-sm font-semibold text-semi-color-text-2">¥</span>
-              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                {(chartData?.today_summary?.today_savings || 0).toFixed(2)}
-              </span>
+              <NumberAnimation
+                to={chartData?.today_summary?.today_savings || 0}
+                precision={2}
+                showSeparator
+                refreshKey={dashboardRefreshKey}
+                className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0"
+              />
             </div>
             <Text type="tertiary" size="small" className="text-xs block truncate">
-              今日到账 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)}</span> 笔
+              今日到账 <NumberAnimation to={chartData?.today_summary?.today_completed_orders ?? (chartData?.today_summary?.today_orders || 0)} precision={0} refreshKey={dashboardRefreshKey} className="text-semi-color-text-1 font-medium" /> 笔
               {(chartData?.today_summary?.today_pending_orders ?? 0) > 0 && (
-                <span> · 在途 <span className="text-semi-color-text-1 font-medium">{chartData?.today_summary?.today_pending_orders}</span> 单</span>
+                <span> · 在途 <NumberAnimation to={chartData?.today_summary?.today_pending_orders || 0} precision={0} refreshKey={dashboardRefreshKey} className="text-semi-color-text-1 font-medium" /> 单</span>
               )}
             </Text>
           </Card>
@@ -1001,16 +1122,21 @@ export const Dashboard: React.FC = () => {
               </Tooltip>
             </div>
             <div className="flex items-baseline gap-1 my-1 sm:my-1.5">
-              <span className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0">
-                {enabledTaskCount}
-              </span>
+              <NumberAnimation
+                to={enabledTaskCount}
+                precision={0}
+                refreshKey={dashboardRefreshKey}
+                className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-semi-color-text-0"
+              />
               <span className="text-xs font-medium text-semi-color-text-2">/ {totalTaskCount} 项开启</span>
             </div>
             <Text type="tertiary" size="small" className="text-xs flex items-center gap-1.5 truncate">
               <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0"></span>
               <span className="truncate">
                 {enabledTaskCount > 0 ? '定时秒杀就绪' : '任务待开启'}
-                {appointments.length > 0 ? ` · ${appointments.length}家盯单` : ''}
+                {appointments.length > 0 && (
+                  <span> · <NumberAnimation to={appointments.length} precision={0} refreshKey={dashboardRefreshKey} />家盯单</span>
+                )}
               </span>
             </Text>
           </Card>
@@ -1021,7 +1147,7 @@ export const Dashboard: React.FC = () => {
       <div className="flex-1 min-h-0 w-full grid grid-cols-1 lg:grid-cols-12 gap-2 sm:gap-2.5 overflow-hidden">
         {/* 左分栏：霸王餐待办工单 与 今日自动化守护快捷中心 (占 7 列，约 58%) */}
         <div className="lg:col-span-7 h-full min-h-0 flex flex-col gap-2 sm:gap-2.5 overflow-hidden">
-          {/* 上卡片：待上传外卖订单 (官方限额 3 笔，紧凑自适应，工单级呈现) */}
+          {/* 上卡片：待上传外卖订单 (官方限额 3 笔，高度平滑过渡，工单级呈现) */}
           <Card
             title={
               <div className="flex justify-between items-center w-full min-w-0 gap-2">
@@ -1043,13 +1169,15 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <Tooltip content="刷新待上传订单">
+                  <Tooltip content="刷新待办工单">
                     <Button
                       theme="borderless"
                       type="tertiary"
                       size="small"
                       icon={<IconRefresh spin={ordersLoading} />}
-                      onClick={() => fetchPendingOrders()}
+                      loading={ordersLoading}
+                      disabled={ordersLoading}
+                      onClick={handleRefreshOrders}
                     />
                   </Tooltip>
                   <Button
@@ -1066,146 +1194,150 @@ export const Dashboard: React.FC = () => {
                 </div>
               </div>
             }
-            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs shrink-0 overflow-hidden flex flex-col"
+            className="gsap-card-item rounded-xl border border-semi-color-border shadow-xs shrink-0 overflow-hidden flex flex-col transition-[height,max-height,box-shadow] duration-300 ease-out"
             headerStyle={{ padding: '8px 14px', borderBottom: '1px solid var(--semi-color-border)', minHeight: '44px', display: 'flex', alignItems: 'center' }}
             bodyStyle={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}
           >
-            {!hasLoadedOrdersOnceRef.current && ordersLoading && pendingOrders.length === 0 ? (
-              <div className="flex items-center justify-center py-3 text-semi-color-text-2 gap-2">
-                <Spin size="small" />
-                <span className="text-xs">检查待上传外卖订单...</span>
-              </div>
-            ) : pendingOrders.length > 0 ? (
-              <div className="space-y-1.5">
-                {pendingOrders.map((order) => {
-                  const acc = accounts.find((a) => a.key === order.account_key);
-                  const isBound = Boolean(order.platform_order_id);
-                  return (
-                    <div
-                      key={order.id}
-                      className="p-1.5 sm:p-2 rounded-lg border border-semi-color-border/80 bg-semi-color-fill-0/40 hover:border-semi-color-primary-light-active transition-all flex items-center justify-between gap-2"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                        <Avatar
-                          size="extra-small"
-                          shape="square"
-                          src={
-                            order.store_icon ||
-                            (order.platform === 'meituan'
-                              ? 'http://p0.meituan.net/business/9c1f3ad81227cb1f21341fee52246a08159931.jpg'
-                              : undefined)
-                          }
-                          color="orange"
-                          className="shrink-0 rounded-md"
-                        >
-                          {order.store_name?.[0] || '店'}
-                        </Avatar>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <Tooltip content={`点击复制: ${cleanEmoji(order.store_name)}`} position="top" showArrow>
-                              <span
-                                className="font-bold text-sm text-semi-color-text-0 truncate max-w-[200px] cursor-pointer hover:text-semi-color-primary transition-colors"
-                                onClick={() => {
-                                  const sname = cleanEmoji(order.store_name);
-                                  if (sname) {
-                                    navigator.clipboard.writeText(sname);
-                                    Toast.success(`已复制店铺名称: ${sname}`);
-                                  }
-                                }}
-                              >
-                                {cleanEmoji(order.store_name)}
-                              </span>
-                            </Tooltip>
-                            <Tag size="small" color={order.platform === 'meituan' ? 'amber' : 'blue'} className="shrink-0">
-                              {order.platform === 'meituan' ? '美团' : '饿了么'}
-                            </Tag>
-                            {isBound ? (
-                              <Tag size="small" color="cyan" className="shrink-0">
-                                已下单待反馈
-                              </Tag>
-                            ) : (
-                              <Tag size="small" color="amber" className="shrink-0">
-                                待提交外卖单号
-                              </Tag>
-                            )}
-                            {acc && accounts.length > 1 && (
-                              <Tag size="small" color="grey" type="light" className="truncate max-w-[80px] shrink-0">
-                                {acc.nickname}
-                              </Tag>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1 text-xs text-semi-color-text-2 flex-wrap">
-                            <span className="text-emerald-600 dark:text-emerald-400 font-bold font-mono">
-                              返 ¥{order.rebate_money?.toFixed(2) || '0.00'}
-                            </span>
-                            <span>门槛 ¥{order.order_money}</span>
-                            <Tag size="small" color={getConditionTagColor(order.condition)}>
-                              {order.condition || '用餐反馈'}
-                            </Tag>
-                            {isBound && (
-                              <span className="font-mono text-xs text-semi-color-text-1">
-                                单号: {order.platform_order_id}
-                              </span>
-                            )}
-                            {(() => {
-                              const nowSec = Math.floor(Date.now() / 1000);
-                              const remSec = order.timeout_time ? order.timeout_time - nowSec : null;
-                              const remText = remSec !== null ? formatRemainingTime(remSec) : '';
-                              if (!remText && !order.expire_time) return null;
-                              return (
-                                <span className="flex items-center gap-0.5 text-amber-600 dark:text-amber-400 font-medium">
-                                  <IconClock size="extra-small" />
-                                  {remText ? remText : (order.expire_time ? `截止 ${order.expire_time.split(' ')[1] || order.expire_time}` : '')}
-                                </span>
-                              );
-                            })()}
-                          </div>
-                        </div>
-                      </div>
-                      {isBound ? (
-                        <Tag
-                          size="small"
-                          color="cyan"
-                          type="light"
-                          className="shrink-0 text-xs font-medium !py-0.5"
-                        >
-                          待送达反馈
-                        </Tag>
-                      ) : (
-                        <Tag
-                          size="small"
-                          color="amber"
-                          type="light"
-                          className="shrink-0 text-xs font-medium !py-0.5"
-                        >
-                          待APP填单
-                        </Tag>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-semi-color-fill-0 border border-semi-color-border-subtle">
-                <div className="flex items-center gap-2 min-w-0">
-                  <IconCheckCircleStroked className="text-emerald-500 shrink-0" size="small" />
-                  <div className="text-xs min-w-0">
-                    <span className="text-semi-color-text-1 font-medium">当前无待处理工单</span>
-                    <span className="text-semi-color-text-2 ml-1 hidden sm:inline">· 限额 3 笔，抢单后需回填单号</span>
-                  </div>
+            <div ref={ordersSectionRef} className="transition-all duration-300 ease-out">
+              {ordersLoading && pendingOrders.length === 0 ? (
+                <div className="flex items-center justify-center py-3.5 px-3 rounded-lg bg-semi-color-fill-0 border border-semi-color-border-subtle gap-2 text-semi-color-text-2 min-h-[52px] transition-all duration-300 ease-out">
+                  <Spin size="small" />
+                  <span className="text-xs">正在同步待办工单...</span>
                 </div>
-                <Button
-                  theme="light"
-                  type="primary"
-                  size="small"
-                  icon={<IconBolt />}
-                  onClick={() => setActiveTab('store')}
-                  className="shrink-0 text-xs"
-                >
-                  挑选霸王餐
-                </Button>
-              </div>
-            )}
+              ) : pendingOrders.length > 0 ? (
+                <Spin spinning={ordersLoading} size="small" wrapperClassName="w-full">
+                  <div className="space-y-1.5 max-h-[175px] overflow-y-auto pr-0.5 transition-all duration-300 ease-out">
+                    {pendingOrders.map((order) => {
+                      const acc = accounts.find((a) => a.key === order.account_key);
+                      const isBound = Boolean(order.platform_order_id);
+                      return (
+                        <div
+                          key={order.id}
+                          className="gsap-order-item p-1.5 sm:p-2 rounded-lg border border-semi-color-border/80 bg-semi-color-fill-0/40 hover:border-semi-color-primary-light-active transition-all flex items-center justify-between gap-2"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <Avatar
+                              size="extra-small"
+                              shape="square"
+                              src={
+                                order.store_icon ||
+                                (order.platform === 'meituan'
+                                  ? 'http://p0.meituan.net/business/9c1f3ad81227cb1f21341fee52246a08159931.jpg'
+                                  : undefined)
+                              }
+                              color="orange"
+                              className="shrink-0 rounded-md"
+                            >
+                              {order.store_name?.[0] || '店'}
+                            </Avatar>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <Tooltip content={`点击复制: ${cleanEmoji(order.store_name)}`} position="top" showArrow>
+                                  <span
+                                    className="font-bold text-sm text-semi-color-text-0 truncate max-w-[200px] cursor-pointer hover:text-semi-color-primary transition-colors"
+                                    onClick={() => {
+                                      const sname = cleanEmoji(order.store_name);
+                                      if (sname) {
+                                        navigator.clipboard.writeText(sname);
+                                        Toast.success(`已复制店铺名称: ${sname}`);
+                                      }
+                                    }}
+                                  >
+                                    {cleanEmoji(order.store_name)}
+                                  </span>
+                                </Tooltip>
+                                <Tag size="small" color={order.platform === 'meituan' ? 'amber' : 'blue'} className="shrink-0">
+                                  {order.platform === 'meituan' ? '美团' : '饿了么'}
+                                </Tag>
+                                {isBound ? (
+                                  <Tag size="small" color="cyan" className="shrink-0">
+                                    已下单待反馈
+                                  </Tag>
+                                ) : (
+                                  <Tag size="small" color="amber" className="shrink-0">
+                                    待提交外卖单号
+                                  </Tag>
+                                )}
+                                {acc && accounts.length > 1 && (
+                                  <Tag size="small" color="grey" type="light" className="truncate max-w-[80px] shrink-0">
+                                    {acc.nickname}
+                                  </Tag>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1 text-xs text-semi-color-text-2 flex-wrap">
+                                <span className="text-emerald-600 dark:text-emerald-400 font-bold font-mono">
+                                  返 ¥{order.rebate_money?.toFixed(2) || '0.00'}
+                                </span>
+                                <span>门槛 ¥{order.order_money}</span>
+                                <Tag size="small" color={getConditionTagColor(order.condition)}>
+                                  {order.condition || '用餐反馈'}
+                                </Tag>
+                                {isBound && (
+                                  <span className="font-mono text-xs text-semi-color-text-1">
+                                    单号: {order.platform_order_id}
+                                  </span>
+                                )}
+                                {(() => {
+                                  const nowSec = Math.floor(Date.now() / 1000);
+                                  const remSec = order.timeout_time ? order.timeout_time - nowSec : null;
+                                  const remText = remSec !== null ? formatRemainingTime(remSec) : '';
+                                  if (!remText && !order.expire_time) return null;
+                                  return (
+                                    <span className="flex items-center gap-0.5 text-amber-600 dark:text-amber-400 font-medium">
+                                      <IconClock size="extra-small" />
+                                      {remText ? remText : (order.expire_time ? `截止 ${order.expire_time.split(' ')[1] || order.expire_time}` : '')}
+                                    </span>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+                          {isBound ? (
+                            <Tag
+                              size="small"
+                              color="cyan"
+                              type="light"
+                              className="shrink-0 text-xs font-medium !py-0.5"
+                            >
+                              待送达反馈
+                            </Tag>
+                          ) : (
+                            <Tag
+                              size="small"
+                              color="amber"
+                              type="light"
+                              className="shrink-0 text-xs font-medium !py-0.5"
+                            >
+                              待APP填单
+                            </Tag>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Spin>
+              ) : (
+                <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-semi-color-fill-0 border border-semi-color-border-subtle min-h-[52px] transition-all duration-300 ease-out">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <IconCheckCircleStroked className="text-emerald-500 shrink-0" size="small" />
+                    <div className="text-xs min-w-0">
+                      <span className="text-semi-color-text-1 font-medium">当前无待处理工单</span>
+                      <span className="text-semi-color-text-2 ml-1 hidden sm:inline">· 限额 3 笔，抢单后需回填单号</span>
+                    </div>
+                  </div>
+                  <Button
+                    theme="light"
+                    type="primary"
+                    size="small"
+                    icon={<IconBolt />}
+                    onClick={() => setActiveTab('store')}
+                    className="shrink-0 text-xs"
+                  >
+                    挑选霸王餐
+                  </Button>
+                </div>
+              )}
+            </div>
 
             <div className="pt-1.5 mt-auto shrink-0 border-t border-semi-color-border/60 flex items-center justify-between text-xs text-semi-color-text-2">
               <span className="flex items-center gap-1 text-semi-color-text-2">
@@ -1317,7 +1449,7 @@ export const Dashboard: React.FC = () => {
             </div>
 
             {/* 今日核心待命节点列表 (精简提炼，告别平铺与重复按钮) */}
-            <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5 divide-y divide-semi-color-border/40">
+            <div ref={tasksListRef} className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5 divide-y divide-semi-color-border/40">
               {highlightTasks.length > 0 ? (
                 highlightTasks.map((t) => {
                   const isAppt = t.type === 'appointment';
@@ -1325,7 +1457,7 @@ export const Dashboard: React.FC = () => {
                   return (
                     <div
                       key={t.id}
-                      className="pt-1.5 first:pt-0 flex items-center justify-between gap-2 hover:bg-semi-color-fill-0/60 p-1.5 rounded-lg transition-colors group"
+                      className="gsap-task-item pt-1.5 first:pt-0 flex items-center justify-between gap-2 hover:bg-semi-color-fill-0/60 p-1.5 rounded-lg transition-colors group"
                     >
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <div className="w-7 h-7 rounded-lg bg-semi-color-fill-0 border border-semi-color-border-subtle flex items-center justify-center shrink-0">
@@ -1602,22 +1734,23 @@ export const Dashboard: React.FC = () => {
             headerStyle={{ padding: '8px 14px', borderBottom: '1px solid var(--semi-color-border)', minHeight: '44px', display: 'flex', alignItems: 'center' }}
             bodyStyle={{ padding: 0, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
           >
-            {/* 内容区：根据选中的 Tab 呈现 */}
-            {rightPanelTab === 'feed' ? (
-              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                {/* 动态流水列表 (取代原窄表格，以 Feed 流舒展呈现) */}
-                <div className="flex-1 min-h-0 overflow-y-auto space-y-1 p-2">
-                  {recentLogs.length > 0 ? (
-                    recentLogs.map((log) => {
-                      const acc = accounts.find((a) => a.key === log.account_key);
-                      const summary = getLogSummary(log.output);
-                      const taskTitle = TASK_LABELS[log.task_id] || log.task_id;
-                      return (
-                        <div
-                          key={log.id}
-                          onClick={() => setActiveLogModal(log)}
-                          className="p-2 rounded-lg border border-semi-color-border/60 hover:border-semi-color-primary-light-active bg-semi-color-fill-0/30 hover:bg-semi-color-fill-0 transition-all cursor-pointer group"
-                        >
+            {/* 内容区：根据选中的 Tab 呈现，配合 GSAP 平滑呼吸切换 */}
+            <div ref={rightPanelContentRef} className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              {rightPanelTab === 'feed' ? (
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {/* 动态流水列表 (取代原窄表格，以 Feed 流舒展呈现) */}
+                  <div className="flex-1 min-h-0 overflow-y-auto space-y-1 p-2">
+                    {recentLogs.length > 0 ? (
+                      recentLogs.map((log) => {
+                        const acc = accounts.find((a) => a.key === log.account_key);
+                        const summary = getLogSummary(log.output);
+                        const taskTitle = TASK_LABELS[log.task_id] || log.task_id;
+                        return (
+                          <div
+                            key={log.id}
+                            onClick={() => setActiveLogModal(log)}
+                            className="gsap-log-item p-2 rounded-lg border border-semi-color-border/60 hover:border-semi-color-primary-light-active bg-semi-color-fill-0/30 hover:bg-semi-color-fill-0 transition-all cursor-pointer group"
+                          >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span className="font-mono text-xs text-semi-color-text-2 shrink-0">
@@ -1835,6 +1968,7 @@ export const Dashboard: React.FC = () => {
                 </div>
               </div>
             )}
+            </div>
           </Card>
         </div>
       </div>

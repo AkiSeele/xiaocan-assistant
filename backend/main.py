@@ -5,6 +5,11 @@
 import os
 import sys
 
+# 将 backend 根目录置于模块导入路径首位
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
 # 排除宿主机或外部代理工具注入的 SOCKS 代理环境变量污染，保证本地服务与国内接口纯净直连
 for proxy_k in ["ALL_PROXY", "all_proxy"]:
     if proxy_k in os.environ and "socks" in os.environ[proxy_k].lower():

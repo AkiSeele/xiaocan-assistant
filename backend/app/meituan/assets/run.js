@@ -627,6 +627,24 @@ commands.issue = function (argv) {
     });
   }
 
+  function sortCoupons(coupons) {
+    return coupons.slice().sort(function (a, b) {
+      var aName = (a.couponName || a.name || '') + (a.tabName || '');
+      var bName = (b.couponName || b.name || '') + (b.tabName || '');
+      var aWaimai = aName.indexOf('外卖') > -1 ? 0 : 1;
+      var bWaimai = bName.indexOf('外卖') > -1 ? 0 : 1;
+      if (aWaimai !== bWaimai) return aWaimai - bWaimai;
+
+      var aLimit = a.priceLimit ? parseInt(a.priceLimit, 10) : 0;
+      var bLimit = b.priceLimit ? parseInt(b.priceLimit, 10) : 0;
+      if (aLimit !== bLimit) return aLimit - bLimit;
+
+      var aVal = a.couponValue ? parseInt(a.couponValue, 10) : 0;
+      var bVal = b.couponValue ? parseInt(b.couponValue, 10) : 0;
+      return bVal - aVal;
+    });
+  }
+
   // ── 展示结果构建 ──────────────────────────────────────────
   var _TAB_ORDER = ['外卖', '美食团购', '美团闪购', '休闲娱乐', '生活服务', '丽人医疗', '更多福利'];
   var _TAB_DISPLAY = { '更多福利': '其他' };
@@ -748,6 +766,7 @@ commands.issue = function (argv) {
       if (code === 200) {
         var couponList = data.couponList || [];
         var formattedCoupons = couponList.map(formatCoupon);
+        formattedCoupons = sortCoupons(formattedCoupons);
         var display = buildDisplayResult(formattedCoupons);
         logEntry.result = { success: true, code: 200, coupon_count: formattedCoupons.length };
         writeLog(logEntry, aiScene);

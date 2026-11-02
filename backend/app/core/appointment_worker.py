@@ -5,6 +5,7 @@
 2. 已到时间点且有名额：直接即时抢单
 3. 已到时间点但无名额：启动名额监听任务，定期轮询库存，检测到补仓/放单毫秒级秒抢，超时自动停，支持随时手动停止
 """
+from __future__ import annotations
 import asyncio
 import logging
 import random
@@ -12,7 +13,7 @@ import re
 import time
 import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List, Set
 
 from ..models import database as db
 from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds

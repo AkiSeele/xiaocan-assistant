@@ -51,6 +51,7 @@ import { api } from '../api';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { StoreItem, StorePromotion, StoreAppointment, AccountDetailData } from '../types';
 
+
 gsap.registerPlugin(useGSAP);
 
 const { Title, Text } = Typography;
@@ -236,6 +237,38 @@ const StoreSearchBar: React.FC<StoreSearchBarProps> = React.memo(({
 
 const DEFAULT_MEAL_TICKET_PIC = 'https://web.xinyifm.cn/oss/xc-backend/176526866545920fc03aff56677a51f3748e03e4df433.png';
 const DEFAULT_ADVANCE_COUPON_PIC = 'https://web.xinyifm.cn/oss/xc-backend/17757248992739a34eb5de1a242b29fd70684cd44bce8.png';
+
+const getStoreDisplayAddress = (row?: StoreItem, cityName?: string): string => {
+  if (!row) return '';
+  const addr = (row.address || '').trim();
+  if (addr && !addr.includes('依据外卖平台定位') && addr !== '待获取' && addr !== '暂无地址') {
+    return addr;
+  }
+  const cleanName = (row.name || '').replace(/（/g, '(').replace(/）/g, ')').replace(/【/g, '[').replace(/】/g, ']');
+  const m = cleanName.match(/\(([^)]+)\)|\[([^\]]+)\]/);
+  let branch = '';
+  if (m) {
+    const candidate = (m[1] || m[2] || '').trim();
+    if (!['免配送', '全天', '营业', '折扣', '特惠', '减', '满', '好评'].some(k => candidate.includes(k))) {
+      branch = candidate;
+    }
+  }
+  if (!branch) {
+    const m2 = cleanName.match(/[-·・_]\s*([^\s-·・_()]+?店)/);
+    if (m2) branch = m2[1].trim();
+  }
+  const distInfo = row.distance_text && row.distance_text !== '附近' ? ` · 距您约${row.distance_text}` : '';
+  const cityPrefix = cityName && cityName !== '全国' && cityName !== '未知' ? `${cityName} · ` : '';
+
+  if (branch) {
+    const locDesc = branch.endsWith('店') ? branch : `${branch}分店`;
+    return `${cityPrefix}${locDesc} (外卖送达${distInfo})`;
+  }
+  if (cityName && cityName !== '全国' && cityName !== '未知') {
+    return `${cityName}外卖配送范围${distInfo}`;
+  }
+  return `外卖配送覆盖商圈${distInfo}`;
+};
 
 export const StoreSniping: React.FC = () => {
   const accounts = useAppStore((s) => s.accounts);
@@ -431,7 +464,7 @@ export const StoreSniping: React.FC = () => {
   const [platformFilter, setPlatformFilter] = useState<'all' | 'meituan' | 'eleme' | 'jingdong'>('all');
   const [rebateTypeFilter, setRebateTypeFilter] = useState<'all' | 'fixed' | 'percent'>('all');
   const [conditionFilter, setConditionFilter] = useState<'all' | 'no_review' | 'good_review'>('all');
-  const [sortBy, setSortBy] = useState<'default' | 'distance' | 'rebate' | 'rate' | 'left'>('distance');
+  const [sortBy, setSortBy] = useState<'default' | 'distance' | 'rebate' | 'rate' | 'left'>('default');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [activeSearchKeyword, setActiveSearchKeyword] = useState<string>('');
   
@@ -1064,8 +1097,11 @@ export const StoreSniping: React.FC = () => {
                 if (fPlans.length > 0) existing.fixed_plan = fPlans[0];
                 if (pPlans.length > 0) existing.percent_plan = pPlans[0];
 
-                // 择优选出主展示方案：优先选有名额的实付满返方案，其次有名额的任意方案，或第一档满返
-                const bestPromo = fPlans.find(p => (p.left_number ?? 0) > 0) || fPlans[0] || updatedPromos.find(p => (p.left_number ?? 0) > 0) || updatedPromos[0];
+                // 择优选出主展示方案：根据当前筛选偏好择优选出首选展示方案
+                const preferPercent = rebateTypeFilter === 'percent';
+                const primaryPlans = preferPercent ? pPlans : fPlans;
+                const fallbackPlans = preferPercent ? fPlans : pPlans;
+                const bestPromo = primaryPlans.find(p => (p.left_number ?? 0) > 0) || primaryPlans[0] || fallbackPlans.find(p => (p.left_number ?? 0) > 0) || fallbackPlans[0] || updatedPromos[0];
                 if (bestPromo) {
                   if (!existing.selected_promotion_id) {
                     existing.promotion_id = bestPromo.promotion_id;
@@ -1610,9 +1646,14 @@ export const StoreSniping: React.FC = () => {
                 )}
               </div>
 
-              <div className="text-[11px] text-semi-color-text-3 mt-1 truncate max-w-[280px]" title={row.address || '依据外卖平台定位'}>
-                地址: {row.address || '依据外卖平台定位'}
-              </div>
+              {(() => {
+                const displayAddr = getStoreDisplayAddress(row, activeLocation?.cityName);
+                return (
+                  <div className="text-[11px] text-semi-color-text-3 mt-1 truncate max-w-[280px]" title={displayAddr}>
+                    地址: {displayAddr}
+                  </div>
+                );
+              })()}
 
               {hasMulti && (
                 <div className="mt-2 flex items-center gap-1.5 flex-wrap">
@@ -1909,9 +1950,14 @@ export const StoreSniping: React.FC = () => {
               <div className="text-[11px] text-semi-color-text-2 mt-1">
                 门店营业: {row.opening_hours || '00:00-23:59'}
               </div>
-              <div className="text-[11px] text-semi-color-text-3 mt-0.5 truncate max-w-full" title={row.address || '依据外卖平台定位'}>
-                地址: {row.address || '依据外卖平台定位'}
-              </div>
+              {(() => {
+                const displayAddr = getStoreDisplayAddress(row, activeLocation?.cityName);
+                return (
+                  <div className="text-[11px] text-semi-color-text-3 mt-0.5 truncate max-w-full" title={displayAddr}>
+                    地址: {displayAddr}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         );
@@ -2740,6 +2786,8 @@ export const StoreSniping: React.FC = () => {
             </div>
           </Tooltip>
 
+          
+
           {/* 刷新按钮 */}
           <Button
             theme="light"
@@ -3004,8 +3052,8 @@ export const StoreSniping: React.FC = () => {
                     }}
                     style={{ width: 140 }}
                   >
-                    <Select.Option value="distance">距离最近</Select.Option>
                     <Select.Option value="default">综合排序</Select.Option>
+                    <Select.Option value="distance">距离最近</Select.Option>
                     <Select.Option value="rebate">返利金额最高</Select.Option>
                     <Select.Option value="rate">返利比例最高</Select.Option>
                     <Select.Option value="left">剩余名额最多</Select.Option>
@@ -3980,6 +4028,8 @@ export const StoreSniping: React.FC = () => {
           </TabPane>
         </Tabs>
       </Modal>
+
+      
 
       {/* 店名抢单监听配置弹窗 */}
       <Modal

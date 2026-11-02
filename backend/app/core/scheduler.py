@@ -2,6 +2,7 @@
 基于 APScheduler 的高精度异步任务调度中心
 支持定时任务、整点秒杀高并发并发抢券、即时手动触发与日志记录
 """
+from __future__ import annotations
 import asyncio
 import logging
 import time
@@ -945,24 +946,6 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                             log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日签到] 响应: {se.msg} (代码: {se.code})\n"
                     except Exception:
                         pass
-
-            # 任务 57: 抖音电商浏览30s (+500 元宝)
-            t57 = task_status_map.get(57)
-            if t57:
-                if t57.get("completed") == 1:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [抖音电商浏览30s]: 今日已完成 (+500 元宝已入账)\n"
-                elif t57.get("completed") == 2:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [抖音电商浏览30s]: 正在拟真浏览 30 秒...\n"
-                    await asyncio.sleep(random.uniform(30.5, 32.5))
-                    try:
-                        await client.complete_activity_task(task_id=57, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        claim_res = await client.user_claim_points(task_id=57, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        got_pt = claim_res.get("point") or 500
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [抖音电商浏览30s]: 浏览打卡成功！已斩获 {got_pt} 元宝\n"
-                    except XiaoCanRPCError as ce:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [抖音电商浏览30s] 响应: {ce.msg} (代码: {ce.code})\n"
-                    except Exception as e:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [抖音电商浏览30s] 执行异常: {e}\n"
 
             # 任务 5: 加入官方社群 (+500 元宝)
             t5 = task_status_map.get(5)

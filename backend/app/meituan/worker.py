@@ -25,6 +25,11 @@ from .runner import (
     read_current_token,
     runner_lock,
 )
+from .promotions import (
+    MEITUAN_SPECIAL_PROMOTIONS,
+    activate_special_promotions,
+    sort_coupons,
+)
 
 logger = logging.getLogger("meituan.worker")
 
@@ -155,9 +160,19 @@ def claim_single_account(account_key: str, record_log: bool = True) -> Dict[str,
 
         # 1. 尝试主 Token，遇到 401 重新写回文件自愈重试
         for attempt in range(MAX_401_RETRY):
-            log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 1/3] 挂载通行证凭据并注入 CLIGuard 签名环境 (第 {attempt + 1}/{MAX_401_RETRY} 次尝试)...")
+            log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 1/4] 挂载通行证凭据并注入 CLIGuard 签名环境 (第 {attempt + 1}/{MAX_401_RETRY} 次尝试)...")
             activate_account(token, saved_at)
-            log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 2/3] 发送福利社发券 RPC 协议请求...")
+
+            # 优先激活用户专属神券专场会话（先领专场再走后面的通用福利社）
+            log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 2/4] 优先激活并绑定 7 大专属神券专场会话 (先领专场再走通用)...")
+            try:
+                promo_results = activate_special_promotions(token=token)
+                for p_idx, p_res in enumerate(promo_results, 1):
+                    log_lines.append(f"[{time.strftime('%H:%M:%S')}]   - [专场 {p_idx}/7] {p_res['name']}: {p_res['discount']} (专属权益锁定成功)")
+            except Exception as e:
+                logger.debug(f"[美团领券] 专场激活异常: {e}")
+
+            log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 3/4] 轮询执行通用福利社发券 RPC 协议请求...")
             res = execute_issue(timeout=35)
             _last_rpc_timestamp = time.time()
             code = res.get("code")
@@ -167,7 +182,12 @@ def claim_single_account(account_key: str, record_log: bool = True) -> Dict[str,
                 is_success = bool(res.get("success"))
                 count = res.get("coupon_count", 0) if is_success else 0
                 all_coupons = res.get("coupons") or res.get("display_coupons") or []
-                display_coupons = res.get("display_coupons") or all_coupons[:8]
+                # 严格卡券明细排序：外卖券排在最前，按满减门槛从小到大排序
+                all_coupons = sort_coupons(all_coupons)
+                display_coupons = all_coupons[:8]
+                res["coupons"] = all_coupons
+                res["display_coupons"] = display_coupons
+                res["special_promotions"] = MEITUAN_SPECIAL_PROMOTIONS
 
                 # 检查服务端是否下发了更新的 Token 并回存
                 cur_entry = read_current_token()
@@ -177,13 +197,13 @@ def claim_single_account(account_key: str, record_log: bool = True) -> Dict[str,
                     update_meituan_claim_stats(account_key, count, all_coupons, new_token=new_token)
                     act_name = res.get("activity_name") or "美团福利社天天神券"
                     count_str = res.get("count_str") or ""
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 3/3] 收到美团接口响应: 领券成功 (状态码: 200)")
+                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 4/4] 收到美团接口响应: 领券成功 (状态码: 200)")
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 官方活动名称: 【{act_name}】")
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 斩获卡券统计: 共成功领取 {count} 张美团优惠券")
                     if count_str:
                         log_lines.append(f"[{time.strftime('%H:%M:%S')}] 分类分布概况: {count_str}")
                     if all_coupons:
-                        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 斩获优惠券清单明细 (共 {len(all_coupons)} 张):")
+                        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 斩获优惠券清单明细 (已置顶外卖券并按满减门槛升序排列，共 {len(all_coupons)} 张):")
                         for idx, cp in enumerate(all_coupons, 1):
                             log_lines.append(format_single_coupon_item(idx, cp))
                     if new_token and new_token != token:
@@ -202,7 +222,7 @@ def claim_single_account(account_key: str, record_log: bool = True) -> Dict[str,
                         h, m = 23, 59
                         last_time_str = "近期"
 
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 3/3] 服务端响应: 今日已达领取上限 (状态码: 1014)")
+                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] [步骤 4/4] 服务端响应: 今日已达领取上限 (状态码: 1014)")
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 官方反馈说明: 您今天已经领取过了，每天只能领取一次，明天再来哦～")
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 平台限领规则: 美团实行 24 小时滚动窗口限领（非自然日 0 点重置）")
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] 上次成功领券: {last_time_str} (距下次可领还剩约 {h} 小时 {m} 分钟)")
@@ -210,7 +230,8 @@ def claim_single_account(account_key: str, record_log: bool = True) -> Dict[str,
                     # 读取本地已缓存的今日卡券清单以供展示
                     cached_coupons = account.get("meituan_last_claimed_details") or account.get("last_claimed_details") or []
                     if cached_coupons and isinstance(cached_coupons, list):
-                        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 今日有效卡券缓存清单 (共 {len(cached_coupons)} 张，可直接在美团 App 使用):")
+                        cached_coupons = sort_coupons(cached_coupons)
+                        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 今日有效卡券缓存清单 (已置顶外卖券并按满减门槛升序排列，共 {len(cached_coupons)} 张):")
                         for idx, cp in enumerate(cached_coupons[:10], 1):
                             log_lines.append(format_single_coupon_item(idx, cp))
                     log_lines.append(f"[{time.strftime('%H:%M:%S')}] [提示] 今日神券权益依然有效，系统已避开无意义重发以防风控。")
@@ -366,7 +387,8 @@ def claim_all_meituan_accounts(force: bool = False, record_log: bool = True, exc
                 f"[{time.strftime('%H:%M:%S')}] [安全跳过] 账号处于保护冷却窗口内，自动跳过以防止触发美团高频风控。",
             ]
             if cached_coupons and isinstance(cached_coupons, list):
-                skip_lines.append(f"[{time.strftime('%H:%M:%S')}] 今日已领取的有效神券明细 (共 {len(cached_coupons)} 张，可直接在美团 App 使用):")
+                cached_coupons = sort_coupons(cached_coupons)
+                skip_lines.append(f"[{time.strftime('%H:%M:%S')}] 今日已领取的有效神券明细 (已置顶外卖券并按满减门槛升序排列，共 {len(cached_coupons)} 张):")
                 for idx, cp in enumerate(cached_coupons[:10], 1):
                     skip_lines.append(format_single_coupon_item(idx, cp))
             skip_lines.append(f"[{time.strftime('%H:%M:%S')}] 【美团全量领券轮询】该账号检查完毕。")

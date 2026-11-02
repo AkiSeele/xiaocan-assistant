@@ -41,8 +41,10 @@ const TASK_LABELS: Record<string, string> = {
   store_monitor: '实时名额监听捡漏',
   store_keyword: '商户定时搜索捡漏',
   store_search: '商户定向搜索捡漏',
-  store_cancel: '霸王餐名额取消',
-  delay_card: '使用延时券',
+  store_cancel: '霸王餐名额取消',
+
+  delay_card: '使用延时券',
+
   delay_voucher: '领红包延时',
   // 日常自动化任务
   yb_task: '轻松赚元宝',
@@ -61,6 +63,12 @@ const TASK_LABELS: Record<string, string> = {
   dual_rebate_monitor: '美团同店双返利监控',
   meituan_coupon: '美团官方领券打卡',
   meituan_auth: '美团官方扫码授权',
+  // 核心业务与资产操作
+  order_bind: '回填外卖单号',
+  flash_exchange: '元宝秒杀兑换',
+  account_sync: '官方资产同步',
+  token_capture: '抓包凭据捕获',
+  notify_test: '通知推送测试',
 };
 
 const STORE_TASK_KEYS = new Set([
@@ -72,6 +80,7 @@ const STORE_TASK_KEYS = new Set([
   'store_cancel',
   'delay_card',
   'delay_voucher',
+  'order_bind',
 ]);
 
 export const LogsView: React.FC = () => {

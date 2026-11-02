@@ -16,8 +16,8 @@ echo.
 echo ========================================================
 if "%XC_RC%"=="0" goto :OUTER_OK
 echo   [失败] 小蚕小帮手未能正常运行，错误码 %XC_RC%
-echo   请根据上方 [错误] 提示处理后重新双击 run.bat，
-echo   或查阅 README.md 中的「常见问题」章节
+echo   请根据上方错误提示处理后重新双击 run.bat
+echo   如需帮助可查阅 README 说明文档
 goto :OUTER_END
 :OUTER_OK
 echo   小蚕小帮手已停止运行
