@@ -460,7 +460,7 @@ export interface MeituanAuthStartResponse {
 export interface MeituanAuthPollResponse {
   ok: boolean;
   session_id?: string;
-  status: 'pending' | 'success' | 'failed' | 'expired' | 'canceled' | 'not_found';
+  status: 'pending' | 'success' | 'failed' | 'expired' | 'canceled' | 'not_found' | 'finished';
   account?: MeituanAccount;
   message?: string;
   created_at?: number;

@@ -647,13 +647,22 @@ class MeituanAuthManager:
                 "status": "not_found",
                 "message": "授权会话不存在或已过期"
             }
+        current_status = session.get("status")
+        account = session.get("account")
+        message = session.get("message")
+        created_at = session.get("created_at")
+
+        # 成功状态仅消费一次，后续轮询返回 finished，防止客户端异常重复弹窗
+        if current_status == "success":
+            session["status"] = "finished"
+
         return {
             "ok": True,
             "session_id": session_id,
-            "status": session["status"],
-            "account": session.get("account"),
-            "message": session.get("message"),
-            "created_at": session.get("created_at")
+            "status": current_status,
+            "account": account,
+            "message": message,
+            "created_at": created_at
         }
 
     def cancel_session(self, session_id: str):

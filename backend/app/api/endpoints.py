@@ -434,14 +434,15 @@ async def get_account_cards_endpoint(key: str, status: int = Query(0, descriptio
 
 @router.delete("/accounts/{key}")
 async def remove_account(key: str):
-    """删除/退出小蚕账号，彻底清除内存会话与关联数据"""
+    """删除/退出小蚕账号，彻底级联清除所有关联数据与内存任务"""
     db.delete_account(key)
-    with db.get_conn() as conn:
-        conn.execute("DELETE FROM orders WHERE account_key = ? OR account_key = 'acc_default'", (key,))
-        conn.execute("DELETE FROM store_appointments WHERE account_key = ?", (key,))
-        conn.commit()
     scheduler.reload_schedules()
-    return {"ok": True, "message": "账号已安全退出并清除数据"}
+    try:
+        from ..protocol.client import clear_waf_block
+        clear_waf_block()
+    except Exception:
+        pass
+    return {"ok": True, "message": "账号已安全退出并彻底清除全部关联数据"}
 
 
 

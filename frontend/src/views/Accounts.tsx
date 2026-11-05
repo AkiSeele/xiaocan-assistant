@@ -223,6 +223,9 @@ export const Accounts: React.FC = () => {
   const [meituanAuthStatus, setMeituanAuthStatus] = useState<'idle' | 'loading' | 'pending' | 'success' | 'failed' | 'expired'>('idle');
   const [meituanAuthMessage, setMeituanAuthMessage] = useState<string>('');
   const meituanPollTimerRef = useRef<any>(null);
+  const meituanAuthSeqRef = useRef<number>(0);
+  const hasHandledMeituanSuccessRef = useRef<boolean>(false);
+  const isStartingMeituanAuthRef = useRef<boolean>(false);
   const [meituanClaimingKeys, setMeituanClaimingKeys] = useState<Record<string, boolean>>({});
   const [couponModalVisible, setCouponModalVisible] = useState(false);
   const [selectedCouponAccount, setSelectedCouponAccount] = useState<Account | null>(null);
@@ -761,6 +764,7 @@ export const Accounts: React.FC = () => {
   };
 
   const stopMeituanPolling = () => {
+    meituanAuthSeqRef.current += 1;
     if (meituanPollTimerRef.current) {
       clearInterval(meituanPollTimerRef.current);
       meituanPollTimerRef.current = null;
@@ -774,8 +778,14 @@ export const Accounts: React.FC = () => {
   }, []);
 
   const handleStartMeituanLogin = async (acc?: Account) => {
+    if (isStartingMeituanAuthRef.current) return;
+    isStartingMeituanAuthRef.current = true;
+
     setTargetBindAccount(acc || null);
     stopMeituanPolling();
+    const currentSeq = meituanAuthSeqRef.current;
+    hasHandledMeituanSuccessRef.current = false;
+
     setMeituanAuthStatus('loading');
     setMeituanAuthMessage('正在向美团官方申请授权链接与二维码...');
     setMeituanQrCode('');
@@ -784,17 +794,35 @@ export const Accounts: React.FC = () => {
 
     try {
       const res = await api.startMeituanAuth(acc?.key);
+      if (meituanAuthSeqRef.current !== currentSeq) {
+        return;
+      }
       if (res.ok && res.session_id) {
         setMeituanAuthSessionId(res.session_id);
         setMeituanQrCode(res.qrcode_base64 || '');
         setMeituanAuthStatus('pending');
         setMeituanAuthMessage('请使用手机美团 App 扫码并在手机上点击授权登录');
 
-        meituanPollTimerRef.current = setInterval(async () => {
+        const timer = setInterval(async () => {
+          if (meituanAuthSeqRef.current !== currentSeq || hasHandledMeituanSuccessRef.current) {
+            clearInterval(timer);
+            return;
+          }
           try {
             const pollRes = await api.pollMeituanAuth(res.session_id!);
+            if (meituanAuthSeqRef.current !== currentSeq) {
+              clearInterval(timer);
+              return;
+            }
             if (pollRes.status === 'success') {
+              if (hasHandledMeituanSuccessRef.current) {
+                clearInterval(timer);
+                return;
+              }
+              hasHandledMeituanSuccessRef.current = true;
+              clearInterval(timer);
               stopMeituanPolling();
+
               setMeituanAuthStatus('success');
               const targetName = acc?.nickname || '指定账号';
               setMeituanAuthMessage('美团官方账号绑定成功！');
@@ -804,23 +832,33 @@ export const Accounts: React.FC = () => {
                 setMeituanLoginModalVisible(false);
               }, 1200);
             } else if (pollRes.status === 'expired') {
+              clearInterval(timer);
               stopMeituanPolling();
               setMeituanAuthStatus('expired');
               setMeituanAuthMessage('二维码已过期，请重新获取');
             } else if (pollRes.status === 'failed') {
+              clearInterval(timer);
               stopMeituanPolling();
               setMeituanAuthStatus('failed');
               setMeituanAuthMessage(pollRes.message || '授权失败，请重新尝试');
+            } else if (pollRes.status === 'finished') {
+              clearInterval(timer);
+              stopMeituanPolling();
             }
           } catch (_) {}
         }, 2000);
+        meituanPollTimerRef.current = timer;
       } else {
         setMeituanAuthStatus('failed');
         setMeituanAuthMessage(res.message || '获取美团授权二维码失败');
       }
     } catch (e: any) {
-      setMeituanAuthStatus('failed');
-      setMeituanAuthMessage(`发起授权异常: ${e.message}`);
+      if (meituanAuthSeqRef.current === currentSeq) {
+        setMeituanAuthStatus('failed');
+        setMeituanAuthMessage(`发起授权异常: ${e.message}`);
+      }
+    } finally {
+      isStartingMeituanAuthRef.current = false;
     }
   };
 

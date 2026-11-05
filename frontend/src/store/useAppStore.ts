@@ -220,11 +220,18 @@ export const useAppStore = create<AppState>((set, get) => {
         const current = get().currentAccountKey;
         let newCurrent = current;
         const exists = accounts.some((a) => a.key === current);
-        if ((!newCurrent || !exists) && accounts.length > 0) {
-          newCurrent = accounts[0].key;
-          try {
-            localStorage.setItem('xiaocan_current_account_key', newCurrent);
-          } catch (e) {}
+        if (!newCurrent || !exists) {
+          if (accounts.length > 0) {
+            newCurrent = accounts[0].key;
+            try {
+              localStorage.setItem('xiaocan_current_account_key', newCurrent);
+            } catch (e) {}
+          } else {
+            newCurrent = '';
+            try {
+              localStorage.removeItem('xiaocan_current_account_key');
+            } catch (e) {}
+          }
         }
         set({ accounts, currentAccountKey: newCurrent, loading: false });
       } catch (e) {

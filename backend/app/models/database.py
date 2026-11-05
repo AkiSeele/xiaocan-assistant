@@ -742,10 +742,54 @@ def set_account_notify_config(key: str, mode: str, config: Dict[str, Any]) -> bo
 
 
 def delete_account(key: str) -> bool:
+    """级联物理彻底删除账号及一切关联数据，杜绝任何历史孤儿残留"""
     with get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE key = ?", (key,)).fetchone()
+        silk_id = ""
+        user_id = ""
+        if row:
+            acc_data = dict(row)
+            silk_id = str(acc_data.get("silk_id") or "")
+            user_id = str(acc_data.get("user_id") or "")
+
+        keys_to_clean = {key}
+        if silk_id:
+            keys_to_clean.add(f"acc_{silk_id}")
+            keys_to_clean.add(silk_id)
+        if user_id:
+            keys_to_clean.add(f"acc_{user_id}")
+            keys_to_clean.add(user_id)
+
+        # 1. 账号主表
         conn.execute("DELETE FROM accounts WHERE key = ?", (key,))
-        conn.execute("DELETE FROM meituan_accounts WHERE key = ?", (key,))
-        conn.execute("DELETE FROM task_configs WHERE account_key = ?", (key,))
+
+        # 2. 美团账号凭证与配置
+        for k in keys_to_clean:
+            conn.execute("DELETE FROM meituan_accounts WHERE key = ?", (k,))
+
+        # 3. 任务配置
+        for k in keys_to_clean:
+            conn.execute("DELETE FROM task_configs WHERE account_key = ?", (k,))
+
+        # 4. 订单历史
+        for k in keys_to_clean:
+            conn.execute("DELETE FROM orders WHERE account_key = ?", (k,))
+        if user_id:
+            conn.execute("DELETE FROM orders WHERE user_id = ?", (user_id,))
+
+        # 5. 抢店预约
+        for k in keys_to_clean:
+            conn.execute("DELETE FROM store_appointments WHERE account_key = ?", (k,))
+
+        # 6. 任务执行日志与流水
+        for k in keys_to_clean:
+            conn.execute("DELETE FROM job_logs WHERE account_key = ?", (k,))
+
+        # 7. settings 表中的快照与缓存
+        for k in keys_to_clean:
+            if k:
+                conn.execute("DELETE FROM settings WHERE key LIKE ?", (f"%{k}%",))
+
         conn.commit()
         return True
 
