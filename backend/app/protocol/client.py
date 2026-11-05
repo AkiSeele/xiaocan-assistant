@@ -18,8 +18,10 @@ import httpx
 try:
     # 软依赖 (issue #14): curl_cffi 提供 TLS 指纹伪装 (自定义 JA3); 未安装时回退 httpx
     from curl_cffi import requests as _curl_requests
+    from curl_cffi.const import CurlOpt as _CurlOpt
 except ImportError:
     _curl_requests = None
+    _CurlOpt = None
 
 from .signer import generate_headers
 
@@ -157,6 +159,24 @@ class _CurlCffiTransport:
         if ca_bundle:
             kwargs["verify"] = ca_bundle
         kwargs.update(fingerprint_kwargs)
+
+        # DNS 解析增强 (解决 issue #17: Windows c-ares resolver 解析失败导致 curl (6) NODATA)
+        # 支持通过环境变量 XIAOCAN_DNS_SERVERS 自定义公共 DNS，若设置为 off 则不指定
+        if _CurlOpt is not None:
+            dns_env = (os.getenv("XIAOCAN_DNS_SERVERS") or "").strip()
+            dns_servers = None
+            if dns_env and dns_env.lower() != "off":
+                dns_servers = dns_env
+            elif dns_env.lower() != "off":
+                import sys
+                if sys.platform == "win32":
+                    dns_servers = "223.5.5.5,119.29.29.29"
+
+            if dns_servers:
+                curl_opts = kwargs.get("curl_options") or {}
+                curl_opts[_CurlOpt.DNS_SERVERS] = dns_servers
+                kwargs["curl_options"] = curl_opts
+
         self.session = _curl_requests.AsyncSession(**kwargs)
 
     async def post(self, url: str, json: Any = None, headers: Optional[Dict[str, str]] = None):
