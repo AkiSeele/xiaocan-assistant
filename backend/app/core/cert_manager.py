@@ -4,6 +4,7 @@ SSL 动态证书生成与管理 (Certificate Manager)
 非小蚕域名的流量通过纯 TCP 隧道透传，绝不干涉其他网络连接。
 """
 import datetime
+from . import time_service
 import logging
 import os
 import subprocess
@@ -50,7 +51,7 @@ class CertManager:
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "XiaoCan Assistant Security"),
             x509.NameAttribute(NameOID.COUNTRY_NAME, "CN")
         ])
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.fromtimestamp(time_service.now_ts(), tz=datetime.timezone.utc)
         self.ca_cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
@@ -126,7 +127,7 @@ class CertManager:
             x509.NameAttribute(NameOID.COMMON_NAME, hostname),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "XiaoCan Assistant Sniffer")
         ])
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.fromtimestamp(time_service.now_ts(), tz=datetime.timezone.utc)
         
         # 兼容顶级域名通配
         sans = [x509.DNSName(hostname)]

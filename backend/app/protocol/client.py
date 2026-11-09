@@ -10,6 +10,7 @@ import os
 import random
 import re
 import tempfile
+import sys
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -24,6 +25,7 @@ except ImportError:
     _CurlOpt = None
 
 from .signer import generate_headers
+from ..core import time_service
 
 logger = logging.getLogger("xiaocan.protocol")
 
@@ -290,20 +292,20 @@ async def _wait_rpc_rate_limit(is_burst: bool = False):
     if is_burst:
         return
     async with _RPC_RATE_LOCK:
-        now = time.time()
+        now = time_service.now_ts()
         elapsed = now - _last_rpc_timestamp
         min_interval = random.uniform(0.22, 0.38)
         if elapsed < min_interval:
             await asyncio.sleep(min_interval - elapsed)
-        _last_rpc_timestamp = time.time()
+        _last_rpc_timestamp = time_service.now_ts()
 
 
 def is_waf_blocked() -> bool:
-    return time.time() < _waf_blocked_until
+    return time_service.now_ts() < _waf_blocked_until
 
 
 def get_waf_cooldown_seconds() -> int:
-    return max(0, int(_waf_blocked_until - time.time()))
+    return max(0, int(_waf_blocked_until - time_service.now_ts()))
 
 
 def mark_waf_blocked(duration_seconds: Optional[int] = None):
@@ -318,7 +320,7 @@ def mark_waf_blocked(duration_seconds: Optional[int] = None):
         cooldown = 15 if _waf_consecutive_blocks == 1 else (30 if _waf_consecutive_blocks == 2 else 60)
     else:
         cooldown = min(duration_seconds, 60)
-    _waf_blocked_until = max(_waf_blocked_until, time.time() + cooldown)
+    _waf_blocked_until = max(_waf_blocked_until, time_service.now_ts() + cooldown)
 
 
 def record_waf_success():
@@ -400,14 +402,19 @@ class XiaoCanClient:
                     json=payload,
                     headers=headers
                 )
-                if resp.status_code == 403:
-                    is_waf = "WAF" in resp.text or "stgw" in resp.headers.get("server", "").lower()
+                if resp.status_code == 403 or "TCaptcha.js" in resp.text or "__captcha" in resp.text:
+                    is_waf = (
+                        "WAF" in resp.text
+                        or "TCaptcha.js" in resp.text
+                        or "__captcha" in resp.text
+                        or "stgw" in resp.headers.get("server", "").lower()
+                    )
                     if is_waf:
                         mark_waf_blocked()
                     remain_sec = get_waf_cooldown_seconds()
-                    hint = f"已被腾讯云 WAF 防火墙拦截 [403 Forbidden]，系统已进入 {remain_sec} 秒自适应频次缓冲保护。请勿高频连续点击重试，可切换手机热点或等待冷却" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
+                    hint = f"已被腾讯云 WAF 防火墙拦截，系统已进入 {remain_sec} 秒自适应频次缓冲保护。请勿高频连续点击重试，可切换手机热点或等待冷却" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
                     logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
-                    raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": 403, "text": resp.text[:200]})
+                    raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": resp.status_code, "text": resp.text[:200]})
 
                 if resp.status_code != 200:
                     err_text = ""
@@ -426,7 +433,15 @@ class XiaoCanClient:
                     logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
                     raise XiaoCanRPCError(code=resp.status_code, msg=msg, raw={"status_code": resp.status_code, "text": resp.text[:200]})
 
-                return resp.json()
+                try:
+                    return resp.json()
+                except Exception as json_err:
+                    logger.error(f"RPC {server_name}.{method_name} 响应解析非 JSON 异常: {resp.text[:200]}")
+                    raise XiaoCanRPCError(
+                        code=502,
+                        msg=f"网关响应格式异常: {str(json_err)[:100]}",
+                        raw={"status_code": resp.status_code, "text": resp.text[:200]}
+                    )
             except XiaoCanRPCError:
                 raise
             except Exception as e:
@@ -1334,7 +1349,7 @@ class XiaoCanClient:
         import random
 
         nonce = "".join(random.choice(string.ascii_lowercase) for _ in range(6))
-        ts = int(time.time())
+        ts = time_service.now_int()
         sid = int(silk_id) if silk_id else 0
         raw_str = f"silk_id={sid}&timestamp={ts}&nonce={nonce}&bus_type={bus_type}"
         key = b"lcjkbqadfrzsewxy"

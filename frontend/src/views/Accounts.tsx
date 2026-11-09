@@ -68,6 +68,7 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { getNtpNowMs } from '../utils/ntpTime';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { Account, AccountDetailData, AccountNotifyConfig, AccountNotifyMode, ClawBotStatus } from '../types';
 
@@ -136,7 +137,7 @@ export function parseTokenExpiration(token?: string, expiresAt?: string, isToken
     return { status: 'valid', label: '凭据正常', color: 'green', isExpired: false, expireTimeStr: formattedDate || '长期有效' };
   }
 
-  const nowMs = Date.now();
+  const nowMs = getNtpNowMs();
   const diffMs = expTimestampMs - nowMs;
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
@@ -2020,7 +2021,7 @@ export const Accounts: React.FC = () => {
                   ) : (
                     (detailData.redpacks || []).map((item) => {
                       const amountYuan = ((item.value_num || item.reward_num || 0) / 100).toFixed(2);
-                      const isExpiringSoon = item.end_time && (item.end_time * 1000 - Date.now() < 24 * 3600 * 1000);
+                      const isExpiringSoon = item.end_time && (item.end_time * 1000 - getNtpNowMs() < 24 * 3600 * 1000);
                       const platforms = item.limit?.platform_items || item.limit?.bwc_platforms || [];
 
                       return (

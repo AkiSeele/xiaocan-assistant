@@ -39,6 +39,7 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { getNtpDate, getNtpNowSec } from '../utils/ntpTime';
 import { TaskIcon } from '../components/TaskIcons';
 import { LogDetailModal } from '../components/LogDetailModal';
 import { NumberAnimation } from '../components/NumberAnimation';
@@ -126,7 +127,7 @@ const formatMsgTime = (timestamp?: number): string => {
   if (!timestamp) return '';
   const ms = timestamp > 1e11 ? timestamp : timestamp * 1000;
   const d = new Date(ms);
-  const now = new Date();
+  const now = getNtpDate();
   const isToday = d.toDateString() === now.toDateString();
   const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
   const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -1278,7 +1279,7 @@ export const Dashboard: React.FC = () => {
                                   </span>
                                 )}
                                 {(() => {
-                                  const nowSec = Math.floor(Date.now() / 1000);
+                                  const nowSec = getNtpNowSec();
                                   const remSec = order.timeout_time ? order.timeout_time - nowSec : null;
                                   const remText = remSec !== null ? formatRemainingTime(remSec) : '';
                                   if (!remText && !order.expire_time) return null;

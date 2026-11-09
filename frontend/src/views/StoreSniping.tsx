@@ -48,6 +48,7 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { getNtpNowMs } from '../utils/ntpTime';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { StoreItem, StorePromotion, StoreAppointment, AccountDetailData } from '../types';
 
@@ -1300,13 +1301,13 @@ export const StoreSniping: React.FC = () => {
 
 
   const timeStatusCache = useRef<Map<string, { status: 'before' | 'active' | 'ended'; label: string; diffMinutes: number }>>(new Map());
-  const lastCacheClearTime = useRef<number>(Date.now());
+  const lastCacheClearTime = useRef<number>(getNtpNowMs());
 
   // 增加 30 秒时段状态计算缓存，消除表格每行渲染时的重复 Date 解析与字符串切分
   const getStoreTimeStatus = useCallback((startTimeStr?: string, endTimeStr?: string) => {
     if (!startTimeStr) return { status: 'active' as const, label: '进行中', diffMinutes: 0 };
 
-    const nowMs = Date.now();
+    const nowMs = getNtpNowMs();
     if (nowMs - lastCacheClearTime.current > 30000) {
       timeStatusCache.current.clear();
       lastCacheClearTime.current = nowMs;
@@ -3977,7 +3978,7 @@ export const StoreSniping: React.FC = () => {
               ) : (
                 assetDetail.redpacks.map((item) => {
                   const amountYuan = ((item.value_num || item.reward_num || 0) / 100).toFixed(2);
-                  const isExpiringSoon = item.end_time && (item.end_time * 1000 - Date.now() < 24 * 3600 * 1000);
+                  const isExpiringSoon = item.end_time && (item.end_time * 1000 - getNtpNowMs() < 24 * 3600 * 1000);
                   const platforms = item.limit?.platform_items || item.limit?.bwc_platforms || [];
 
                   return (

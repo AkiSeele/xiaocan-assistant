@@ -1,15 +1,19 @@
 """高精度阿里云 NTP 授时服务模块 (SNTP RFC 5905)
 全局维护本地时钟与标准北京时间 (ntp.aliyun.com) 的时钟偏差 (offset)，
-为全系统的秒杀倒计时、整点自动化任务、预约抢单提供微秒级时钟基准。
+为全系统的秒杀倒计时、整点自动化任务、预约抢单、协议签名与数据存储提供微秒级唯一时钟基准。
 """
 import time
 import socket
 import struct
 import logging
-from datetime import datetime
-from typing import Dict, Any
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Union
 
 logger = logging.getLogger("xiaocan.ntp")
+
+# 标准东八区北京时间时区 (UTC+8)
+_BJ_TZ = timezone(timedelta(hours=8))
 
 # NTP 服务器列表 (优先阿里云，备选腾讯云与国家授时中心)
 NTP_SERVERS = [
@@ -113,13 +117,25 @@ def now_ts() -> float:
     return time.time() + _ntp_state.get("offset", 0.0)
 
 
+def now_int() -> int:
+    """获取经由 NTP 校准的标准 Unix 整数时间戳 (秒)"""
+    return int(now_ts())
+
+
+def now_millis() -> int:
+    """获取经由 NTP 校准的标准 Unix 毫秒级整数时间戳"""
+    return int(now_ts() * 1000)
+
+
 def now_dt() -> datetime:
-    """获取经由 NTP 校准的高精度标准北京时间 datetime"""
-    return datetime.fromtimestamp(now_ts())
+    """获取经由 NTP 校准的高精度标准北京时间 datetime (东八区 UTC+8 无时区对象)"""
+    return datetime.fromtimestamp(now_ts(), tz=_BJ_TZ).replace(tzinfo=None)
 
 
 def get_ntp_offset() -> float:
     """获取当前本地时钟与标准时间的偏差 (秒)。正数表示本地落后，负数表示本地超前"""
+    if not _ntp_state["synced"]:
+        sync_aliyun_ntp()
     return _ntp_state.get("offset", 0.0)
 
 
@@ -131,11 +147,10 @@ def is_ntp_synced() -> bool:
 def get_ntp_status() -> Dict[str, Any]:
     """获取当前 NTP 授时服务状态"""
     current_std_ts = now_ts()
-    bj_time_tuple = time.gmtime(current_std_ts + 8 * 3600)
     return {
         "ok": True,
         "timestamp": current_std_ts,
-        "beijing_time": time.strftime("%Y-%m-%d %H:%M:%S", bj_time_tuple),
+        "beijing_time": format_ts(current_std_ts, "%Y-%m-%d %H:%M:%S"),
         "server": _ntp_state.get("server", "ntp.aliyun.com"),
         "synced": _ntp_state.get("synced", False),
         "offset": _ntp_state.get("offset", 0.0),
@@ -146,7 +161,12 @@ def get_ntp_status() -> Dict[str, Any]:
 
 
 def format_now(fmt: str = "%H:%M:%S") -> str:
-    """获取经 NTP 校准的高精度标准时间格式化字符串"""
+    """获取经 NTP 校准的高精度标准时间格式化字符串 (默认 HH:MM:SS)"""
+    return now_dt().strftime(fmt)
+
+
+def format_now_dt(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """获取经 NTP 校准的高精度标准日期时间格式化字符串 (默认 YYYY-MM-DD HH:MM:SS)"""
     return now_dt().strftime(fmt)
 
 
@@ -154,3 +174,13 @@ def format_now_ms() -> str:
     """获取经 NTP 校准的高精度标准时间毫秒级格式化字符串 (如 09:30:00.123)"""
     return now_dt().strftime("%H:%M:%S.%f")[:-3]
 
+
+def format_ts(ts: Union[int, float], fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """将指定 Unix 时间戳按标准东八区北京时间格式化"""
+    return datetime.fromtimestamp(float(ts), tz=_BJ_TZ).strftime(fmt)
+
+
+def parse_ts(dt_str: str, fmt: str = "%Y-%m-%d %H:%M:%S") -> float:
+    """将标准东八区北京时间字符串解析为 Unix 时间戳 (秒)"""
+    dt = datetime.strptime(dt_str, fmt).replace(tzinfo=_BJ_TZ)
+    return dt.timestamp()

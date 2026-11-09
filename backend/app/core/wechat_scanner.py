@@ -16,6 +16,7 @@ import threading
 import logging
 from ctypes import wintypes
 from typing import Optional, Dict, Any, List, Tuple
+from . import time_service
 
 logger = logging.getLogger("xiaocan.scanner")
 
@@ -143,9 +144,7 @@ def scan_wechat_credentials() -> Optional[Dict[str, Any]]:
                                                     best_user_id = str(payload["UserId"])
                                                     best_exp_ts = exp_ts
                                                     if exp_ts:
-                                                        best_exp = time.strftime(
-                                                            "%Y-%m-%d %H:%M:%S", time.localtime(exp_ts)
-                                                        )
+                                                        best_exp = time_service.format_ts(exp_ts, "%Y-%m-%d %H:%M:%S")
                                     except Exception:
                                         pass
 
@@ -210,7 +209,7 @@ class WeChatAutoListener:
 
     def get_status(self) -> Dict[str, Any]:
         with self._lock:
-            elapsed = int(time.time() - self._start_time) if self._running else 0
+            elapsed = int(time_service.now_ts() - self._start_time) if self._running else 0
             remain = max(0, self._timeout_seconds - elapsed) if self._running else 0
             return {
                 "is_running": self._running,
@@ -226,7 +225,7 @@ class WeChatAutoListener:
                 return
             self._running = True
             self._timeout_seconds = timeout
-            self._start_time = time.time()
+            self._start_time = time_service.now_ts()
             self._last_captured_account = None
             self._captured_event.clear()
 
@@ -234,7 +233,7 @@ class WeChatAutoListener:
             logger.info("微信小程序无感感知监听已启动...")
             while self._running:
                 # 检查超时
-                if time.time() - self._start_time > self._timeout_seconds:
+                if time_service.now_ts() - self._start_time > self._timeout_seconds:
                     logger.info("微信小程序监听已超时退出")
                     with self._lock:
                         self._running = False

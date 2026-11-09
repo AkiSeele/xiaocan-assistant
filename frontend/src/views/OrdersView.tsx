@@ -31,6 +31,7 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { getNtpNowSec } from '../utils/ntpTime';
 import { useOnActivated } from '../utils/useOnActivated';
 import type { Order, DelayCardInfo } from '../types';
 
@@ -71,7 +72,7 @@ const formatRemainingTime = (remainingSec: number | null | undefined): string =>
   return `剩 ${Math.max(1, minutes)}分钟`;
 };
 
-const calcRemainingSec = (row?: Order, currentNowSec: number = Math.floor(Date.now() / 1000)): number | null => {
+const calcRemainingSec = (row?: Order, currentNowSec: number = getNtpNowSec()): number | null => {
   if (!row) return null;
   let tt = Number(row.timeout_time || 0);
   if (!tt && row.expire_time) {
@@ -110,11 +111,11 @@ export const OrdersView: React.FC = () => {
   const [submittingDelayCard, setSubmittingDelayCard] = useState(false);
   const [cancellingOrderId, setCancellingOrderId] = useState<number | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<number | null>(null);
-  const [currentNowSec, setCurrentNowSec] = useState<number>(() => Math.floor(Date.now() / 1000));
+  const [currentNowSec, setCurrentNowSec] = useState<number>(() => getNtpNowSec());
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setCurrentNowSec(Math.floor(Date.now() / 1000));
+      setCurrentNowSec(getNtpNowSec());
     }, 10000);
     return () => clearInterval(timer);
   }, []);

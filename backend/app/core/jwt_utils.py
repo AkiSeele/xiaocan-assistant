@@ -7,6 +7,7 @@ import json
 import re
 import time
 from typing import Dict, Any, Optional, Tuple
+from . import time_service
 
 
 def extract_token_from_text(raw_text: str) -> Optional[str]:
@@ -80,13 +81,13 @@ def decode_jwt_payload(token: str) -> Tuple[bool, Dict[str, Any], str]:
         return False, {}, f"JWT Payload 解析失败: {str(e)}"
 
     # 校验真实过期时间
-    now = int(time.time())
+    now = time_service.now_int()
     exp = payload.get("exp")
     if exp:
         try:
             exp_int = int(exp)
             if exp_int < now:
-                time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_int))
+                time_str = time_service.format_ts(exp_int, "%Y-%m-%d %H:%M:%S")
                 return False, payload, f"Token 已于 {time_str} 过期，请重新从微信抓包获取最新凭证"
         except (ValueError, TypeError):
             pass

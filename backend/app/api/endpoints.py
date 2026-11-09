@@ -3,6 +3,7 @@ FastAPI RESTful 路由
 完全对齐前端调用，彻底废弃卡密、积分与到期限制（全免开放）
 """
 import time
+import os
 from datetime import datetime, timedelta, timezone
 import uuid
 import re
@@ -178,7 +179,7 @@ async def create_or_update_account(data: Dict[str, Any] = Body(...)):
         exp = payload.get("exp")
         if exp and not data.get("expires_at"):
             try:
-                data["expires_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp)))
+                data["expires_at"] = time_service.format_ts(int(exp), "%Y-%m-%d %H:%M:%S")
             except Exception:
                 pass
 
@@ -464,7 +465,7 @@ async def parse_token_endpoint(data: Dict[str, Any] = Body(...)):
     silk_id = extract_silk_id_from_text(raw_text) or extract_silk_id_from_payload(payload)
     user_id = extract_user_id_from_payload(payload)
     exp = payload.get("exp")
-    exp_date = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp))) if exp else "长期有效"
+    exp_date = time_service.format_ts(int(exp), "%Y-%m-%d %H:%M:%S") if exp else "长期有效"
     city_code = extract_city_code_from_text(raw_text) or 420100
 
     nickname = ""
@@ -546,7 +547,7 @@ async def verify_token_endpoint(data: Dict[str, Any] = Body(...)):
             pass
 
     exp = payload.get("exp")
-    exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp))) if exp else "长期有效"
+    exp_str = time_service.format_ts(int(exp), "%Y-%m-%d %H:%M:%S") if exp else "长期有效"
     return {
         "ok": True,
         "valid": True,
@@ -674,8 +675,8 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
 
     # 记录账号凭据捕获/录入流水 (方便在 Web 端流水中心直观确认)
     try:
-        job_id = f"job_auth_{key}_{int(time.time())}"
-        now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        job_id = f"job_auth_{key}_{time_service.now_int()}"
+        now_str = time_service.format_now_ms()
         client_mode = cred.get("client_mode") or "app"
         mode_text = "代理嗅探捕获" if client_mode == "proxy" else ("微信监听捕获" if client_mode == "wechat" else "账号录入更新")
         auth_steps = [
@@ -715,8 +716,8 @@ async def sync_account_endpoint(key: str):
             "message": f"同步失败: {msg}"
         }
 
-    job_id = f"job_sync_{key}_{int(time.time())}"
-    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    job_id = f"job_sync_{key}_{time_service.now_int()}"
+    now_str = time_service.format_now_ms()
     steps = [
         f"[{now_str}] 启动账号官方资产同步: 【{acc.get('nickname', key)}】",
         f"[{now_str}] 贯通鉴权 Token: 凭据有效",
@@ -724,7 +725,7 @@ async def sync_account_endpoint(key: str):
     ]
     try:
         enriched = await _enrich_and_save_account(acc)
-        t_ok = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_ok = time_service.format_now_ms()
         steps.append(f"[{t_ok}] 官方资产同步完毕: 蚕豆 {float(enriched.get('silk', 0)):.2f} / 元宝 {int(enriched.get('yb_point', 0)):,} / VIP等级 {enriched.get('vip_level', 1)}")
         try:
             db.add_job_log(job_id, key, "account_sync", "success", "\n".join(steps))
@@ -736,7 +737,7 @@ async def sync_account_endpoint(key: str):
             "message": f"成功同步账号【{enriched.get('nickname')}】的最新官方资产与资料！"
         }
     except Exception as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 同步官方资产异常: {e}")
         try:
             db.add_job_log(job_id, key, "account_sync", "error", "\n".join(steps))
@@ -925,7 +926,7 @@ async def get_tasks(account_key: str = Query(...)):
         try:
             job = scheduler.scheduler.get_job(job_id)
             if job and getattr(job, "next_run_time", None):
-                next_run_time = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+                next_run_time = scheduler.format_job_next_run_time(job)
         except Exception:
             pass
 
@@ -1081,7 +1082,7 @@ async def get_flash_sale_shelf_endpoint(account_key: str = Query(...)):
             eid = meta["svip_id"] if is_plus else meta["vip_id"]
             live = live_map.get(eid) or {}
             raw_name = live.get("goods_name") or meta["name"]
-            clean_name = re.sub(r'[𐀀-􏿿]|[☀-➿]', '', raw_name).strip()
+            clean_name = re.sub(r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]", '', raw_name).strip()
             price = live.get("community_silk") or (meta["svip_silk"] if is_plus else meta["vip_silk"])
             stock = live.get("daily_stock") or meta["stock"]
             left = live.get("left") if live else stock
@@ -1154,8 +1155,8 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
     if cost_silk > yb_point:
         return {"ok": False, "message": f"账户可用元宝不足 ({yb_point:,} < {cost_silk:,})"}
 
-    job_id = f"job_ex_{exchange_id}_{int(time.time())}"
-    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    job_id = f"job_ex_{exchange_id}_{time_service.now_int()}"
+    now_str = time_service.format_now_ms()
     steps = [
         f"[{now_str}] 启动元宝秒杀直接兑换: 【{goods_name}】(商品ID #{exchange_id})",
         f"[{now_str}] 账号核验: 【{acc.get('nickname', account_key)}】(当前可用元宝: {yb_point:,})",
@@ -1182,7 +1183,7 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
             level=NotificationLevel.SUCCESS
         )
 
-        t_ok = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_ok = time_service.format_now_ms()
         steps.append(f"[{t_ok}] 官方兑换成功！扣除 {cost_silk:,} 元宝，剩余可用元宝 {remaining:,}")
         try:
             db.add_job_log(job_id, account_key, "flash_exchange", "success", "\n".join(steps))
@@ -1196,7 +1197,7 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
             "data": res
         }
     except XiaoCanRPCError as ce:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 官方兑换响应: {ce.msg} (错误码: {ce.code})")
         try:
             db.add_job_log(job_id, account_key, "flash_exchange", "error", "\n".join(steps))
@@ -1204,7 +1205,7 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
             pass
         return {"ok": False, "message": f"{ce.msg} (代码: {ce.code})", "code": ce.code}
     except Exception as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 兑换网络异常: {e}")
         try:
             db.add_job_log(job_id, account_key, "flash_exchange", "error", "\n".join(steps))
@@ -1511,7 +1512,7 @@ def bind_existing_meituan(key: str, data: Dict[str, Any] = Body(...)):
     db.bind_meituan_to_account(key, {
         "token": mt_acc.get("token"),
         "nickname": mt_acc.get("nickname") or f"美团账号 ({mt_acc['token'][-4:]})",
-        "saved_at": mt_acc.get("saved_at") or int(time.time()),
+        "saved_at": mt_acc.get("saved_at") or time_service.now_int(),
         "is_active": 1,
         "history_pool": mt_acc.get("history_pool") or []
     })
@@ -1591,7 +1592,7 @@ def _clean_emoji(text: Any) -> str:
     if not text:
         return ""
     # 过滤 Unicode Emoji (\U00010000-\U0010ffff)、杂项符号与闪电 (\u2600-\u27bf, 包含 \u26a1 闪电等)、表情符号
-    cleaned = re.sub(r'[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\u2300-\u23ff]|[\u2b50-\u2b55]|[\u200d]|[\ufe0f]', '', str(text))
+    cleaned = re.sub(r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]", '', str(text))
     return cleaned.strip()
 
 
@@ -3805,14 +3806,14 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
     if not account or not account.get("token"):
         raise HTTPException(status_code=400, detail="账号凭据失效或未登录")
 
-    job_id = f"job_cancel_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_cancel_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     nickname = account.get("nickname") or account_key
     cancel_steps = []
-    t_start = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    t_start = time_service.format_now_ms()
     cancel_steps.append(f"[{t_start}] 启动霸王餐取消名额流程 - 账号: 【{nickname}】, 官方订单号: #{order_id}")
 
     try:
-        t_req = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_req = time_service.format_now_ms()
         cancel_steps.append(f"[{t_req}] 步骤 1/2: 调用官方 SilkwormService.CancelPromotionQuota RPC 接口")
         res = await client.cancel_promotion_quota(
             promotion_order_id=int(order_id),
@@ -3821,16 +3822,16 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
             user_id=account.get("user_id"),
             city_code=account.get("city_code") or 440303
         )
-        t_fin = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_fin = time_service.format_now_ms()
         cancel_steps.append(f"[{t_fin}] 步骤 2/2: 官方响应成功，订单名额已退还，本地及远程锁定解除")
-        cancel_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程结束 - 取消名额成功")
+        cancel_steps.append(f"[{time_service.format_now_ms()}] 流程结束 - 取消名额成功")
         try:
             db.add_job_log(job_id, account_key, "store_cancel", "success", "\n".join(cancel_steps))
         except Exception:
             pass
         return {"ok": True, "message": "订单名额已成功在官方后台取消", "raw": res}
     except XiaoCanRPCError as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         cancel_steps.append(f"[{t_err}] 官方接口返回失败: {e.msg} (错误码: {e.code})")
         try:
             db.add_job_log(job_id, account_key, "store_cancel", "error", "\n".join(cancel_steps))
@@ -3838,7 +3839,7 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
             pass
         raise HTTPException(status_code=400, detail=f"官方取消失败 [{e.code}]: {e.msg}")
     except Exception as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         cancel_steps.append(f"[{t_err}] 取消接口网络或服务异常: {str(e)}")
         try:
             db.add_job_log(job_id, account_key, "store_cancel", "error", "\n".join(cancel_steps))
@@ -3893,7 +3894,7 @@ async def create_appointment(data: Dict[str, Any] = Body(...)):
     # 初始状态设为 running，真实追踪全流程生命周期
     task_name = "实时名额监听捡漏任务" if task_type == "monitor" else "倒计时预约抢单任务"
     log_tid = "store_monitor" if task_type == "monitor" else "store_appoint"
-    job_id = f"job_create_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_create_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     account = db.get_account_by_key(account_key)
     nick = account.get("nickname") if account else account_key
     plat_str = "美团外卖" if data.get("platform") == "meituan" else ("饿了么" if data.get("platform") == "eleme" else "京东外卖")
@@ -3902,11 +3903,11 @@ async def create_appointment(data: Dict[str, Any] = Body(...)):
     rp_mode = int(data.get("redpack_mode", 0))
     rp_note = f"指定红包 #{data.get('redpack_id')} ({data.get('redpack_name', '')})" if rp_mode == 1 else ("不使用红包" if rp_mode == 2 else "自动最优红包")
     s_log = (
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 初始化{task_name}成功 - 任务装载就绪\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标店铺: 【{data.get('store_name', '商户活动')}】 (平台: {plat_str}, 活动ID: {data.get('promotion_id')})\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 预约策略: 开抢/开始时间 {data.get('start_time', '即刻')} {adv_note}, 监听截止 {data.get('until_time', '活动结束')}, 提前量 {data.get('early_ms', 500)}ms\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 卡券与红包关联: {rp_note} | {'已绑定超前抢单券' if use_adv else '未启用超前券'}\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 执行账号: 【{nick}】，已正式装载入自适应调度队列，持续跟踪执行流水..."
+        f"[{time_service.format_now_ms()}] 初始化{task_name}成功 - 任务装载就绪\n"
+        f"[{time_service.format_now_ms()}] 目标店铺: 【{data.get('store_name', '商户活动')}】 (平台: {plat_str}, 活动ID: {data.get('promotion_id')})\n"
+        f"[{time_service.format_now_ms()}] 预约策略: 开抢/开始时间 {data.get('start_time', '即刻')} {adv_note}, 监听截止 {data.get('until_time', '活动结束')}, 提前量 {data.get('early_ms', 500)}ms\n"
+        f"[{time_service.format_now_ms()}] 卡券与红包关联: {rp_note} | {'已绑定超前抢单券' if use_adv else '未启用超前券'}\n"
+        f"[{time_service.format_now_ms()}] 执行账号: 【{nick}】，已正式装载入自适应调度队列，持续跟踪执行流水..."
     )
     log_id = 0
     try:
@@ -3935,19 +3936,19 @@ async def create_stock_watch(data: Dict[str, Any] = Body(...)):
     poll_sec = int(data.get("poll_sec") or 5)
     
     # 计算截止时间
-    now = datetime.now()
+    now = time_service.now_dt()
     until_dt = now + timedelta(seconds=timeout_sec)
     until_str = until_dt.strftime("%H:%M")
 
-    job_id = f"job_watch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_watch_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     account = db.get_account_by_key(account_key)
     nick = account.get("nickname") if account else account_key
     store_title = data.get("store_name") or data.get("label") or "商户活动"
     s_log = (
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 启动名额监控捡漏任务 - 调度引擎就绪\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 店铺【{store_title}】(活动ID: {data['promotion_id']})\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听参数: 轮询频率每 {poll_sec} 秒, 最长持续 {timeout_sec//60} 分钟 (截止 {until_str})\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听通道已就绪，检测到名额释放时将执行毫秒级抢单..."
+        f"[{time_service.format_now_ms()}] 启动名额监控捡漏任务 - 调度引擎就绪\n"
+        f"[{time_service.format_now_ms()}] 店铺【{store_title}】(活动ID: {data['promotion_id']})\n"
+        f"[{time_service.format_now_ms()}] 监听参数: 轮询频率每 {poll_sec} 秒, 最长持续 {timeout_sec//60} 分钟 (截止 {until_str})\n"
+        f"[{time_service.format_now_ms()}] 监听通道已就绪，检测到名额释放时将执行毫秒级抢单..."
     )
     log_id = 0
     try:
@@ -3989,25 +3990,25 @@ async def create_keyword_watch(data: Dict[str, Any] = Body(...)):
     if not keyword:
         raise HTTPException(status_code=400, detail="缺少搜索关键词")
 
-    start_at = data.get("start_at") or datetime.now().strftime("%H:%M")
+    start_at = data.get("start_at") or time_service.format_now("%H:%M")
     timeout_sec = int(data.get("timeout_sec") or 3600)
     poll_sec = max(10, int(data.get("poll_sec") or 30))
     platforms = data.get("platforms") or ["meituan"]
     plat = platforms[0] if platforms else "meituan"
 
     # 计算截止时间
-    now = datetime.now()
+    now = time_service.now_dt()
     until_dt = now + timedelta(seconds=timeout_sec)
     until_str = until_dt.strftime("%H:%M")
 
-    job_id = f"job_kw_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_kw_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     account = db.get_account_by_key(account_key)
     nick = account.get("nickname") if account else account_key
     s_log = (
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 创建商户定时搜索捡漏任务 - 调度引擎就绪\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 搜索关键词: 「{keyword}」 (平台: {plat})\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 检索时段: 开始于 {start_at}, 截止至 {until_str}, 频率每 {poll_sec} 秒\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 账号【{nick}】自动搜索流水已启动，持续监听中..."
+        f"[{time_service.format_now_ms()}] 创建商户定时搜索捡漏任务 - 调度引擎就绪\n"
+        f"[{time_service.format_now_ms()}] 搜索关键词: 「{keyword}」 (平台: {plat})\n"
+        f"[{time_service.format_now_ms()}] 检索时段: 开始于 {start_at}, 截止至 {until_str}, 频率每 {poll_sec} 秒\n"
+        f"[{time_service.format_now_ms()}] 账号【{nick}】自动搜索流水已启动，持续监听中..."
     )
     log_id = 0
     try:
@@ -4066,7 +4067,7 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
     timeout_sec = int(raw_timeout) if raw_timeout is not None else 7200
     poll_sec = max(5, int(data.get("check_interval") or data.get("poll_sec") or 10))
 
-    now = datetime.now()
+    now = time_service.now_dt()
     start_at = data.get("start_time") or now.strftime("%H:%M")
     if data.get("until_time"):
         until_str = data.get("until_time")
@@ -4076,7 +4077,7 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
     else:
         until_str = "23:59"
 
-    job_id = f"job_namemon_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_namemon_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     account = db.get_account_by_key(account_key)
     nick = account.get("nickname") if account else account_key
 
@@ -4163,14 +4164,14 @@ async def stop_appointment(aid: int):
         raise HTTPException(status_code=404, detail="未找到对应的监听任务")
     db.update_appointment(aid, {
         "status": "cancelled",
-        "outcome": f"用户已于 {time.strftime('%H:%M:%S')} 主动停止监听"
+        "outcome": f"用户已于 {time_service.format_now()} 主动停止监听"
     })
-    job_id = f"job_stop_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_stop_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     acc_key = apt.get("account_key", "")
     s_log = (
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 用户主动停止监听任务 #{aid}\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标店铺: 【{apt.get('store_name', '商户活动')}】\n"
-        f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听状态已转为 cancelled，定时轮询与突发抢单已解除"
+        f"[{time_service.format_now_ms()}] 用户主动停止监听任务 #{aid}\n"
+        f"[{time_service.format_now_ms()}] 目标店铺: 【{apt.get('store_name', '商户活动')}】\n"
+        f"[{time_service.format_now_ms()}] 监听状态已转为 cancelled，定时轮询与突发抢单已解除"
     )
     linked_log_id = int(apt.get("log_id") or 0)
     if linked_log_id > 0:
@@ -4198,11 +4199,11 @@ async def cancel_appointment(aid: int):
     apt = db.get_appointment_by_id(aid)
     if apt:
         acc_key = apt.get("account_key", "")
-        job_id = f"job_del_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+        job_id = f"job_del_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
         s_log = (
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 用户删除预约/监听任务 #{aid}\n"
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 目标商户: 【{apt.get('store_name', '商户活动')}】\n"
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 该任务已从系统调度队列永久移除"
+            f"[{time_service.format_now_ms()}] 用户删除预约/监听任务 #{aid}\n"
+            f"[{time_service.format_now_ms()}] 目标商户: 【{apt.get('store_name', '商户活动')}】\n"
+            f"[{time_service.format_now_ms()}] 该任务已从系统调度队列永久移除"
         )
         linked_log_id = int(apt.get("log_id") or 0)
         if linked_log_id > 0:
@@ -4372,7 +4373,7 @@ async def list_orders(
             raw_st = int(o.get("order_status", 0) or 0)
             cancel_time = int(o.get("cancel_time") or 0)
             timeout_time_val = int(o.get("timeout_time") or 0)
-            now_ts = int(time.time())
+            now_ts = time_service.now_int()
 
             platform_order_id = str(
                 o.get("platform_order_id")
@@ -4415,9 +4416,9 @@ async def list_orders(
             screens = o.get("platform_evaluation_screenshot") or []
             receipt_img = screens[0] if screens else ""
             ot = o.get("order_time")
-            c_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ot)) if ot else time.strftime("%Y-%m-%d %H:%M:%S")
+            c_at = time_service.format_ts(ot, "%Y-%m-%d %H:%M:%S") if ot else time_service.format_now_dt()
             tt = o.get("timeout_time")
-            exp_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(tt)) if tt else ""
+            exp_at = time_service.format_ts(tt, "%Y-%m-%d %H:%M:%S") if tt else ""
             ot_num = int(ot or 0)
             tt_num = int(tt or 0)
             is_delayed_reward = (
@@ -4457,8 +4458,8 @@ async def list_orders(
         if account_key:
             official_pending_sns = {str(o.get("order_id_str") or o.get("promotion_order_id") or "") for o in raw_orders if o}
             local_pending = db.get_orders(account_key=account_key, status="pending", limit=100)
-            now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-            now_ts = int(time.time())
+            now_str = time_service.format_now_dt()
+            now_ts = time_service.now_int()
             for lp in local_pending:
                 lp_sn = str(lp.get("order_sn") or "")
                 if lp_sn and lp_sn not in official_pending_sns:
@@ -4533,12 +4534,12 @@ async def get_beijing_time_endpoint(force: bool = False):
         return time_service.get_ntp_status()
     except Exception as e:
         logger.error(f"NTP授时异常: {e}")
-        now_ts = time.time()
+        now_ts = time_service.now_ts()
         bj_time_tuple = time.gmtime(now_ts + 8 * 3600)
         return {
             "ok": True,
             "timestamp": now_ts,
-            "beijing_time": time.strftime("%Y-%m-%d %H:%M:%S", bj_time_tuple),
+            "beijing_time": time_service.format_ts(now_ts, "%Y-%m-%d %H:%M:%S"),
             "server": "ntp.aliyun.com",
             "synced": False,
             "offset": 0.0,
@@ -4556,7 +4557,7 @@ async def get_live_scheduler_jobs():
         jobs.append({
             "id": j.id,
             "name": j.name,
-            "next_run_time": str(j.next_run_time) if hasattr(j, "next_run_time") and j.next_run_time else None,
+            "next_run_time": scheduler.format_job_next_run_time(j),
             "trigger": str(j.trigger)
         })
     return {"ok": True, "total": len(jobs), "jobs": jobs}
@@ -4631,8 +4632,8 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
     store_name = target_order.get("store_name") or "霸王餐店铺"
     platform_name = "美团" if target_order.get("platform") == "meituan" else "饿了么"
     rebate_money = float(target_order.get("rebate_money") or 0.0)
-    job_id = f"job_bind_{order_id}_{int(time.time())}"
-    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    job_id = f"job_bind_{order_id}_{time_service.now_int()}"
+    now_str = time_service.format_now_ms()
     steps = [
         f"[{now_str}] 启动回填外卖单号: 店铺【{store_name}】({platform_name})",
         f"[{now_str}] 待绑定外卖单号: {platform_order_id} (预期返现 ¥{rebate_money:.2f})",
@@ -4655,11 +4656,11 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
                 token=token
             )
             logger.info(f"小蚕官方提交外卖单号结果: {upstream_res}")
-            t_res = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            t_res = time_service.format_now_ms()
             steps.append(f"[{t_res}] 小蚕官方接口返回: {upstream_res.get('msg') or '单号上报成功'}")
         except Exception as e:
             logger.warning(f"小蚕官方接口提交单号返回: {e}")
-            t_res = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            t_res = time_service.format_now_ms()
             steps.append(f"[{t_res}] 小蚕官方接口提示: {e}")
             rpc_success = False
 
@@ -4672,7 +4673,7 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
     })
     msg = "外卖单号与评价凭证已提交审核！预计 2-24 小时内核销到账" if has_receipt else "外卖单号已成功绑定！待外卖送达后即可在小蚕APP提交评价反馈"
     
-    t_fin = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    t_fin = time_service.format_now_ms()
     steps.append(f"[{t_fin}] 本地订单记录已更新为: {new_status} (单号核验入库)")
     try:
         db.add_job_log(job_id, account_key, "order_bind", "success" if rpc_success else "error", "\n".join(steps))
@@ -4805,8 +4806,8 @@ async def delay_order_voucher(order_id: int):
 
     store_name = target_order.get("store_name") or "霸王餐店铺"
     acc_name = acc.get("nickname") or account_key or "当前账号"
-    job_id = f"delay_voucher_{order_id}_{int(time.time())}"
-    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    job_id = f"delay_voucher_{order_id}_{time_service.now_int()}"
+    now_str = time_service.format_now_ms()
     steps = [
         f"[{now_str}] 启动领红包延时特权: 店铺【{store_name}】(官方订单 #{promo_order_id})",
         f"[{now_str}] 账号核验: 账号【{acc_name}】",
@@ -4829,14 +4830,14 @@ async def delay_order_voucher(order_id: int):
 
         if is_delayed or raw_delay_time > 0:
             new_tt = int(target_order.get("timeout_time") or 0) + delay_time
-            new_exp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_tt)) if new_tt > 0 else ""
+            new_exp = time_service.format_ts(new_tt, "%Y-%m-%d %H:%M:%S") if new_tt > 0 else ""
             db.update_order(order_id, {
                 "delay_count": 1,
                 "timeout_time": new_tt,
                 "expire_time": new_exp
             })
 
-        t_end = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_end = time_service.format_now_ms()
         steps.append(f"[{t_end}] 官方特权已激活: 凭据上传有效期已顺延 {delay_hours} 小时")
         steps.append(f"[{t_end}] 流程完成 - 订单记录已更新")
         try:
@@ -4853,7 +4854,7 @@ async def delay_order_voucher(order_id: int):
             "raw": res
         }
     except XiaoCanRPCError as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 官方接口返回异常: {e.msg} (错误码: {e.code})")
         try:
             db.add_job_log(job_id, account_key, "delay_voucher", "error", "\n".join(steps))
@@ -4862,7 +4863,7 @@ async def delay_order_voucher(order_id: int):
         logger.warning(f"领红包延时接口返回异常: {e}")
         raise HTTPException(status_code=400, detail=f"官方接口响应: {e.msg} (错误码: {e.code})")
     except Exception as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 延时操作服务异常: {str(e)}")
         try:
             db.add_job_log(job_id, account_key, "delay_voucher", "error", "\n".join(steps))
@@ -4923,7 +4924,7 @@ async def get_order_delay_card_info(order_id: int):
         timeout_time = int(target_order["order_time"]) + 7200
 
     # 计算次日 06:00 阈值限制
-    now_ts = int(time.time())
+    now_ts = time_service.now_int()
     base_ts = max(timeout_time, now_ts)
     dt_base = datetime.fromtimestamp(base_ts)
     if dt_base.hour < 6:
@@ -4991,8 +4992,8 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
 
     store_name = target_order.get("store_name") or "霸王餐店铺"
     acc_name = acc.get("nickname") or account_key or "当前账号"
-    job_id = f"delay_card_{order_id}_{int(time.time())}"
-    now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    job_id = f"delay_card_{order_id}_{time_service.now_int()}"
+    now_str = time_service.format_now_ms()
     steps = [
         f"[{now_str}] 启动使用延时券: 店铺【{store_name}】(官方订单 #{promo_order_id}, 申请使用 {count} 张延时券)",
         f"[{now_str}] 账号核验: 账号【{acc_name}】",
@@ -5010,7 +5011,7 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
         )
         curr_tt = int(target_order.get("timeout_time") or 0)
         new_tt = curr_tt + count * 3600
-        new_exp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_tt)) if new_tt > 0 else ""
+        new_exp = time_service.format_ts(new_tt, "%Y-%m-%d %H:%M:%S") if new_tt > 0 else ""
         used_count = int(target_order.get("delay_card_used_count") or 0) + count
         db.update_order(order_id, {
             "timeout_time": new_tt,
@@ -5018,7 +5019,7 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
             "delay_card_used_count": used_count
         })
 
-        t_end = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_end = time_service.format_now_ms()
         steps.append(f"[{t_end}] 官方延时成功: 凭证有效期已延长 {count} 小时，最新截止时间: {new_exp}")
         steps.append(f"[{t_end}] 流程完成 - 订单状态与卡包延时券记录已更新")
         try:
@@ -5035,7 +5036,7 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
             "raw": res
         }
     except XiaoCanRPCError as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 官方接口返回异常: {e.msg} (错误码: {e.code})")
         try:
             db.add_job_log(job_id, account_key, "delay_card", "error", "\n".join(steps))
@@ -5044,7 +5045,7 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
         logger.warning(f"使用延时券官方接口返回异常: {e}")
         raise HTTPException(status_code=400, detail=f"官方接口响应: {e.msg} (错误码: {e.code})")
     except Exception as e:
-        t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_err = time_service.format_now_ms()
         steps.append(f"[{t_err}] 延时操作服务异常: {str(e)}")
         try:
             db.add_job_log(job_id, account_key, "delay_card", "error", "\n".join(steps))

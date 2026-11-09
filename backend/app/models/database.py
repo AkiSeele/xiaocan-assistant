@@ -10,6 +10,7 @@ import os
 import time
 import uuid
 from typing import List, Dict, Any, Optional
+from ..core import time_service
 
 DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 os.makedirs(DB_DIR, exist_ok=True)
@@ -360,7 +361,7 @@ def init_db():
 
     # 自动自愈：系统启动时，将历史异常退出或重启遗留的处于 running 状态的孤儿任务置为 aborted
     try:
-        now_time = time.strftime('%H:%M:%S')
+        now_time = time_service.format_now()
         running_logs = c.execute("SELECT id, output FROM job_logs WHERE status = 'running'").fetchall()
         for r in running_logs:
             lid = r[0]
@@ -395,8 +396,8 @@ def init_db():
                     int(m.get("last_claimed_count", 0)),
                     m.get("last_claimed_details") or "[]",
                     m.get("history_pool") or "[]",
-                    m.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S"),
-                    m.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S")
+                    m.get("created_at") or time_service.format_now_dt(),
+                    m.get("updated_at") or time_service.format_now_dt()
                 ))
     except Exception:
         pass
@@ -449,8 +450,7 @@ def _format_account_row(d: Dict[str, Any]) -> Dict[str, Any]:
     exp_str = d.get("expires_at")
     if exp_str and exp_str not in ("长期有效", "无"):
         try:
-            t_struct = time.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
-            if time.mktime(t_struct) < time.time():
+            if time_service.parse_ts(exp_str, "%Y-%m-%d %H:%M:%S") < time_service.now_ts():
                 is_expired = True
         except Exception:
             pass
@@ -463,8 +463,8 @@ def _format_account_row(d: Dict[str, Any]) -> Dict[str, Any]:
                 payload = json.loads(base64.urlsafe_b64decode(b64.encode()).decode("utf-8"))
                 if payload.get("exp"):
                     exp_ts = int(payload["exp"])
-                    d["expires_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_ts))
-                    if exp_ts < time.time():
+                    d["expires_at"] = time_service.format_ts(exp_ts, "%Y-%m-%d %H:%M:%S")
+                    if exp_ts < time_service.now_ts():
                         is_expired = True
         except Exception:
             pass
@@ -527,7 +527,7 @@ def find_account(
 
 def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
     """保存或更新小蚕账号，具备完善的查重合并与用户配置保护能力"""
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = time_service.format_now_dt()
 
     # 尝试自动从 JWT 提取真实的 UserId、Silk ID、有效期
     token = (data.get("token") or "").strip()
@@ -546,7 +546,7 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
                     silk_id = extract_silk_id_from_payload(payload)
                 exp = payload.get("exp")
                 if exp and not exp_time:
-                    exp_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(exp)))
+                    exp_time = time_service.format_ts(int(exp), "%Y-%m-%d %H:%M:%S")
         except Exception:
             pass
 
@@ -692,7 +692,7 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         "meituan_last_claimed_details", "meituan_history_pool", "meituan_is_active"
     ]
     updates = []
-    params = {"key": key, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    params = {"key": key, "updated_at": time_service.format_now_dt()}
     for field in allowed_fields:
         if field in profile:
             updates.append(f"{field} = :{field}")
@@ -826,7 +826,7 @@ def save_task_config(account_key: str, task_id: str, enabled: bool, cron_time: O
 
 
 def add_job_log(job_id: str, account_key: str, task_id: str, status: str, output: str) -> int:
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = time_service.format_now_dt()
     with get_conn() as conn:
         cur = conn.execute("""
         INSERT INTO job_logs (job_id, account_key, task_id, status, output, created_at)
@@ -861,7 +861,7 @@ def auto_clean_stale_running_jobs():
     """运行时自愈：对于 running 状态超过 10 分钟未更新的普通短任务判定为超时僵尸任务，自动置为 aborted；但必须豁免合法长周期的预约与监听任务"""
     try:
         with get_conn() as conn:
-            cur_ts = int(time.time())
+            cur_ts = time_service.now_int()
             stale_threshold = 600  # 10 分钟
             # 1. 扫描处于 running 状态的任务，左连接 store_appointments 查验实际预约状态
             rows = conn.execute("""
@@ -880,10 +880,10 @@ def auto_clean_stale_running_jobs():
 
                 c_at = r["created_at"]
                 try:
-                    c_ts = int(time.mktime(time.strptime(c_at, "%Y-%m-%d %H:%M:%S")))
+                    c_ts = int(time_service.parse_ts(c_at, "%Y-%m-%d %H:%M:%S"))
                     if cur_ts - c_ts > stale_threshold:
                         old_out = r["output"] or ""
-                        now_str = time.strftime('%H:%M:%S')
+                        now_str = time_service.format_now()
                         new_out = old_out.rstrip() + f"\n[{now_str}] 执行超时自愈: 任务运行已超过 10 分钟未响应，已被系统自动置为中断终止。"
                         conn.execute("UPDATE job_logs SET status = 'aborted', output = ? WHERE id = ?", (new_out, r["id"]))
                 except Exception:
@@ -952,7 +952,7 @@ def get_active_appointments() -> List[Dict[str, Any]]:
 
 
 def add_appointment(data: Dict[str, Any]) -> int:
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = time_service.format_now_dt()
     status = data.get("status")
     if not status:
         status = "monitoring" if data.get("task_type") in ("monitor", "name_monitor", "keyword") else "scheduled"
@@ -1093,8 +1093,8 @@ def auto_cancel_expired_orders(account_key: Optional[str] = None) -> int:
     """
     deduplicate_orders()
 
-    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-    now_ts = int(time.time())
+    now_str = time_service.format_now_dt()
+    now_ts = time_service.now_int()
     sql = """
         UPDATE orders
         SET status = 'cancelled', updated_at = :now_str
@@ -1167,7 +1167,7 @@ def get_order_by_id(order_id: int) -> Optional[Dict[str, Any]]:
 
 
 def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = time_service.format_now_dt()
     promo_id = int(data.get("promotion_order_id") or 0)
     sn = str(data.get("order_sn") or "")
     acc_key = str(data.get("account_key") or "")
@@ -1207,7 +1207,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             chosen_delay_card_count = max(int(existing.get("delay_card_used_count") or 0), int(data.get("delay_card_used_count") or 0))
             chosen_tt = max(int(existing.get("timeout_time") or 0), int(data.get("timeout_time") or 0))
             chosen_exp = existing.get("expire_time") if (chosen_tt == int(existing.get("timeout_time") or 0) and existing.get("expire_time")) else data.get("expire_time", "")
-            if not chosen_plat_id and chosen_tt > 0 and chosen_tt < int(time.time()):
+            if not chosen_plat_id and chosen_tt > 0 and chosen_tt < time_service.now_int():
                 new_status = "cancelled"
 
             conn.execute("""
@@ -1296,7 +1296,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             updated_at = excluded.updated_at
         """, {
             "account_key": data.get("account_key", ""),
-            "order_sn": data.get("order_sn", f"XC{int(time.time()*1000)}"),
+            "order_sn": data.get("order_sn", f"XC{time_service.now_millis()}"),
             "promotion_order_id": int(data.get("promotion_order_id") or 0),
             "platform_order_id": data.get("platform_order_id", ""),
             "store_id": str(data.get("store_id", "")),
@@ -1308,7 +1308,7 @@ def save_order(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "original_user_rebate": float(data.get("original_user_rebate", 0)),
             "redpack_reward_num": float(data.get("redpack_reward_num", 0)),
             "timeout_time": int(data.get("timeout_time") or 0),
-            "status": "cancelled" if (not data.get("platform_order_id") and int(data.get("timeout_time") or 0) > 0 and int(data.get("timeout_time") or 0) < int(time.time())) else data.get("status", "pending"),
+            "status": "cancelled" if (not data.get("platform_order_id") and int(data.get("timeout_time") or 0) > 0 and int(data.get("timeout_time") or 0) < time_service.now_int()) else data.get("status", "pending"),
             "condition": data.get("condition", "无需评价"),
             "receipt_img": data.get("receipt_img", ""),
             "reject_reason": data.get("reject_reason", ""),
@@ -1334,7 +1334,7 @@ def update_order(order_id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]
         "delay_count", "delay_card_used_count"
     ]
     updates = []
-    params: Dict[str, Any] = {"id": order_id, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    params: Dict[str, Any] = {"id": order_id, "updated_at": time_service.format_now_dt()}
     for k in allowed:
         if k in data:
             updates.append(f"{k} = :{k}")
@@ -1586,10 +1586,10 @@ def get_meituan_account(key: str) -> Optional[Dict[str, Any]]:
 def save_meituan_account(data: Dict[str, Any]) -> Dict[str, Any]:
     key = str(data.get("key") or "").strip()
     if not key:
-        key = f"mt_acc_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        key = f"mt_acc_{time_service.now_int()}_{uuid.uuid4().hex[:4]}"
 
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    now_ts = int(time.time())
+    now = time_service.format_now_dt()
+    now_ts = time_service.now_int()
     existing = get_meituan_account(key)
 
     nickname = data.get("nickname") or (existing.get("nickname") if existing else f"美团账号 {key[-4:]}")
@@ -1701,7 +1701,7 @@ def bind_meituan_to_account(account_key: str, data: Dict[str, Any]) -> bool:
     """为指定小蚕账号绑定美团凭证"""
     token = (data.get("token") or "").strip()
     nickname = (data.get("nickname") or f"美团账号 ({token[-4:] if token else '已绑定'})").strip()
-    saved_at = int(data.get("saved_at") or time.time())
+    saved_at = int(data.get("saved_at") or time_service.now_ts())
     
     acc = get_account_by_key(account_key)
     pool = acc.get("meituan_history_pool") or [] if acc else []
@@ -1725,10 +1725,10 @@ def bind_meituan_to_account(account_key: str, data: Dict[str, Any]) -> bool:
             meituan_history_pool = ?,
             updated_at = ?
         WHERE key = ?
-        """, (token, nickname, saved_at, pool_str, time.strftime("%Y-%m-%d %H:%M:%S"), account_key))
+        """, (token, nickname, saved_at, pool_str, time_service.format_now_dt(), account_key))
         
         # 同时在 meituan_accounts 中留存一份以保持数据对称
-        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        now_str = time_service.format_now_dt()
         conn.execute("""
         INSERT INTO meituan_accounts (key, nickname, token, saved_at, is_active, history_pool, created_at, updated_at)
         VALUES (?, ?, ?, ?, 1, ?, ?, ?)
@@ -1757,7 +1757,7 @@ def unbind_meituan_from_account(account_key: str) -> bool:
             meituan_last_claimed_details = '[]',
             updated_at = ?
         WHERE key = ?
-        """, (time.strftime("%Y-%m-%d %H:%M:%S"), account_key))
+        """, (time_service.format_now_dt(), account_key))
         conn.execute("DELETE FROM meituan_accounts WHERE key = ?", (account_key,))
         conn.commit()
     return True
@@ -1765,7 +1765,7 @@ def unbind_meituan_from_account(account_key: str) -> bool:
 
 def clear_all_meituan_data() -> bool:
     """彻底清空全部美团凭证（清空 meituan_accounts、清理伪账号及小蚕账号美团字段）"""
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = time_service.format_now_dt()
     with get_conn() as conn:
         conn.execute("DELETE FROM meituan_accounts")
         conn.execute("DELETE FROM accounts WHERE (platform = 'meituan' AND key NOT LIKE 'acc_%') OR key LIKE 'mt_%'")
@@ -1786,8 +1786,8 @@ def clear_all_meituan_data() -> bool:
 
 
 def update_meituan_claim_stats(key: str, count: int, details: List[Dict[str, Any]], new_token: Optional[str] = None):
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    now_ts = int(time.time())
+    now = time_service.format_now_dt()
+    now_ts = time_service.now_int()
     acc = get_account_by_key(key) or get_meituan_account(key)
     if not acc:
         return

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import qrcode
 
 from ..models import database as db
+from ..core import time_service
 
 logger = logging.getLogger("meituan.runner")
 
@@ -293,7 +294,7 @@ def activate_account(token_str: str, saved_at: Optional[int] = None) -> bool:
         return False
     entry = {
         "token": token_str,
-        "saved_at": saved_at or int(time.time())
+        "saved_at": saved_at or time_service.now_int()
     }
     content = {
         PASSPORT_KEY: entry
@@ -407,8 +408,8 @@ class MeituanAuthManager:
             # 记录授权启动流水日志
             target_acc = db.get_account_by_key(account_key) if account_key else None
             acc_name = target_acc.get("nickname") if target_acc else (account_key or "未指定账号")
-            job_id = f"job_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-            now_str = time.strftime("%H:%M:%S")
+            job_id = f"job_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
+            now_str = time_service.format_now()
             log_lines = [
                 f"[{now_str}] 发起美团官方扫码授权会话 (会话ID: {session_id[:8]})",
                 f"[{now_str}] 目标关联账号: 【{acc_name}】",
@@ -436,7 +437,7 @@ class MeituanAuthManager:
                 "qrcode_base64": qr_base64,
                 "status": "pending",
                 "message": "请使用美团 App 扫码并在手机上确认登录",
-                "created_at": time.time(),
+                "created_at": time_service.now_ts(),
                 "account": None,
                 "token": None,
                 "log_id": log_id,
@@ -510,7 +511,7 @@ class MeituanAuthManager:
                     log_id = session.get("log_id")
                     if log_id:
                         lines = session.get("log_lines", [])
-                        lines.append(f"[{time.strftime('%H:%M:%S')}] 扫码授权超时，二维码已过期（120秒未扫码）。")
+                        lines.append(f"[{time_service.format_now()}] 扫码授权超时，二维码已过期（120秒未扫码）。")
                         update_job_log(log_id, status="failed", output="\n".join(lines))
                 return
 
@@ -544,7 +545,7 @@ class MeituanAuthManager:
 
             if token:
                 logger.info(f"[美团授权成功] 会话 {session_id} 获得 Token: {token[:8]}****")
-                now_str = time.strftime("%H:%M:%S")
+                now_str = time_service.format_now()
                 log_lines.append(f"[{now_str}] 手机端扫码授权成功！已取得美团官方 Token (前缀: {token[:10]}..., 后缀: {token[-6:]})")
 
                 # 尝试获取城市定位信息以丰富展示
@@ -553,13 +554,13 @@ class MeituanAuthManager:
                     loc_res = fetch_location(timeout=10)
                     if loc_res.get("ok") and loc_res.get("cityName"):
                         city_name = loc_res.get("cityName")
-                        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 美团账号定位城市: {city_name}")
+                        log_lines.append(f"[{time_service.format_now()}] 美团账号定位城市: {city_name}")
                 except Exception:
                     pass
 
                 account_key = session.get("account_key")
                 custom_nickname = session.get("custom_nickname")
-                saved_at = int(time.time())
+                saved_at = time_service.now_int()
 
                 if account_key:
                     target_acc = get_account_by_key(account_key)
@@ -582,7 +583,7 @@ class MeituanAuthManager:
                     session["token"] = token
                     session["account"] = account_record
                     session["message"] = f"已成功为账号【{acc_nick}】绑定美团！"
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] 成功将美团账号【{nickname}】关联绑定至小蚕账号【{acc_nick}】({account_key})")
+                    log_lines.append(f"[{time_service.format_now()}] 成功将美团账号【{nickname}】关联绑定至小蚕账号【{acc_nick}】({account_key})")
                 else:
                     existing_accounts = get_all_meituan_accounts()
                     matched_account = None
@@ -613,15 +614,15 @@ class MeituanAuthManager:
                     session["token"] = token
                     session["account"] = account_record
                     session["message"] = "美团账号绑定成功"
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] 美团账号凭证已归档至系统凭据库 (标识: {acc_key})")
+                    log_lines.append(f"[{time_service.format_now()}] 美团账号凭证已归档至系统凭据库 (标识: {acc_key})")
 
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] 美团官方扫码授权全流程完成。")
+                log_lines.append(f"[{time_service.format_now()}] 美团官方扫码授权全流程完成。")
                 if log_id:
                     update_job_log(log_id, status="success", output="\n".join(log_lines))
             else:
                 session["status"] = "failed"
                 session["message"] = "未检测到授权，请重新尝试"
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] 授权失败: 未能从官方接口检测到授权凭证。")
+                log_lines.append(f"[{time_service.format_now()}] 授权失败: 未能从官方接口检测到授权凭证。")
                 if log_id:
                     update_job_log(log_id, status="failed", output="\n".join(log_lines))
         except Exception as e:
@@ -632,7 +633,7 @@ class MeituanAuthManager:
                 session["message"] = f"授权异常: {str(e)}"
                 log_id = session.get("log_id")
                 log_lines = session.get("log_lines", [])
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] 授权流程发生异常: {str(e)}")
+                log_lines.append(f"[{time_service.format_now()}] 授权流程发生异常: {str(e)}")
                 if log_id:
                     update_job_log(log_id, status="failed", output="\n".join(log_lines))
         finally:
@@ -681,7 +682,7 @@ class MeituanAuthManager:
             if log_id:
                 try:
                     lines = session.get("log_lines", [])
-                    lines.append(f"[{time.strftime('%H:%M:%S')}] 用户取消了美团扫码授权会话。")
+                    lines.append(f"[{time_service.format_now()}] 用户取消了美团扫码授权会话。")
                     db.update_job_log(log_id, status="aborted", output="\n".join(lines))
                 except Exception:
                     pass

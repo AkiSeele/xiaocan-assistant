@@ -5,9 +5,11 @@
 import base64
 import hashlib
 import json
+import os
 import time
 import uuid
 from typing import Optional, Dict
+from ..core import time_service
 
 
 def md5_hex(s: str) -> str:
@@ -45,7 +47,7 @@ def generate_headers(
     全局默认采用官方独立 App 原生客户端协议规范，彻底杜绝 50010 限制
     """
     if time_millis is None:
-        time_millis = int(time.time() * 1000)
+        time_millis = time_service.now_millis()
     if nami is None:
         nami = generate_nami()
 
@@ -95,7 +97,7 @@ def generate_headers(
         headers["x-channel"] = "xiaocan"
         headers["X-CityCode"] = str(city_code)
         headers["X-Model"] = "Android Phone"
-        headers["User-Agent"] = "XiaoCan/3.21.1 (Linux; U; Android 14; zh-cn; Mobile) okhttp/4.12.0"
+        headers["User-Agent"] = os.getenv("XIAOCAN_USER_AGENT") or "okhttp/4.12.0"
 
     if user_id:
         headers["x-Vayne"] = str(user_id)

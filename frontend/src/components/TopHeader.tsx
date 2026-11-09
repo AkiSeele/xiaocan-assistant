@@ -28,6 +28,7 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { LocationModal } from './LocationModal';
 import { api } from '../api';
+import { setNtpOffsetMs, getNtpDate } from '../utils/ntpTime';
 
 const { Header } = Layout;
 
@@ -59,7 +60,7 @@ export const TopHeader: React.FC = () => {
   const [calibrating, setCalibrating] = useState(false);
   const [ntpOffset, setNtpOffset] = useState<number>(0);
   const [ntpSynced, setNtpSynced] = useState<boolean>(false);
-  const [nowTime, setNowTime] = useState<Date>(new Date());
+  const [nowTime, setNowTime] = useState<Date>(() => getNtpDate());
 
   // 初次使用无定位时自动启动 UserGuide 引导
   useEffect(() => {
@@ -83,7 +84,7 @@ export const TopHeader: React.FC = () => {
   // 毫秒级时钟走字
   useEffect(() => {
     const timer = setInterval(() => {
-      setNowTime(new Date(Date.now() + ntpOffset));
+      setNowTime(getNtpDate());
     }, 1000);
     return () => clearInterval(timer);
   }, [ntpOffset]);
@@ -94,7 +95,9 @@ export const TopHeader: React.FC = () => {
       if (res && res.ok && res.timestamp) {
         const offset = (res.timestamp * 1000) - Date.now();
         setNtpOffset(offset);
+        setNtpOffsetMs(offset);
         setNtpSynced(res.synced || true);
+        setNowTime(getNtpDate());
       }
     }).catch(() => {});
   }, []);
@@ -108,7 +111,9 @@ export const TopHeader: React.FC = () => {
       if (res && res.ok && res.timestamp) {
         const offset = (res.timestamp * 1000) - Date.now();
         setNtpOffset(offset);
+        setNtpOffsetMs(offset);
         setNtpSynced(true);
+        setNowTime(getNtpDate());
         const offsetDesc = `${offset >= 0 ? '+' : ''}${Math.round(offset)}ms`;
         Toast.success(`时钟校准成功，本地时差 ${offsetDesc}`);
       } else {

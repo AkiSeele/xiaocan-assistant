@@ -74,11 +74,11 @@ def invalidate_worker_cache():
 
 
 def _parse_time_today(time_str: str) -> Optional[float]:
-    """解析 HH:MM 为今日的时间戳，若格式为 YYYY-MM-DD HH:MM:SS 或纯数字时间戳则直接解析"""
+    """解析 HH:MM 为今日的标准北京时间时间戳，若格式为 YYYY-MM-DD HH:MM:SS 或纯数字时间戳则直接解析"""
     if not time_str or not str(time_str).strip():
         return None
     time_str = str(time_str).strip()
-    now = datetime.now()
+    now = time_service.now_dt()
     try:
         if time_str.replace('.', '', 1).isdigit():
             val = float(time_str)
@@ -87,13 +87,12 @@ def _parse_time_today(time_str: str) -> Optional[float]:
             if val > 1e8:
                 return val
         if "-" in time_str:
-            dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-            return dt.timestamp()
+            return time_service.parse_ts(time_str, "%Y-%m-%d %H:%M:%S")
         if ":" in time_str:
             parts = time_str.split(":")
             h, m = int(parts[0]), int(parts[1])
             s = int(parts[2]) if len(parts) > 2 else 0
-            dt = datetime(now.year, now.month, now.day, h, m, s)
+            dt = datetime(now.year, now.month, now.day, h, m, s, tzinfo=time_service._BJ_TZ)
             return dt.timestamp()
     except Exception as e:
         logger.warning(f"解析时间戳失败 {time_str}: {e}")
@@ -115,7 +114,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
     platform_code = int(apt.get("store_platform") or (3 if apt.get("platform") in ("jingdong", "jd") else (1 if apt.get("platform") == "meituan" else 2)))
 
     task_id = action_source if action_source in ("store_grab", "store_appoint", "store_monitor", "store_search", "store_cancel") else "store_grab"
-    job_id = f"job_store_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_store_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
 
     source_labels = {
         "store_grab": "即时抢单",
@@ -130,7 +129,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
     mark_task_started(account_key, task_id)
     try:
         log_steps = []
-        t_start = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_start = time_service.format_now_ms()
         log_steps.append(f"[{t_start}] 启动抢单流水: 店铺【{store_name}】(活动ID: {promotion_id}, 平台: {platform_name}, 触发方式: {source_label})")
 
         try:
@@ -142,7 +141,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
         except Exception:
             lon = 0.0
 
-        t_step1 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_step1 = time_service.format_now_ms()
         log_steps.append(f"[{t_step1}] 步骤 1/4: 账号鉴权及定位核验 - 账号【{nickname}】，定位经纬度 ({lat:.5f}, {lon:.5f})，城市代码 {city_code}")
         # 红包使用策略解析与防失效自愈降级 (优先使用提前 25 秒预加载并锁定的红包，消除开抢时的网络延时)
         redpack_id = apt.get("cached_redpack_id")
@@ -214,11 +213,11 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
         else:
             rp_desc = "用户设置不使用红包"
 
-        t_step2 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        t_step2 = time_service.format_now_ms()
         log_steps.append(f"[{t_step2}] 步骤 2/4: 红包策略决策 - {rp_desc}")
 
         try:
-            t_step3 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            t_step3 = time_service.format_now_ms()
             log_steps.append(f"[{t_step3}] 步骤 3/4: 发起官方抢单 RPC 握手 - promotion_id={promotion_id}, store_platform={platform_code}, advance={advance}")
 
             res = await client.grab_promotion_quota(
@@ -248,9 +247,9 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
 
             if order_id <= 0:
                 err_msg = (res.get("status") or {}).get("msg") or res.get("msg") or "未返回有效订单号，官方抢单未生效"
-                t_step4 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                t_step4 = time_service.format_now_ms()
                 log_steps.append(f"[{t_step4}] 步骤 4/4: 官方接口返回未成功 - 提示: {err_msg}")
-                log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程结束 - 抢单未锁定名额")
+                log_steps.append(f"[{time_service.format_now_ms()}] 流程结束 - 抢单未锁定名额")
                 logger.warning(f"预约/监听任务 #{aid} 抢单未成功: {err_msg}")
                 grab_text = "\n".join(log_steps)
                 if linked_log_id > 0:
@@ -262,7 +261,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                         pass
                 return {"ok": False, "code": -1, "message": err_msg}
 
-            t_step4 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            t_step4 = time_service.format_now_ms()
             log_steps.append(f"[{t_step4}] 步骤 4/4: 抢单成功锁定 - 官方系统订单 #{order_id} 生成完毕！")
             success_msg = f"抢单成功锁定！官方系统订单 #{order_id} 生成完毕，请前往外卖平台下单"
 
@@ -301,11 +300,11 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                     raw_d_time = int(delay_res.get("delay_time") or delay_res.get("delayTime") or 0)
                     if is_delayed or raw_d_time > 0:
                         d_time = raw_d_time if raw_d_time > 0 else 7200
-                        log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
+                        log_steps.append(f"[{time_service.format_now_ms()}] 附加权益: 成功激活官方【领红包延时2小时】特权，凭据上传有效期已自动延长 2 小时 ({d_time}秒)")
                 except Exception as de:
                     logger.info(f"领红包延时触发提示: {de}")
 
-            log_steps.append(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 流程完成 - 订单状态已置为待下单，已投递抢单成功系统通知")
+            log_steps.append(f"[{time_service.format_now_ms()}] 流程完成 - 订单状态已置为待下单，已投递抢单成功系统通知")
             logger.info(f"预约/监听任务 #{aid} 抢单成功: {success_msg}")
 
             # 写入订单库
@@ -320,9 +319,9 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                         if m_ratio:
                             ratio_val = float(m_ratio.group(1))
                 delay_val = 1 if (is_delayed or raw_d_time > 0) else 0
-                now_ts_order = int(time.time())
+                now_ts_order = time_service.now_int()
                 tt_val = now_ts_order + d_time if (is_delayed or raw_d_time > 0) else now_ts_order + 7200
-                exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(tt_val))
+                exp_str = time_service.format_ts(tt_val, "%Y-%m-%d %H:%M:%S")
                 db.save_order({
                     "account_key": apt["account_key"],
                     "order_sn": str(res.get("order_id_str") or order_id),
@@ -372,7 +371,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
 
             return {"ok": True, "order_id": order_id, "message": success_msg}
         except XiaoCanRPCError as e:
-            t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            t_err = time_service.format_now_ms()
             log_steps.append(f"[{t_err}] 官方接口响应异常: {e.msg} (错误码: {e.code})")
             logger.warning(f"抢单接口响应: code={e.code}, msg={e.msg}")
             grab_text = "\n".join(log_steps)
@@ -397,7 +396,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                     pass
             return {"ok": False, "code": e.code, "message": e.msg}
         except Exception as e:
-            t_err = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            t_err = time_service.format_now_ms()
             log_steps.append(f"[{t_err}] 抢单接口网络异常: {str(e)}")
             logger.error(f"抢单接口网络异常: {e}")
             grab_text = "\n".join(log_steps)
@@ -429,7 +428,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
     if not active_list:
         return False, False
 
-    now_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
+    now_str = time_service.format_ts(now_ts, "%Y-%m-%d %H:%M:%S")
     has_primed = False
 
     # 检测是否临近每分钟 00 秒放单时刻 (58.5s ~ 02.0s 窗口期)
@@ -476,7 +475,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                 })
                 invalidate_worker_cache()
                 if linked_log_id > 0:
-                    t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    t_now = time_service.format_now_ms()
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 店名监听截止时间到达 ({apt.get('until_time')})，监听任务自动结束", sync_db=True, status="error")
                 continue
 
@@ -767,7 +766,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     db.update_appointment(aid, {"status": "error", "outcome": err_msg})
                     invalidate_worker_cache()
                     if linked_log_id > 0:
-                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        t_err = time_service.format_now_ms()
                         _append_apt_log(aid, linked_log_id, f"[{t_err}] 账号鉴权失效: {err_msg}，任务已自动终止，请更新Token", sync_db=True, status="error")
                     await send_system_notification(
                         title="小蚕账号凭据失效",
@@ -784,11 +783,11 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     future_time = datetime.fromtimestamp(now_ts + cooldown).strftime("%Y-%m-%d %H:%M:%S")
                     db.update_appointment(aid, {"last_checked_at": future_time})
                     if linked_log_id > 0:
-                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        t_err = time_service.format_now_ms()
                         _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] 当前网络IP触发官方腾讯云WAF临时频次拦截，系统已自动休眠熔断保护 (剩余冷却约 {cooldown} 秒)。建议切换手机热点或重启光猫更换IP立即恢复。", sync_db=True, status="running")
                 else:
                     if linked_log_id > 0:
-                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        t_err = time_service.format_now_ms()
                         _append_apt_log(aid, linked_log_id, f"[{t_err}] 嗅探执行异常: {se}，将在下次周期重试", sync_db=False, status="running")
 
         # ---------------- 分支二：单店名额监听捡漏任务 (task_type == "monitor" or status == "monitoring") ---------------- #
@@ -804,7 +803,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                 })
                 logger.info(f"监听任务 #{aid} 已超时结束 (until_time={apt.get('until_time')})")
                 if linked_log_id > 0:
-                    exp_line = f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 监听截止时间已到达 ({apt.get('until_time')})，名额监听自动停止"
+                    exp_line = f"[{time_service.format_now_ms()}] 监听截止时间已到达 ({apt.get('until_time')})，名额监听自动停止"
                     _append_apt_log(aid, linked_log_id, exp_line, sync_db=True, status="error")
                 continue
 
@@ -824,7 +823,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             if is_waf_blocked():
                 remain = get_waf_cooldown_seconds()
                 if (int(now_ts) % 30) < 2 and linked_log_id > 0:
-                    t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    t_now = time_service.format_now_ms()
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] 当前网络IP处于官方腾讯云WAF临时拦截冷却中 (剩余约 {remain} 秒)，已自动暂停库存轮询以避免延长封锁。", sync_db=True, status="running")
                 continue
 
@@ -854,7 +853,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                 if target_left is None or target_left == 0:
                     target_left = pdetail.get("left_number", 0)
 
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                t_now = time_service.format_now_ms()
                 step_str = f"[{t_now}] 第 {poll_cnt} 次名额检测: 美团余量 {mt_left or 0} 份 / 饿了么余量 {ele_left or 0} 份，持续监听中..."
                 # 每轮巡检追加，且首轮或每 3 次或有名额变动时向数据库落盘一次
                 sync_needed = (poll_cnt == 1) or (poll_cnt % 3 == 0) or (target_left and int(target_left) > 0)
@@ -910,7 +909,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     future_time = datetime.fromtimestamp(now_ts + cooldown).strftime("%Y-%m-%d %H:%M:%S")
                     db.update_appointment(aid, {"last_checked_at": future_time})
                     if linked_log_id > 0:
-                        t_err = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        t_err = time_service.format_now_ms()
                         _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] 当前网络IP触发官方腾讯云WAF临时频次拦截，系统已自动休眠熔断保护 (剩余冷却约 {cooldown} 秒)", sync_db=True, status="running")
 
         # ---------------- 分支三：倒计时预约任务 (status in 'scheduled', 'primed', 'pending') ---------------- #
@@ -937,7 +936,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             if diff <= (31 * 60) and not apt.get("notified_31m"):
                 db.update_appointment(aid, {"notified_31m": 1})
                 logger.info(f"任务 #{aid} 触发倒计时 31 分钟预热通知 (超前券: {use_advance})")
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                t_now = time_service.format_now_ms()
                 if linked_log_id > 0:
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 倒计时 31 分钟到达，已发送开火预热通知与通道就绪检查 {adv_prefix}(开火目标: {eff_time_str})", sync_db=True, status="running")
                 try:
@@ -956,7 +955,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                 apt["prewarmed"] = 1
                 db.update_appointment(aid, {"status": "primed"})
                 logger.info(f"预约任务 #{aid} 提前 25 秒唤醒预热，长连接热激活并提前解析锁定红包...")
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                t_now = time_service.format_now_ms()
                 if linked_log_id > 0:
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 提前 25 秒唤醒：长连接握手热激活，预检锁定红包资产，微秒自旋压枪...", sync_db=True, status="running")
                 try:
@@ -990,13 +989,13 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             if diff <= early_sec:
                 adv_log = "【超前抢单提前30分钟】" if use_advance else ""
                 logger.info(f"任务 #{aid} 抢单时刻到达 (提前量 {early_sec}s, {adv_log})，发起突发毫秒抢单！")
-                t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                t_now = time_service.format_now_ms()
                 if linked_log_id > 0:
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 预定开抢时刻到达 (提前量 {early_sec*1000:.0f}ms, {adv_log})，全速发射抢单报文！", sync_db=True, status="running")
                 grab_ok = False
                 last_msg = "抢单未生效"
                 for try_idx in range(1, 4):
-                    ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    ts_fmt = time_service.format_now_ms()
                     res = await execute_grab_for_appointment(apt, account, advance=use_advance, action_source="store_appoint")
                     if res.get("ok"):
                         logger.info(f"[{ts_fmt}] 任务 #{aid} 第{try_idx}次抢单成功！")
@@ -1018,7 +1017,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                         })
                         logger.info(f"任务 #{aid} 首轮抢单未成功，已自动转入持续监听捡漏至 {until_str}")
                         if linked_log_id > 0:
-                            t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            t_now = time_service.format_now_ms()
                             _append_apt_log(aid, linked_log_id, f"[{t_now}] 首轮抢单未锁定 ({last_msg})，已自适应无缝转入实时名额监听捡漏模式（截止 {until_str}）...", sync_db=True, status="running")
                     else:
                         db.update_appointment(aid, {
@@ -1026,7 +1025,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                             "outcome": f"抢单失败: {last_msg}"
                         })
                         if linked_log_id > 0:
-                            t_now = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            t_now = time_service.format_now_ms()
                             _append_apt_log(aid, linked_log_id, f"[{t_now}] 抢单流程结束: {last_msg}", sync_db=True, status="error")
 
     return has_primed, has_near_minute

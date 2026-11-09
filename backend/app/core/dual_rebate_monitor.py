@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 
 from ..models import database as db
 from .notifier import send_system_notification, is_any_notify_channel_enabled
+from . import time_service
 from .notification import NotificationEvent, NotificationLevel
 
 logger = logging.getLogger("xiaocan.dual_rebate_monitor")
@@ -95,8 +96,8 @@ async def run_dual_rebate_monitor(
     notify_on_initial = bool(params.get("notify_on_initial", True))
 
     log_lines = []
-    now_str = time.strftime("%H:%M:%S")
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    now_str = time_service.format_now()
+    today_str = time_service.format_now("%Y-%m-%d")
 
     log_lines.append(f"[{now_str}] 启动美团同店双返利巡检: 触发方式={trigger_type}, 范围={max_stores}家, 关键词='{keyword}'")
 
@@ -130,13 +131,13 @@ async def run_dual_rebate_monitor(
     from .scheduler import get_running_high_priority_tasks, wait_for_any_high_priority_finish
     high_tasks = get_running_high_priority_tasks(account_key, min_priority=40)
     if high_tasks:
-        t_w_start = time.time()
-        log_lines.append(f"[{time.strftime('%H:%M:%S')}] [动态协同] 检测到当前账号正在执行高优任务 ({', '.join(high_tasks)})，动态监听其完成...")
+        t_w_start = time_service.now_ts()
+        log_lines.append(f"[{time_service.format_now()}] [动态协同] 检测到当前账号正在执行高优任务 ({', '.join(high_tasks)})，动态监听其完成...")
         await wait_for_any_high_priority_finish(account_key, min_priority=40, timeout=45.0)
-        waited_s = time.time() - t_w_start
+        waited_s = time_service.now_ts() - t_w_start
         micro_jitter = random.uniform(0.4, 0.8)
         await asyncio.sleep(micro_jitter)
-        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 高优任务已执行完毕 (动态等待 {waited_s:.1f} 秒)，微缓冲 {micro_jitter:.1f} 秒后立即启动双返利扫描...")
+        log_lines.append(f"[{time_service.format_now()}] 高优任务已执行完毕 (动态等待 {waited_s:.1f} 秒)，微缓冲 {micro_jitter:.1f} 秒后立即启动双返利扫描...")
 
     # 3. 动态调用美团双返利流式扫描
     from ..api.endpoints import scan_dual_rebate_stores, _get_store_branch_key
@@ -165,7 +166,7 @@ async def run_dual_rebate_monitor(
     stores.sort(key=lambda x: (x.get("distance", 0) if x.get("distance", 0) > 0 else 9999999))
     scanned_count = scan_res.get("total_scanned_stores", 0)
     dual_count = len(stores)
-    log_lines.append(f"[{time.strftime('%H:%M:%S')}] 扫描完成: 遍历商户={scanned_count}家, 检出同店双返利商户={dual_count}家")
+    log_lines.append(f"[{time_service.format_now()}] 扫描完成: 遍历商户={scanned_count}家, 检出同店双返利商户={dual_count}家")
 
     # 构建当前商户映射集 (key: 同店分店唯一标识)
     current_map: Dict[str, Dict[str, Any]] = {}
@@ -198,10 +199,10 @@ async def run_dual_rebate_monitor(
 
     if is_new_day:
         # 跨天重置或初次运行：重置基准快照
-        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 检测到跨天或首次运行，已自动重置每日基准快照 (日期: {today_str})")
+        log_lines.append(f"[{time_service.format_now()}] 检测到跨天或首次运行，已自动重置每日基准快照 (日期: {today_str})")
         new_snapshot = {
             "date": today_str,
-            "timestamp": int(time.time()),
+            "timestamp": time_service.now_int(),
             "stores": current_map
         }
         _save_account_snapshot(account_key, new_snapshot)
@@ -233,11 +234,11 @@ async def run_dual_rebate_monitor(
                         event=NotificationEvent.APPOINT_EVENT,
                         level=NotificationLevel.INFO
                     )
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] 今日首轮基准清单已通过通知发送 (共 {dual_count} 家)")
+                    log_lines.append(f"[{time_service.format_now()}] 今日首轮基准清单已通过通知发送 (共 {dual_count} 家)")
                 except Exception as ne:
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] 基准清单通知发送异常: {ne}")
+                    log_lines.append(f"[{time_service.format_now()}] 基准清单通知发送异常: {ne}")
             else:
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] 当前扫描范围内暂无同店双返利商户，已建立今日空基准")
+                log_lines.append(f"[{time_service.format_now()}] 当前扫描范围内暂无同店双返利商户，已建立今日空基准")
         return "\n".join(log_lines) + "\n", True
 
     # 同一天内的后续巡检：对比上一轮快照
@@ -258,7 +259,7 @@ async def run_dual_rebate_monitor(
 
     if is_drop_anomaly:
         log_lines.append(
-            f"[{time.strftime('%H:%M:%S')}] 预警：检测到双返利商户数异常突降 ({len(prev_keys)} -> {len(curr_keys)})，"
+            f"[{time_service.format_now()}] 预警：检测到双返利商户数异常突降 ({len(prev_keys)} -> {len(curr_keys)})，"
             f"疑似官方接口暂时性抖动或限流，等待 2 秒后执行补偿复扫..."
         )
         await asyncio.sleep(2.0)
@@ -275,7 +276,7 @@ async def run_dual_rebate_monitor(
             if isinstance(retry_res, dict) and retry_res.get("ok"):
                 retry_stores = retry_res.get("stores") or []
                 if len(retry_stores) > int(len(prev_keys) * 0.5):
-                    log_lines.append(f"[{time.strftime('%H:%M:%S')}] 补偿复扫成功恢复数据，重新检出双返利商户={len(retry_stores)}家！")
+                    log_lines.append(f"[{time_service.format_now()}] 补偿复扫成功恢复数据，重新检出双返利商户={len(retry_stores)}家！")
                     stores = retry_stores
                     dual_count = len(stores)
                     current_map = {}
@@ -303,7 +304,7 @@ async def run_dual_rebate_monitor(
                     curr_keys = set(current_map.keys())
                     is_drop_anomaly = False
         except Exception as re_err:
-            log_lines.append(f"[{time.strftime('%H:%M:%S')}] 补偿复扫异常: {re_err}")
+            log_lines.append(f"[{time_service.format_now()}] 补偿复扫异常: {re_err}")
 
     # 2. 异常突降熔断机制 (Spike Circuit Breaker)：
     # 若重试后仍处于严重突降状态且上一轮存量较多：
@@ -313,15 +314,15 @@ async def run_dual_rebate_monitor(
         consecutive_drop += 1
         if consecutive_drop < 2:
             log_lines.append(
-                f"[{time.strftime('%H:%M:%S')}] [防抖熔断] 补偿复扫后商户数仍处于异常突降状态 ({len(prev_keys)} -> {len(curr_keys)})。"
+                f"[{time_service.format_now()}] [防抖熔断] 补偿复扫后商户数仍处于异常突降状态 ({len(prev_keys)} -> {len(curr_keys)})。"
                 f"触发接口异常保护，拦截虚假批量下架广播，保留上轮 {len(prev_keys)} 家商户基准待下轮核验 (连续异常: {consecutive_drop}/2)"
             )
             prev_snapshot["consecutive_drop"] = consecutive_drop
-            prev_snapshot["timestamp"] = int(time.time())
+            prev_snapshot["timestamp"] = time_service.now_int()
             _save_account_snapshot(account_key, prev_snapshot)
             return "\n".join(log_lines) + "\n", True
         else:
-            log_lines.append(f"[{time.strftime('%H:%M:%S')}] [连续确认] 连续 2 轮扫描商户均异常偏低，确认确实发生批量下架，执行真实状态更新")
+            log_lines.append(f"[{time_service.format_now()}] [连续确认] 连续 2 轮扫描商户均异常偏低，确认确实发生批量下架，执行真实状态更新")
 
     # 3. 差量分析与下架二次核验
     pending_missing = dict(prev_snapshot.get("pending_missing") or {})
@@ -346,14 +347,14 @@ async def run_dual_rebate_monitor(
                 if k in pending_missing:
                     del pending_missing[k]
                 sname = prev_map.get(k, {}).get("name", k)
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] [下架确认] 商户【{sname}】连续 2 轮巡检均未检出，确认为正式下架")
+                log_lines.append(f"[{time_service.format_now()}] [下架确认] 商户【{sname}】连续 2 轮巡检均未检出，确认为正式下架")
             else:
                 # 首次缺失，放入缓冲列表，本轮仍保留在 current_map 中防止下轮被当成新增
                 pending_missing[k] = miss_cnt
                 if k in prev_map:
                     current_map[k] = prev_map[k]
                 sname = prev_map.get(k, {}).get("name", k)
-                log_lines.append(f"[{time.strftime('%H:%M:%S')}] [防抖暂缓] 商户【{sname}】本轮未检出，进入待核验状态 (1/2)，暂不发送下架提醒")
+                log_lines.append(f"[{time_service.format_now()}] [防抖暂缓] 商户【{sname}】本轮未检出，进入待核验状态 (1/2)，暂不发送下架提醒")
     else:
         confirmed_removed = raw_removed
 
@@ -361,14 +362,14 @@ async def run_dual_rebate_monitor(
     removed_keys = confirmed_removed
 
     log_lines.append(
-        f"[{time.strftime('%H:%M:%S')}] 差量比对结果: 上轮={len(prev_keys)}家, 当前={len(current_map)}家, "
+        f"[{time_service.format_now()}] 差量比对结果: 上轮={len(prev_keys)}家, 当前={len(current_map)}家, "
         f"新增={len(added_keys)}家, 确认下架={len(removed_keys)}家 (待核验缓冲={len(pending_missing)}家)"
     )
 
     # 更新快照
     new_snapshot = {
         "date": today_str,
-        "timestamp": int(time.time()),
+        "timestamp": time_service.now_int(),
         "stores": current_map,
         "pending_missing": pending_missing,
         "consecutive_drop": 0
@@ -376,11 +377,11 @@ async def run_dual_rebate_monitor(
     _save_account_snapshot(account_key, new_snapshot)
 
     if not added_keys and not removed_keys:
-        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 巡检完成: 未发现新增或确认下架商户，保持静默不重复推送")
+        log_lines.append(f"[{time_service.format_now()}] 巡检完成: 未发现新增或确认下架商户，保持静默不重复推送")
         return "\n".join(log_lines) + "\n", True
 
     # 发现变动，组装并推送通知（专为微信/QQ移动端竖屏阅读深度优化）
-    time_short = time.strftime("%H:%M:%S")
+    time_short = time_service.format_now()
     summary_parts = []
     if added_keys:
         summary_parts.append(f"+{len(added_keys)} 新增")
@@ -435,8 +436,8 @@ async def run_dual_rebate_monitor(
             event=NotificationEvent.APPOINT_EVENT,
             level=NotificationLevel.INFO
         )
-        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 变动通知已成功发送 ({change_summary})")
+        log_lines.append(f"[{time_service.format_now()}] 变动通知已成功发送 ({change_summary})")
     except Exception as ne:
-        log_lines.append(f"[{time.strftime('%H:%M:%S')}] 变动通知发送异常: {ne}")
+        log_lines.append(f"[{time_service.format_now()}] 变动通知发送异常: {ne}")
 
     return "\n".join(log_lines) + "\n", True

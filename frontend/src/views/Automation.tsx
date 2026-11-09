@@ -33,6 +33,7 @@ import {
 } from '@douyinfe/semi-icons';
 import { useAppStore } from '../store/useAppStore';
 import { api } from '../api';
+import { getNtpDate } from '../utils/ntpTime';
 import { useGSAP, animateStaggerEnter } from '../utils/animations';
 import { useOnActivated } from '../utils/useOnActivated';
 import { LogDetailModal } from '../components/LogDetailModal';
@@ -1700,7 +1701,7 @@ export const Automation: React.FC = () => {
         customTitle={execTitle}
         customTaskId={runningTaskId || undefined}
         customAccountKey={currentAccountKey}
-        customCreatedAt={new Date().toLocaleTimeString()}
+        customCreatedAt={getNtpDate().toLocaleTimeString()}
         customStatus={execTitle.includes('成功') ? 'success' : 'error'}
         customOutput={execOutput}
       />

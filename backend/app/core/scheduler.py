@@ -23,7 +23,53 @@ from .notification import NotificationEvent, NotificationLevel
 
 logger = logging.getLogger("xiaocan.scheduler")
 
-scheduler = AsyncIOScheduler()
+class NtpCronTrigger(CronTrigger):
+    """基于阿里云 NTP 标准北京时间的 CronTrigger
+    自动补偿宿主机本地时钟与标准北京时间 (UTC+8) 的偏差，确保所有定时与秒杀任务
+    严格按照阿里云 NTP 授时时刻准点唤醒，不受宿主机快表/慢表或时区偏移影响。
+    """
+
+    def __init__(self, *args, **kwargs):
+        if "timezone" not in kwargs:
+            kwargs["timezone"] = time_service._BJ_TZ
+        self._last_offset = timedelta(seconds=time_service.get_ntp_offset())
+        super().__init__(*args, **kwargs)
+
+    def get_next_fire_time(self, previous_fire_time, now):
+        offset_delta = timedelta(seconds=time_service.get_ntp_offset())
+        if previous_fire_time is not None:
+            prev_offset = getattr(self, "_last_offset", offset_delta)
+            ntp_prev = (previous_fire_time + prev_offset).astimezone(self.timezone)
+            ntp_now = max(
+                ntp_prev + timedelta(seconds=1),
+                (now + offset_delta).astimezone(self.timezone)
+            )
+        else:
+            ntp_prev = None
+            ntp_now = (now + offset_delta).astimezone(self.timezone)
+
+        self._last_offset = offset_delta
+        ntp_next = super().get_next_fire_time(ntp_prev, ntp_now)
+        if ntp_next is None:
+            return None
+        return (ntp_next - offset_delta).astimezone(now.tzinfo)
+
+
+def format_job_next_run_time(job) -> Optional[str]:
+    """将 APScheduler 任务的 next_run_time 还原为阿里云 NTP 标准北京时间字符串"""
+    if not job or not getattr(job, "next_run_time", None):
+        return None
+    trig = getattr(job, "trigger", None)
+    offset_delta = getattr(trig, "_last_offset", None)
+    if offset_delta is None and hasattr(trig, "triggers") and trig.triggers:
+        offset_delta = getattr(trig.triggers[0], "_last_offset", None)
+    if offset_delta is None:
+        offset_delta = timedelta(seconds=time_service.get_ntp_offset())
+    ntp_dt = (job.next_run_time + offset_delta).astimezone(time_service._BJ_TZ)
+    return ntp_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+scheduler = AsyncIOScheduler(timezone=time_service._BJ_TZ)
 client = XiaoCanClient()
 
 
@@ -140,8 +186,8 @@ def get_running_high_priority_tasks(account_key: str, min_priority: int = 60) ->
 
 async def wait_for_any_high_priority_finish(account_key: str, min_priority: int = 60, timeout: float = 40.0):
     """动态等待当前账号的高优任务完成，一旦没有高优任务在跑立即放行"""
-    start_t = time.time()
-    while time.time() - start_t < timeout:
+    start_t = time_service.now_ts()
+    while time_service.now_ts() - start_t < timeout:
         high_tasks = get_running_high_priority_tasks(account_key, min_priority)
         if not high_tasks:
             break
@@ -150,7 +196,7 @@ async def wait_for_any_high_priority_finish(account_key: str, min_priority: int 
         evt = _task_completion_events.get(key)
         if evt and not evt.is_set():
             try:
-                await asyncio.wait_for(evt.wait(), timeout=min(3.0, max(0.1, timeout - (time.time() - start_t))))
+                await asyncio.wait_for(evt.wait(), timeout=min(3.0, max(0.1, timeout - (time_service.now_ts() - start_t))))
             except asyncio.TimeoutError:
                 pass
         else:
@@ -191,9 +237,9 @@ async def prepare_warmup_and_wait(
     # 接入阿里云 NTP 授时校准，避免宿主机时钟偏差导致提前/延后抢单
     await time_service.async_sync_ntp(force=True)
     ntp_now = time_service.now_ts()
-    ntp_dt = datetime.fromtimestamp(ntp_now)
+    ntp_dt = time_service.now_dt()
 
-    target_dt = ntp_dt.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    target_dt = ntp_dt.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0, tzinfo=time_service._BJ_TZ)
     target_ts = target_dt.timestamp()
 
     # 若目标时间比当前早超过 5 秒（例如跨过零点），顺延至次日
@@ -242,7 +288,7 @@ async def prepare_warmup_and_wait(
 
 async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "cron") -> Dict[str, Any]:
     """统一任务执行入口 (对齐牛马助手与小蚕助手官方标准流水线)"""
-    job_id = f"job_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    job_id = f"job_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     account = db.get_account_by_key(account_key)
     if not account:
         logger.warning(f"账号不存在: {account_key}")
@@ -284,7 +330,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
     }
     task_label = task_names.get(task_id, task_id)
     trig_label = "定时调度" if trigger_type == "cron" else ("手动执行" if trigger_type == "manual" else trigger_type)
-    log_output = f"[{time.strftime('%H:%M:%S')}] 开始执行【{task_label}】(账号: {nickname}, 方式: {trig_label})\n"
+    log_output = f"[{time_service.format_now()}] 开始执行【{task_label}】(账号: {nickname}, 方式: {trig_label})\n"
     status = "running"
     log_id = 0
     try:
@@ -303,15 +349,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
     # 1. 红包雨独占期保护：若当前账号正在进行整点红包雨互动 (长达约30秒)，低优日常与后台监控任务动态监听红包雨完成事件
     if task_id != "redpack_rain" and TASK_PRIORITY.get(task_id, 0) < 60:
         if is_task_running(account_key, "redpack_rain"):
-            t_w_rain = time.time()
-            log_output += f"[{time.strftime('%H:%M:%S')}] [动态协同] 检测到当前账号正在进行整点红包雨，动态监听红包雨结算完成...\n"
+            t_w_rain = time_service.now_ts()
+            log_output += f"[{time_service.format_now()}] [动态协同] 检测到当前账号正在进行整点红包雨，动态监听红包雨结算完成...\n"
             if log_id > 0:
                 db.update_job_log(log_id, status="running", output=log_output)
             await wait_for_task_finish(account_key, "redpack_rain", timeout=45.0)
-            waited_s = time.time() - t_w_rain
+            waited_s = time_service.now_ts() - t_w_rain
             micro_wait = random.uniform(0.3, 0.6)
             await asyncio.sleep(micro_wait)
-            log_output += f"[{time.strftime('%H:%M:%S')}] 红包雨互动已结束 (动态等待 {waited_s:.1f} 秒)，微缓冲 {micro_wait:.1f} 秒后立即启动【{task_label}】...\n"
+            log_output += f"[{time_service.format_now()}] 红包雨互动已结束 (动态等待 {waited_s:.1f} 秒)，微缓冲 {micro_wait:.1f} 秒后立即启动【{task_label}】...\n"
 
     # 2. 日常任务 (priority <= 35) 同账号串行执行锁，杜绝同账号在同一秒并发冲撞
     routine_lock = None
@@ -333,47 +379,47 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 days = sign_res.get("days", 0)
                 is_signed = sign_res.get("is_today_signed", False)
                 sign_desc = "今日已签到" if is_signed else "待签到"
-                log_output += f"[{time.strftime('%H:%M:%S')}] 会员签到打卡: 已连续打卡 {days} 天 ({sign_desc})\n"
+                log_output += f"[{time_service.format_now()}] 会员签到打卡: 已连续打卡 {days} 天 ({sign_desc})\n"
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 会员签到打卡: {e.msg} (提示码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 会员签到打卡: {e.msg} (提示码: {e.code})\n"
 
             # 2. 会员专属每日签到抽奖 (SilkwormVip.VipRightsService.SignInLottery)
             try:
                 vip_lottery_res = await client.sign_in_lottery(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 lottery_msg = vip_lottery_res.get("status", {}).get("msg", "打卡成功")
-                log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {lottery_msg}\n"
+                log_output += f"[{time_service.format_now()}] VIP专属每日签到抽奖: {lottery_msg}\n"
             except XiaoCanRPCError as le:
-                log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {le.msg} (代码: {le.code})\n"
+                log_output += f"[{time_service.format_now()}] VIP专属每日签到抽奖: {le.msg} (代码: {le.code})\n"
             except Exception as le:
-                log_output += f"[{time.strftime('%H:%M:%S')}] VIP专属每日签到抽奖: {le}\n"
+                log_output += f"[{time_service.format_now()}] VIP专属每日签到抽奖: {le}\n"
 
             # 3. 会员签到里程碑节点奖励状态 (SilkwormVip.VipRightsService.SignInNode)
             try:
                 node_res = await client.get_sign_in_node(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 nodes = node_res.get("nodes") or []
-                log_output += f"[{time.strftime('%H:%M:%S')}] 签到里程碑: 已核验 {len(nodes)} 个阶段权益节点\n"
+                log_output += f"[{time_service.format_now()}] 签到里程碑: 已核验 {len(nodes)} 个阶段权益节点\n"
             except Exception:
                 pass
 
             # 4. 会员升级/每日专属成长礼包激活
             try:
                 await client.get_vip_up_gift(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 会员成长礼包: 权益已核销更新\n"
+                log_output += f"[{time_service.format_now()}] 会员成长礼包: 权益已核销更新\n"
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 会员成长礼包: {e.msg} (提示码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 会员成长礼包: {e.msg} (提示码: {e.code})\n"
 
             # 5. 会员专属权益卡券清单核对
             try:
                 gifts_res = await client.list_vip_gifts(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 gift_count = len(gifts_res.get("list") or [])
-                log_output += f"[{time.strftime('%H:%M:%S')}] 会员特权档位: 已校验 {gift_count} 项特权卡券配置\n"
+                log_output += f"[{time_service.format_now()}] 会员特权档位: 已校验 {gift_count} 项特权卡券配置\n"
             except Exception:
                 pass
 
             # 6. 会员每日成长任务
             try:
                 await client.get_vip_task(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 会员成长任务: 状态正常\n"
+                log_output += f"[{time_service.format_now()}] 会员成长任务: 状态正常\n"
             except Exception:
                 pass
 
@@ -386,9 +432,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 linfo = info_res.get("lottery_info") or {}
                 lucky_times = int(linfo.get("lucky_times", 0))
                 day_num = int(linfo.get("day_num", 0))
-                log_output += f"[{time.strftime('%H:%M:%S')}] 免费开红包状态: 每日额度/可用次数 {day_num} 次，待抽奖次数: {lucky_times}\n"
+                log_output += f"[{time_service.format_now()}] 免费开红包状态: 每日额度/可用次数 {day_num} 次，待抽奖次数: {lucky_times}\n"
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 获取开红包状态: {e.msg} (提示码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 获取开红包状态: {e.msg} (提示码: {e.code})\n"
 
             # 2. 并发微错峰领取全量免费机会 (毫秒级错峰防频控，极速秒级并发)
             lottery_types = [
@@ -410,11 +456,11 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     await asyncio.sleep(delay)
                 try:
                     await client.add_lottery_times(lottery_type=t_type, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                    return f"[{time.strftime('%H:%M:%S')}] 免费机会 [{t_label}]: 领取成功\n"
+                    return f"[{time_service.format_now()}] 免费机会 [{t_label}]: 领取成功\n"
                 except XiaoCanRPCError as e:
                     if e.code in (40002, 40003, 40004, 40037, 40038, 40039, 40040) or "已" in e.msg:
                         return ""
-                    return f"[{time.strftime('%H:%M:%S')}] 免费机会 [{t_label}]: {e.msg} (状态码: {e.code})\n"
+                    return f"[{time_service.format_now()}] 免费机会 [{t_label}]: {e.msg} (状态码: {e.code})\n"
                 except Exception:
                     return ""
 
@@ -424,7 +470,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 try:
                     ad_res = await client.claim_ad_lottery_chance(bus_type=b_type, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                     if ad_res:
-                        return f"[{time.strftime('%H:%M:%S')}] 额外机会 [{b_label}]: 领取成功\n"
+                        return f"[{time_service.format_now()}] 额外机会 [{b_label}]: 领取成功\n"
                 except Exception:
                     pass
                 return ""
@@ -460,7 +506,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 s_linfo = sync_res.get("lottery_info") or {}
                 lucky_times = int(s_linfo.get("lucky_times", 0))
                 day_num = int(s_linfo.get("day_num", 0))
-                log_output += f"[{time.strftime('%H:%M:%S')}] 机会汇总: 官方每日额度/剩余次数 {day_num} 次，当前可用抽奖次数: {lucky_times}\n"
+                log_output += f"[{time_service.format_now()}] 机会汇总: 官方每日额度/剩余次数 {day_num} 次，当前可用抽奖次数: {lucky_times}\n"
             except Exception:
                 pass
 
@@ -499,15 +545,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                             elif p_amt:
                                 prize_desc = f"{p_amt} 红包"
                         gap_desc = f" (间隔 {round(sleep_t, 2)}s)" if spin_i > 0 else ""
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 第 {opened_count}/{effective_draw_times} 次开红包成功: {prize_desc}{gap_desc}\n"
+                        log_output += f"[{time_service.format_now()}] 第 {opened_count}/{effective_draw_times} 次开红包成功: {prize_desc}{gap_desc}\n"
                     except XiaoCanRPCError as e:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 开启红包中断: {e.msg} (状态码: {e.code})\n"
+                        log_output += f"[{time_service.format_now()}] 开启红包中断: {e.msg} (状态码: {e.code})\n"
                         break
                     except Exception as e:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 开启红包异常: {e}\n"
+                        log_output += f"[{time_service.format_now()}] 开启红包异常: {e}\n"
                         break
             else:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 当前暂无待开启的红包次数 (今日免费次数均已消耗完毕)\n"
+                log_output += f"[{time_service.format_now()}] 当前暂无待开启的红包次数 (今日免费次数均已消耗完毕)\n"
 
             # 5. 阶梯累计抽奖进度展示与即时自动领取
             try:
@@ -525,9 +571,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         claim_res1 = await client.receive_extra_lottery(step=1, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                         has_got1 = True
                         p1_name = (claim_res1.get("prize") or {}).get("name") or "饭票奖励"
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段一阶梯奖励自动领取成功: {p1_name}\n"
+                        log_output += f"[{time_service.format_now()}] 阶段一阶梯奖励自动领取成功: {p1_name}\n"
                     except Exception as e:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段一阶梯奖励领取异常: {e}\n"
+                        log_output += f"[{time_service.format_now()}] 阶段一阶梯奖励领取异常: {e}\n"
 
                 # 自动领取第二阶段奖励 (9次满额未领)
                 if lottery_cnt >= step2_cnt and not has_got2:
@@ -536,15 +582,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         claim_res2 = await client.receive_extra_lottery(step=2, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                         has_got2 = True
                         p2_name = (claim_res2.get("prize") or {}).get("name") or "现金红包奖励"
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段二阶梯奖励自动领取成功: {p2_name}\n"
+                        log_output += f"[{time_service.format_now()}] 阶段二阶梯奖励自动领取成功: {p2_name}\n"
                     except Exception as e:
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 阶段二阶梯奖励领取异常: {e}\n"
+                        log_output += f"[{time_service.format_now()}] 阶段二阶梯奖励领取异常: {e}\n"
 
                 step1_tag = "[已达成/已领取]" if has_got1 else f"[进行中 {lottery_cnt}/{step1_cnt}]"
                 step2_tag = "[已达成/已领取]" if has_got2 else f"[进行中 {lottery_cnt}/{step2_cnt}]"
-                log_output += f"[{time.strftime('%H:%M:%S')}] 阶梯累计进度: 今日累计完成 {lottery_cnt} 次开红包\n"
-                log_output += f"[{time.strftime('%H:%M:%S')}]   - 第一阶段({step1_cnt}次): {step1_tag}\n"
-                log_output += f"[{time.strftime('%H:%M:%S')}]   - 第二阶段({step2_cnt}次): {step2_tag}\n"
+                log_output += f"[{time_service.format_now()}] 阶梯累计进度: 今日累计完成 {lottery_cnt} 次开红包\n"
+                log_output += f"[{time_service.format_now()}]   - 第一阶段({step1_cnt}次): {step1_tag}\n"
+                log_output += f"[{time_service.format_now()}]   - 第二阶段({step2_cnt}次): {step2_tag}\n"
             except Exception:
                 pass
 
@@ -558,7 +604,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             acc_idx = acc_keys.index(account_key) if account_key in acc_keys else 0
             if trigger_type == "cron" and acc_idx > 0:
                 stagger_delay = (acc_idx * 3.0) + random.uniform(0.5, 2.0)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 多账号智能错峰延时 {stagger_delay:.1f} 秒避让网络并发...\n"
+                log_output += f"[{time_service.format_now()}] 多账号智能错峰延时 {stagger_delay:.1f} 秒避让网络并发...\n"
                 await asyncio.sleep(stagger_delay)
 
             # 读取红包雨自定义参数 (拟真点击数、随机抖动，下落等待时长由官方逻辑自动接管)
@@ -567,32 +613,32 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             jitter = int(params.get("jitter") if params.get("jitter") is not None else 3)
             jitter = max(0, min(8, jitter))
 
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索当前进行中的红包雨活动场次 (第5分钟错峰)...\n"
+            log_output += f"[{time_service.format_now()}] 正在检索当前进行中的红包雨活动场次 (第5分钟错峰)...\n"
             try:
                 rain_res = await client.get_redpack_rain_event(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 event_info = rain_res.get("event") or {}
                 has_event = rain_res.get("has_event", False)
                 if not has_event or not event_info:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 当前暂无生效中的红包雨活动场次 (每日六场: 10/11/12/14/16/19点，每场持续30分钟)\n"
+                    log_output += f"[{time_service.format_now()}] 当前暂无生效中的红包雨活动场次 (每日六场: 10/11/12/14/16/19点，每场持续30分钟)\n"
                 else:
                     event_id = event_info.get("event_id")
                     begin_ts = event_info.get("begin_time", 0)
                     end_ts = event_info.get("end_time", 0)
                     evt_status = event_info.get("status", 0)
-                    begin_str = time.strftime('%H:%M:%S', time.localtime(begin_ts)) if begin_ts else "待定"
-                    end_str = time.strftime('%H:%M:%S', time.localtime(end_ts)) if end_ts else "待定"
+                    begin_str = time_service.format_ts(begin_ts, '%H:%M:%S') if begin_ts else "待定"
+                    end_str = time_service.format_ts(end_ts, '%H:%M:%S') if end_ts else "待定"
                     now_ts = int(time_service.now_ts())
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 成功锁定红包雨场次 #{event_id}: 营业时间 {begin_str} - {end_str} (状态: {evt_status})\n"
+                    log_output += f"[{time_service.format_now()}] 成功锁定红包雨场次 #{event_id}: 营业时间 {begin_str} - {end_str} (状态: {evt_status})\n"
 
                     # 若距开场尚有时间 (例如手动在 xx:00 提前触发测试)，平滑等待至开场时刻
                     if now_ts < begin_ts:
                         wait_start = begin_ts - now_ts
                         if wait_start <= 90:
-                            log_output += f"[{time.strftime('%H:%M:%S')}] 距离开场尚有 {wait_start} 秒，等待场次正式开放...\n"
+                            log_output += f"[{time_service.format_now()}] 距离开场尚有 {wait_start} 秒，等待场次正式开放...\n"
                             await asyncio.sleep(wait_start)
                             now_ts = int(time_service.now_ts())
                         else:
-                            log_output += f"[{time.strftime('%H:%M:%S')}] 提示: 场次 #{event_id} 尚未开始 ({begin_str} 开始，当前时间 {time.strftime('%H:%M:%S')})\n"
+                            log_output += f"[{time_service.format_now()}] 提示: 场次 #{event_id} 尚未开始 ({begin_str} 开始，当前时间 {time_service.format_now()})\n"
 
                     # 1. 接入/报名当前场次 (JoinRedPackRainEvent)
                     # 官方整点红包雨场次跨度 30 分钟。整点时刻 (如 10:00:00) 官方服务端活动状态由 1 (未开始) 切换至 2 (进行中)
@@ -601,7 +647,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     join_ok = False
                     max_join_attempts = 10
                     for try_idx in range(1, max_join_attempts + 1):
-                        ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        ts_fmt = time_service.format_now_ms()
                         try:
                             j_res = await client.join_redpack_rain(token=token, event_id=event_id, silk_id=silk_id, user_id=user_id, city_code=city_code)
                             succ = j_res.get("success", False)
@@ -656,13 +702,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
                     # 2. 拟真红包雨下落交互时长与点击额度结算 (官方真实耗时约 28~32 秒，自动管理无需手动输入)
                     if join_ok:
-                        cur_ts = time.time()
+                        cur_ts = time_service.now_ts()
                         # 官方拟真下落与互动时长：固定 28 ~ 32 秒随机微浮动，严格对齐官方小程序游戏生命周期
                         official_wait_sec = random.uniform(28.0, 32.0)
                         target_end = begin_ts + official_wait_sec if begin_ts > 0 else (cur_ts + official_wait_sec)
                         if cur_ts < target_end:
                             rem_wait = max(4.0, target_end - cur_ts)
-                            log_output += f"[{datetime.now().strftime('%H:%M:%S')}] 场次接入完毕，官方模拟红包下落与交互互动中 (拟真耗时约 {rem_wait:.1f} 秒)...\n"
+                            log_output += f"[{time_service.format_now()}] 场次接入完毕，官方模拟红包下落与交互互动中 (拟真耗时约 {rem_wait:.1f} 秒)...\n"
                             if log_id > 0:
                                 db.update_job_log(log_id, status="running", output=log_output)
                             await asyncio.sleep(rem_wait)
@@ -671,11 +717,11 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
                         # 拟真抓取红包数量 (base ± jitter，严格限制在官方安全交互区间 5~35)
                         actual_clicks = max(5, min(35, random.randint(max(1, base_clicks - jitter), base_clicks + jitter)))
-                        log_output += f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] 互动完成，准备上报结算抓取额度 (点击数: {actual_clicks})...\n"
+                        log_output += f"[{time_service.format_now_ms()}] 互动完成，准备上报结算抓取额度 (点击数: {actual_clicks})...\n"
 
                         grab_ok = False
                         for try_idx in range(1, 4):
-                            ts_fmt = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            ts_fmt = time_service.format_now_ms()
                             try:
                                 g_res = await client.grab_redpack_rain(
                                     token=token,
@@ -734,15 +780,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         packs_res = await client.list_user_redpack(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                         r_list = packs_res.get("items") or packs_res.get("list") or []
                         if r_list:
-                            today_start = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+                            today_start = int(time_service.now_dt().replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=time_service._BJ_TZ).timestamp())
                             today_packs = [it for it in r_list if (it.get("prize", {}).get("lottery_time") or 0) >= today_start]
-                            log_output += f"[{time.strftime('%H:%M:%S')}] 红包账户核验: 今日累计中得 {len(today_packs)} 个红包雨奖励 (历史存留总计 {len(r_list)} 条)\n"
+                            log_output += f"[{time_service.format_now()}] 红包账户核验: 今日累计中得 {len(today_packs)} 个红包雨奖励 (历史存留总计 {len(r_list)} 条)\n"
                     except Exception:
                         pass
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 红包雨接口响应: {e.msg} (代码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 红包雨接口响应: {e.msg} (代码: {e.code})\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 红包雨处理异常: {e}\n"
+                log_output += f"[{time_service.format_now()}] 红包雨处理异常: {e}\n"
             finally:
                 _set_account_redpack_active(account_key, False)
 
@@ -918,7 +964,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
         elif task_id == "yb_task":
             # 轻松赚元宝 (元宝乐园每日任务全流水)
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索元宝乐园每日任务状态...\n"
+            log_output += f"[{time_service.format_now()}] 正在检索元宝乐园每日任务状态...\n"
             
             # 1. 检索官方每日任务真实完成状态 (GetDailyTask)
             task_status_map = {}
@@ -928,37 +974,37 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 for item in task_items:
                     task_status_map[item.get("id")] = item
             except Exception as te:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 每日任务状态检索提示: {te}\n"
+                log_output += f"[{time_service.format_now()}] 每日任务状态检索提示: {te}\n"
 
             # 任务 1: 元宝乐园每日签到 (+200 元宝)
             t1 = task_status_map.get(1)
             if t1:
                 if t1.get("completed") == 1:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日签到]: 今日已完成 (+200 元宝已入账)\n"
+                    log_output += f"[{time_service.format_now()}] 任务 [每日签到]: 今日已完成 (+200 元宝已入账)\n"
                 elif t1.get("completed") == 2:
                     try:
                         await client.do_user_sign(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日签到]: 签到成功！斩获 200 元宝\n"
+                        log_output += f"[{time_service.format_now()}] 任务 [每日签到]: 签到成功！斩获 200 元宝\n"
                     except XiaoCanRPCError as se:
                         if se.code == 10001:
-                            log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日签到]: 今日已完成 (+200 元宝已入账)\n"
+                            log_output += f"[{time_service.format_now()}] 任务 [每日签到]: 今日已完成 (+200 元宝已入账)\n"
                         else:
-                            log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日签到] 响应: {se.msg} (代码: {se.code})\n"
+                            log_output += f"[{time_service.format_now()}] 任务 [每日签到] 响应: {se.msg} (代码: {se.code})\n"
                     except Exception:
                         pass
 
             # 任务 5: 加入官方社群 (+500 元宝)
             t5 = task_status_map.get(5)
             if t5 and t5.get("completed") == 1:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [加入官方社群]: 今日已完成 (+500 元宝已入账)\n"
+                log_output += f"[{time_service.format_now()}] 任务 [加入官方社群]: 今日已完成 (+500 元宝已入账)\n"
 
             # 任务 50 / 51: 每日首单与第2单下单赚元宝
             t50 = task_status_map.get(50)
             if t50 and t50.get("completed") == 1:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日首单赚元宝]: 今日首单奖励已生效入账 (+1000 元宝)\n"
+                log_output += f"[{time_service.format_now()}] 任务 [每日首单赚元宝]: 今日首单奖励已生效入账 (+1000 元宝)\n"
             t51 = task_status_map.get(51)
             if t51 and t51.get("completed") == 1:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 任务 [每日下单第2单赚元宝]: 今日第2单奖励已生效入账 (+3000 元宝)\n"
+                log_output += f"[{time_service.format_now()}] 任务 [每日下单第2单赚元宝]: 今日第2单奖励已生效入账 (+3000 元宝)\n"
 
             # 2. 补充领券与专属社群事件打卡 (饿了么: 3, 美团: 4, 专属社群: 6)
             task_events = [
@@ -970,16 +1016,16 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 try:
                     await asyncio.sleep(random.uniform(0.3, 0.7))
                     await client.complete_task_event(task_type=tid, token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}]: 奖励领取成功\n"
+                    log_output += f"[{time_service.format_now()}] 任务事件 [{tname}]: 奖励领取成功\n"
                 except XiaoCanRPCError as e:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 任务事件 [{tname}] 响应: {e.msg} (代码: {e.code})\n"
+                    log_output += f"[{time_service.format_now()}] 任务事件 [{tname}] 响应: {e.msg} (代码: {e.code})\n"
                 except Exception:
                     pass
 
             # 3. 补充累加每日营销抽奖机会
             try:
                 await client.incr_lottery_number(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
-                log_output += f"[{time.strftime('%H:%M:%S')}] 抽奖机会: 每日抽奖次数已同步累加\n"
+                log_output += f"[{time_service.format_now()}] 抽奖机会: 每日抽奖次数已同步累加\n"
             except Exception:
                 pass
 
@@ -988,7 +1034,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 col_res = await client.collect_points(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 got_pt = col_res.get("point") or col_res.get("points") or 0
                 if got_pt > 0:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 元宝一键聚拢: 成功收取成熟气泡 {got_pt} 元宝\n"
+                    log_output += f"[{time_service.format_now()}] 元宝一键聚拢: 成功收取成熟气泡 {got_pt} 元宝\n"
             except Exception:
                 pass
 
@@ -1000,13 +1046,13 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     "yb_point": latest_yb,
                     "unreceived_points": task_data_obj.get("unreceived_points", 0)
                 })
-                log_output += f"[{time.strftime('%H:%M:%S')}] 资产状态同步: 当前账户元宝余额 {latest_yb}\n"
+                log_output += f"[{time_service.format_now()}] 资产状态同步: 当前账户元宝余额 {latest_yb}\n"
             except Exception:
                 pass
 
         elif task_id == "collect_points":
             # 收取未收元宝 (收取气泡成熟元宝与已达标任务代币，避免过期失效)
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索账户待收取的达标任务与元宝奖励...\n"
+            log_output += f"[{time_service.format_now()}] 正在检索账户待收取的达标任务与元宝奖励...\n"
             try:
                 # 1. 探测未领取元宝明细列表 (GetUnReceivedPointRecords)
                 unrec_res = await client.get_unreceived_point_records(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
@@ -1025,12 +1071,12 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     for item in unrec_items:
                         tname = item.get("task_name") or f"任务#{item.get('task_id')}"
                         tpt = item.get("point") or 0
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 发现待领任务: [{tname}] 待入账 +{tpt} 元宝\n"
+                        log_output += f"[{time_service.format_now()}] 发现待领任务: [{tname}] 待入账 +{tpt} 元宝\n"
                 for pt in pending_tasks:
                     tname = pt.get("title") or f"任务#{pt.get('id')}"
                     tpt = pt.get("point") or 0
                     if not any(item.get("task_id") == pt.get("id") for item in unrec_items):
-                        log_output += f"[{time.strftime('%H:%M:%S')}] 发现达标待领任务: [{tname}] 待入账 +{tpt} 元宝\n"
+                        log_output += f"[{time_service.format_now()}] 发现达标待领任务: [{tname}] 待入账 +{tpt} 元宝\n"
                         total_unreceived += int(tpt)
 
                 # 3. 执行官方一键收取微服务 (ActivityTaskMobileService.CollectPoints)
@@ -1059,15 +1105,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 })
 
                 if claimed_pt > 0:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 收取成功！成功入账 +{claimed_pt} 元宝，当前账户元宝: {latest_yb}\n"
+                    log_output += f"[{time_service.format_now()}] 收取成功！成功入账 +{claimed_pt} 元宝，当前账户元宝: {latest_yb}\n"
                 elif total_unreceived > 0 or unrec_items or pending_tasks:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 收取指令已执行，当前账户最新元宝: {latest_yb}\n"
+                    log_output += f"[{time_service.format_now()}] 收取指令已执行，当前账户最新元宝: {latest_yb}\n"
                 else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 检查完成: 当前账户无待收取的达标任务，最新元宝余额: {latest_yb}\n"
+                    log_output += f"[{time_service.format_now()}] 检查完成: 当前账户无待收取的达标任务，最新元宝余额: {latest_yb}\n"
             except XiaoCanRPCError as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 收取元宝接口响应: {e.msg} (代码: {e.code})\n"
+                log_output += f"[{time_service.format_now()}] 收取元宝接口响应: {e.msg} (代码: {e.code})\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 收取元宝执行异常: {e}\n"
+                log_output += f"[{time_service.format_now()}] 收取元宝执行异常: {e}\n"
 
         elif task_id == "svip_rebate":
             # 抢SVIP专属返利券 (每日 09:00:00 准点秒杀 - 极速直射模式)
@@ -1238,17 +1284,15 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             selected_names = [f"【{p['name']}】({p['round']}场, {'SVIP' if is_plus else 'VIP'}:{p['svip_silk' if is_plus else 'vip_silk']:,}元宝)" for p in selected_product_items]
             log_output += f"[{time_service.format_now()}] 步骤 1/4: 账号核准与选品确认 - 身份: {vip_tag}, 当前可用元宝: {yb_point:,}, 用户已选目标: {', '.join(selected_names) or custom_goods_ids}\n"
 
-            # 2. 场次判定与预热过滤
+            # 2. 场次判定与预热过滤 (严格基于阿里云 NTP 标准北京时间时段区间)
             now_dt = time_service.now_dt()
             if trigger_type == "cron":
-                if now_dt.hour == 8 or now_dt.hour < 9:
+                if now_dt.hour < 12:
                     target_h, target_m = 9, 0
-                elif now_dt.hour == 13 or now_dt.hour < 14:
+                elif now_dt.hour < 16:
                     target_h, target_m = 14, 0
-                elif now_dt.hour == 17 or now_dt.hour < 18:
-                    target_h, target_m = 18, 0
                 else:
-                    target_h, target_m = 14, 0
+                    target_h, target_m = 18, 0
                 target_round_str = f"{target_h:02d}:00"
 
                 # 检查当前场次是否有用户勾选的商品
@@ -1280,10 +1324,10 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     svip_cfg = configs.get("svip_rebate", {})
                     if svip_cfg.get("enabled"):
                         if is_task_running(account_key, "svip_rebate"):
-                            t_w0 = time.time()
+                            t_w0 = time_service.now_ts()
                             log_output += f"[{time_service.format_now()}] [动态协同] 检测到同账号 09:00 SVIP专属返利券正在直射开火，动态监听其完成事件...\n"
                             await wait_for_task_finish(account_key, "svip_rebate", timeout=1.2)
-                            w_ms = int((time.time() - t_w0) * 1000)
+                            w_ms = int((time_service.now_ts() - t_w0) * 1000)
                             micro_j = random.uniform(0.04, 0.08)
                             await asyncio.sleep(micro_j)
                             log_output += f"[{time_service.format_now()}] [动态协同] 返利券已执行完成 (等待 {w_ms}ms)，微缓冲 {int(micro_j*1000)}ms 后元宝秒杀极速开火！\n"
@@ -1291,16 +1335,16 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     free_cfg = configs.get("free_order", {})
                     if free_cfg.get("enabled"):
                         if is_task_running(account_key, "free_order"):
-                            t_w0 = time.time()
+                            t_w0 = time_service.now_ts()
                             log_output += f"[{time_service.format_now()}] [动态协同] 检测到同账号 14:00 每月全额免单券正在直射开火，动态监听其完成事件...\n"
                             await wait_for_task_finish(account_key, "free_order", timeout=1.2)
-                            w_ms = int((time.time() - t_w0) * 1000)
+                            w_ms = int((time_service.now_ts() - t_w0) * 1000)
                             micro_j = random.uniform(0.04, 0.08)
                             await asyncio.sleep(micro_j)
                             log_output += f"[{time_service.format_now()}] [动态协同] 免单券已执行完成 (等待 {w_ms}ms)，微缓冲 {int(micro_j*1000)}ms 后元宝秒杀极速开火！\n" 
             else:
                 # 手动即时触发模式
-                target_h = 9 if now_dt.hour < 12 else (14 if now_dt.hour < 17 else 18)
+                target_h = 9 if now_dt.hour < 12 else (14 if now_dt.hour < 16 else 18)
                 target_round_str = f"{target_h:02d}:00"
                 # 手动模式下：优先选取用户勾选的当前/最近场次商品，若无则取用户勾选的第一个商品
                 current_round_products = [p for p in selected_product_items if p["round"] == target_round_str]
@@ -1381,7 +1425,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     log_output += f"[{time_service.format_now()}] [等级拦截] 自定义商品 ID#{custom_id} 不在当前账号 ({vip_tag}) 的可兑换池中 (SVIP只能抢SVIP，VIP只能抢VIP)，已跳过\n"
                     continue
                 live_item = online_map.get(custom_id) or {}
-                c_name = re.sub(r'[𐀀-􏿿]|[☀-➿]', '', live_item.get("goods_name") or f"商品#{custom_id}").strip()
+                c_name = re.sub(r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]", '', live_item.get("goods_name") or f"商品#{custom_id}").strip()
                 c_silk = live_item.get("community_silk", 0)
                 if c_silk > yb_point:
                     log_output += f"[{time_service.format_now()}] [元宝不足] 账户可用元宝不足以兑换自定义商品【{c_name}】\n"
@@ -1475,7 +1519,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
         elif task_id == "media_vip":
             # 抢每月影音VIP (每日 10:00 / 17:00 / 20:00 三场 - 极速直射模式)
             now_dt = time_service.now_dt()
-            target_h = 10 if now_dt.hour < 10 or (now_dt.hour == 9 and now_dt.minute >= 50) else (17 if now_dt.hour < 17 or (now_dt.hour == 16 and now_dt.minute >= 50) else 20)
+            target_h = 10 if now_dt.hour < 13 else (17 if now_dt.hour < 19 else 20)
             log_output += f"[{time_service.format_now()}] 正在预热检索 {target_h}:00 影音会员周卡专属通道与资格 (官方独立App原生协议 VipRightsService)...\n"
 
             can_grab_media = True
@@ -1486,7 +1530,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 avail = v_info.get("available_count", 0)
                 has_inv = v_info.get("has_inventory", False)
                 next_ts = v_info.get("next_time", 0)
-                next_str = time.strftime('%H:%M', time.localtime(next_ts)) if next_ts else f"{target_h}:00"
+                next_str = time_service.format_ts(next_ts, '%H:%M') if next_ts else f"{target_h}:00"
 
                 # 查询用户历史领取记录，精准判定当月是否已经领满或有可用余量
                 month_claimed_count = 0
@@ -1497,8 +1541,8 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     if items:
                         latest_item = items[0]
                         latest_ts = latest_item.get("timestamp") or 0
-                        latest_claim_desc = time.strftime('%Y-%m-%d %H:%M', time.localtime(latest_ts)) if latest_ts else "无"
-                        month_start_ts = int(datetime(now_dt.year, now_dt.month, 1, 0, 0, 0).timestamp())
+                        latest_claim_desc = time_service.format_ts(latest_ts, '%Y-%m-%d %H:%M') if latest_ts else "无"
+                        month_start_ts = int(datetime(now_dt.year, now_dt.month, 1, 0, 0, 0, tzinfo=time_service._BJ_TZ).timestamp())
                         month_claimed_count = sum(1 for it in items if (it.get("timestamp") or 0) >= month_start_ts)
                 except Exception as ex:
                     logger.debug(f"Query UserTencentVipList error: {ex}")
@@ -1570,24 +1614,23 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
             warn_days = float(params.get("warn_days", 3))
             from .jwt_utils import decode_jwt_payload
             is_valid, payload, _ = decode_jwt_payload(token)
-            now_ts = int(time.time())
+            now_ts = time_service.now_int()
             exp_ts = None
 
             if is_valid and payload and "exp" in payload:
                 exp_ts = int(payload["exp"])
             elif account.get("expires_at"):
                 try:
-                    exp_struct = time.strptime(account["expires_at"], "%Y-%m-%d %H:%M:%S")
-                    exp_ts = int(time.mktime(exp_struct))
+                    exp_ts = int(time_service.parse_ts(account["expires_at"], "%Y-%m-%d %H:%M:%S"))
                 except Exception:
                     pass
 
             if exp_ts:
                 diff_sec = exp_ts - now_ts
                 days_left = diff_sec / 86400.0
-                exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp_ts))
+                exp_str = time_service.format_ts(exp_ts, "%Y-%m-%d %H:%M:%S")
                 if days_left <= 0:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 凭据已过期！已于 {exp_str} 失效，请在电脑微信中重新直连提取\n"
+                    log_output += f"[{time_service.format_now()}] 凭据已过期！已于 {exp_str} 失效，请在电脑微信中重新直连提取\n"
                     await send_system_notification(
                         title="小蚕账号凭据已过期",
                         content=f"账号【{nickname}】登录凭据已过期（失效时间: {exp_str}），请重新在微信小程序直连提取更新！",
@@ -1596,7 +1639,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         level=NotificationLevel.ERROR
                     )
                 elif days_left <= warn_days:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 凭据即将到期预警: 剩余 {days_left:.1f} 天（到期时间: {exp_str}，阈值: {warn_days}天）\n"
+                    log_output += f"[{time_service.format_now()}] 凭据即将到期预警: 剩余 {days_left:.1f} 天（到期时间: {exp_str}，阈值: {warn_days}天）\n"
                     await send_system_notification(
                         title="小蚕凭据即将到期预警",
                         content=f"账号【{nickname}】凭据将在 {days_left:.1f} 天后失效（到期时间: {exp_str}），请提前更新避免掉线！",
@@ -1605,24 +1648,24 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         level=NotificationLevel.WARNING
                     )
                 else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 凭据状态良好: 剩余有效时间 {days_left:.1f} 天（到期时间: {exp_str}）\n"
+                    log_output += f"[{time_service.format_now()}] 凭据状态良好: 剩余有效时间 {days_left:.1f} 天（到期时间: {exp_str}）\n"
             else:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 凭据核验完成: 长期有效或无固定过期标头\n"
+                log_output += f"[{time_service.format_now()}] 凭据核验完成: 长期有效或无固定过期标头\n"
 
         elif task_id == "coupon_remind":
             # 卡券/红包到期提醒
             warn_hours = float(params.get("warn_hours", 24))
-            log_output += f"[{time.strftime('%H:%M:%S')}] 正在检索账户内特权卡券与返利红包...\n"
+            log_output += f"[{time_service.format_now()}] 正在检索账户内特权卡券与返利红包...\n"
             try:
                 cards_res = await client.get_user_card_list(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
                 card_list = cards_res.get("card_list") or cards_res.get("list") or []
                 expiring = []
-                now_ts = int(time.time())
+                now_ts = time_service.now_int()
                 for c in card_list:
                     exp_val = c.get("expire_time") or c.get("end_time") or 0
                     if isinstance(exp_val, str):
                         try:
-                            exp_val = int(time.mktime(time.strptime(exp_val, "%Y-%m-%d %H:%M:%S")))
+                            exp_val = int(time_service.parse_ts(exp_val, "%Y-%m-%d %H:%M:%S"))
                         except Exception:
                             exp_val = 0
                     if exp_val > now_ts and (exp_val - now_ts) <= warn_hours * 3600:
@@ -1631,7 +1674,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
 
                 if expiring:
                     sample = "、".join(expiring[:3])
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 发现 {len(expiring)} 张卡券即将在 {warn_hours} 小时内过期: {sample}\n"
+                    log_output += f"[{time_service.format_now()}] 发现 {len(expiring)} 张卡券即将在 {warn_hours} 小时内过期: {sample}\n"
                     await send_system_notification(
                         title="小蚕特权卡券到期提醒",
                         content=f"账号【{nickname}】有 {len(expiring)} 张卡券即将过期（{sample}），请尽快使用！",
@@ -1640,9 +1683,9 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         level=NotificationLevel.WARNING
                     )
                 else:
-                    log_output += f"[{time.strftime('%H:%M:%S')}] 卡券核验完成: 暂无即将在 {warn_hours} 小时内过期的特权券\n"
+                    log_output += f"[{time_service.format_now()}] 卡券核验完成: 暂无即将在 {warn_hours} 小时内过期的特权券\n"
             except Exception as e:
-                log_output += f"[{time.strftime('%H:%M:%S')}] 卡券核验信息: {e}\n"
+                log_output += f"[{time_service.format_now()}] 卡券核验信息: {e}\n"
 
         elif task_id == "dual_rebate_monitor":
             from .dual_rebate_monitor import run_dual_rebate_monitor
@@ -1673,26 +1716,26 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     status = "error"
             else:
                 # 严密的多账号隔离：若当前账号未关联美团凭证，直接输出提示并安全跳过，严禁越权轮询其他账号
-                log_output += f"[{time.strftime('%H:%M:%S')}] 当前账号【{nickname}】尚未绑定美团官方凭据，已安全跳过本次打卡。\n"
-                log_output += f"[{time.strftime('%H:%M:%S')}] [指引] 如需开启美团神券每日自动领取，请前往【账号管理】页面为该账号绑定美团。\n"
+                log_output += f"[{time_service.format_now()}] 当前账号【{nickname}】尚未绑定美团官方凭据，已安全跳过本次打卡。\n"
+                log_output += f"[{time_service.format_now()}] [指引] 如需开启美团神券每日自动领取，请前往【账号管理】页面为该账号绑定美团。\n"
 
         else:
-            log_output += f"[{time.strftime('%H:%M:%S')}] 【{task_label}】执行完成 (无异常)\n"
+            log_output += f"[{time_service.format_now()}] 【{task_label}】执行完成 (无异常)\n"
 
         status = "success" if status != "error" else "error"
-        log_output += f"[{time.strftime('%H:%M:%S')}] 【{task_label}】处理完毕。"
+        log_output += f"[{time_service.format_now()}] 【{task_label}】处理完毕。"
     except XiaoCanRPCError as e:
         status = "error"
-        log_output += f"[{time.strftime('%H:%M:%S')}] 小蚕接口返回失败: {e.msg} (错误码: {e.code})\n"
+        log_output += f"[{time_service.format_now()}] 小蚕接口返回失败: {e.msg} (错误码: {e.code})\n"
     except asyncio.CancelledError:
         status = "aborted"
-        log_output += f"[{time.strftime('%H:%M:%S')}] 任务被外部中断或执行超时，已安全终止。\n"
+        log_output += f"[{time_service.format_now()}] 任务被外部中断或执行超时，已安全终止。\n"
         if log_id > 0:
             db.update_job_log(log_id, status="aborted", output=log_output)
         raise
     except Exception as e:
         status = "error"
-        log_output += f"[{time.strftime('%H:%M:%S')}] 异常: {str(e)}\n"
+        log_output += f"[{time_service.format_now()}] 异常: {str(e)}\n"
     finally:
         mark_task_finished(account_key, task_id)
         if routine_lock and routine_lock.locked():
@@ -1705,30 +1748,50 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
     return {"ok": status == "success", "job_id": job_id, "output": log_output}
 
 
-def create_fixed_trigger(task_id: str) -> Optional[CronTrigger]:
-    """为每个账号实例独立创建 CronTrigger 对象，避免多账号并发共享单例 Trigger 导致的调度踩踏"""
-    # 全部对齐规范：提前 25 秒自动唤醒，长连接预热与微秒级时钟自旋压枪
+def create_fixed_trigger(task_id: str) -> Optional[NtpCronTrigger]:
+    """为每个账号实例独立创建基于阿里云 NTP 授时的 NtpCronTrigger 对象，避免多账号并发共享单例 Trigger 导致的调度踩踏"""
+    # 全部对齐规范：基于阿里云 NTP 标准北京时间提前 25 秒自动唤醒，长连接预热与微秒级时钟自旋压枪
     if task_id == "redpack_rain":
         # 错峰防风控：调整至整点开场后 5 分钟 (10:05, 11:05, 12:05, 14:05, 16:05, 19:05) 准点参与
         # 此时场次已完全就绪且名额充裕，彻底避开 xx:00:00 的秒杀并发高峰与 WAF 频控检测
-        return CronTrigger(hour="10,11,12,14,16,19", minute=5, second=0)
+        return NtpCronTrigger(hour="10,11,12,14,16,19", minute=5, second=0)
     elif task_id == "brand_flash":
-        return CronTrigger(hour=9, minute=29, second=35)
+        return NtpCronTrigger(hour=9, minute=29, second=35)
     elif task_id == "svip_rebate":
-        return CronTrigger(hour=8, minute=59, second=35)
+        return NtpCronTrigger(hour=8, minute=59, second=35)
     elif task_id == "free_order":
-        return CronTrigger(hour=13, minute=59, second=35)
+        return NtpCronTrigger(hour=13, minute=59, second=35)
     elif task_id == "media_vip":
-        return CronTrigger(hour="9,16,19", minute=59, second=35)
+        return NtpCronTrigger(hour="9,16,19", minute=59, second=35)
     elif task_id == "flash_sale":
         # 官方元宝秒杀每日固定三场 (09:00, 14:00, 18:00)，提前 25 秒自动唤醒与 NTP 校准自旋
-        return CronTrigger(hour="8,13,17", minute=59, second=35)
+        return NtpCronTrigger(hour="8,13,17", minute=59, second=35)
     return None
 
 
+async def _periodic_ntp_sync_job():
+    """后台周期性阿里云 NTP 校准任务：当检测到宿主机时钟漂移变化超过 0.5 秒时自动重算调度触发点"""
+    old_offset = time_service.get_ntp_offset()
+    await time_service.async_sync_ntp(force=True)
+    new_offset = time_service.get_ntp_offset()
+    if abs(new_offset - old_offset) >= 0.5:
+        logger.info(f"[NTP调度校准] 检测到本机时钟漂移变动 ({old_offset:+.3f}s -> {new_offset:+.3f}s)，自动重对齐所有定时任务")
+        reload_schedules()
+
+
 def reload_schedules():
-    """重新加载所有账号的定时调度任务"""
+    """重新加载所有账号的定时调度任务 (全部基于阿里云 NTP 标准时间)"""
+    time_service.sync_aliyun_ntp()
     scheduler.remove_all_jobs()
+    scheduler.add_job(
+        _periodic_ntp_sync_job,
+        trigger=NtpCronTrigger(minute="*/10", second=15),
+        id="_system_ntp_sync",
+        name="阿里云NTP时钟周期校准",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True
+    )
     accounts = db.get_all_accounts()
 
     for acc in accounts:
@@ -1757,28 +1820,28 @@ def reload_schedules():
                     minute_expr = "5,35"
                     if active_only:
                         trigger = OrTrigger([
-                            CronTrigger(hour="9-22", minute=minute_expr),
-                            CronTrigger(hour=23, minute=5)
+                            NtpCronTrigger(hour="9-22", minute=minute_expr),
+                            NtpCronTrigger(hour=23, minute=5)
                         ])
                         hours_desc = "09:00~23:00 每30分钟 (xx:05/xx:35)"
                     else:
-                        trigger = CronTrigger(hour="*", minute=minute_expr)
+                        trigger = NtpCronTrigger(hour="*", minute=minute_expr)
                         hours_desc = "全天24小时 每30分钟 (xx:05/xx:35)"
                 elif interval == 120:
                     minute_expr = 5
                     if active_only:
-                        trigger = CronTrigger(hour="9-23/2", minute=minute_expr)
+                        trigger = NtpCronTrigger(hour="9-23/2", minute=minute_expr)
                         hours_desc = "09:00~23:00 每2小时 (xx:05)"
                     else:
-                        trigger = CronTrigger(hour="*/2", minute=minute_expr)
+                        trigger = NtpCronTrigger(hour="*/2", minute=minute_expr)
                         hours_desc = "全天24小时 每2小时 (xx:05)"
                 else:  # interval == 60 (默认 1 小时)
                     minute_expr = 5
                     if active_only:
-                        trigger = CronTrigger(hour="9-23", minute=minute_expr)
+                        trigger = NtpCronTrigger(hour="9-23", minute=minute_expr)
                         hours_desc = "09:00~23:00 每小时 (xx:05)"
                     else:
-                        trigger = CronTrigger(hour="*", minute=minute_expr)
+                        trigger = NtpCronTrigger(hour="*", minute=minute_expr)
                         hours_desc = "全天24小时 每小时 (xx:05)"
 
                 scheduler.add_job(
@@ -1816,7 +1879,7 @@ def reload_schedules():
                 hour, minute = cron_time.split(":")
                 scheduler.add_job(
                     execute_task_job,
-                    trigger=CronTrigger(hour=int(hour), minute=int(minute)),
+                    trigger=NtpCronTrigger(hour=int(hour), minute=int(minute)),
                     args=[key, task_id, "cron"],
                     id=f"{key}_{task_id}",
                     name=f"{acc.get('nickname')}_{task_id}",
