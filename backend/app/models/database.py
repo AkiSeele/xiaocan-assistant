@@ -774,8 +774,6 @@ def delete_account(key: str) -> bool:
         # 4. 订单历史
         for k in keys_to_clean:
             conn.execute("DELETE FROM orders WHERE account_key = ?", (k,))
-        if user_id:
-            conn.execute("DELETE FROM orders WHERE user_id = ?", (user_id,))
 
         # 5. 抢店预约
         for k in keys_to_clean:
