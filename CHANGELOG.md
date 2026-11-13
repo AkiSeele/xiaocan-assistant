@@ -5,6 +5,30 @@
 
 ---
 
+## [1.0.5] - 2026-11-13
+
+### 协议自愈与风控诊断强化 (Protocol & Anti-WAF)
+- **多 Profile 合规协议档案自适应自愈**：
+  - 抽离 `PROTOCOL_PROFILES` 合规指纹档案池（`android_webview`、`android_chrome131`、`wechat_app_compat`），使 TLS 指纹与 `User-Agent` 成对匹配并保留 App 原生端通道权限，彻底剔除易触发腾讯云 STGW/WAF 规则 403 的 `okhttp/*` 与 `Dalvik/*` 非标 UA。
+  - 常规请求命中 STGW 规则拦截时，自动在并发锁保护下安全切换至下一合规档案做单次自愈重试，并将可用档案持久化至本地 SQLite，同时保持秒杀直射请求零阻塞。
+- **403/WAF 精准根因分类与并发熔断保护**：
+  - 新增 `classify_block_reason()` 诊断分类器，精确区分「STGW 请求特征规则拦截 (`waf_stgw_rule`)」「TCaptcha 人机挑战 (`waf_captcha_challenge`)」「HTTP 429 网关限流 (`rate_limit_429`)」与「源站拒绝 (`origin_forbidden_403`)」，全面移除各模块误导用户的“IP 被封 / 切换热点 / 重启光猫”提示。
+  - 将 WAF 熔断覆盖至常规任务优先级 (`priority < 70`) 并在并发信号量内部增加二次冷却检查，杜绝同批并发请求雪崩补刀；`/api/settings` 新增脱敏只读字段展示当前活跃档案与最近拦截摘要。
+
+### 账号定位体系重构 (Account Location Binding)
+- **账号强绑定真实地理位置**：
+  - 彻底移除前后端与数据库对武汉默认坐标 (`420100` / `114.305393, 30.593099`) 的隐式兜底及游离的本地 `localStorage` 缓存，自动清洗历史默认占位数据。
+  - 在选店、双返扫描、自动化任务开关与抢单预约等全链路强制校验 `has_valid_location()`，未绑定真实坐标时给出明确横幅引导并一键唤起定位绑定弹窗。
+
+### 通知推送与设置体验修复 (Notifications & Settings)
+- **WxPusher 逐条投递状态精确校验**：深入解析接口 `data` 列表中每个 UID 的投递状态码，解决接口外层返回成功但用户未扫码关注对应应用导致静默投递失败的误报问题。
+- **邮件与设置表单修复**：遵循 RFC 5322 规范使用 `formataddr` 格式化 SMTP 邮件 `From` 头部 (`email_notifier.py`)；修正 `qq_bot_enabled` / `clawbot_enabled` 默认回退值与冗余默认填写，并为设置表单开启 `allowEmpty` 补全空值提交，彻底解决清空内容保存后旧值回填的缺陷。
+
+### 工程部署工具 (DevOps & Sync)
+- **Termux 手机端一键增量同步脚本**：新增 `sync-phone.bat` 与 `scripts/sync_phone_termux.ps1`，支持自动执行编译/前端构建门禁、打包增量产物并保留手机端 SQLite 数据库，仅重启核心服务端口 (`:39691`) 并自动核验 `/health`。
+
+---
+
 ## [1.0.4] - 2026-11-09
 
 ### 核心功能与重大修复 (Highlights)
