@@ -28,7 +28,15 @@ from ..core.jwt_utils import extract_token_from_text, decode_jwt_payload, extrac
 from ..core.proxy_sniffer import sniffer
 from ..core.wechat_scanner import scan_wechat_credentials, wechat_listener
 from ..core.tianditu import tianditu_client
-from ..protocol.client import XiaoCanClient, is_waf_blocked, get_waf_cooldown_seconds, register_shangjin_poi_dict
+from ..protocol.client import (
+    XiaoCanClient,
+    format_waf_block_message,
+    get_active_protocol_profile,
+    get_waf_block_detail,
+    get_waf_cooldown_seconds,
+    is_waf_blocked,
+    register_shangjin_poi_dict,
+)
 
 router = APIRouter(prefix="/api")
 client = XiaoCanClient()
@@ -138,6 +146,19 @@ TASK_PARAM_DEFS = {
 }
 
 
+def _location_required_msg(acc: Optional[Dict[str, Any]], fallback_key: str = "") -> str:
+    nick = (acc.get("nickname") if acc else "") or fallback_key or "当前账号"
+    return f"账号【{nick}】尚未绑定有效定位地址，请先绑定地址后再使用"
+
+
+def _require_account_location(acc: Optional[Dict[str, Any]], fallback_key: str = "") -> int:
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if not db.has_valid_location(acc):
+        raise HTTPException(status_code=400, detail=_location_required_msg(acc, fallback_key))
+    return int(acc["city_code"])
+
+
 # ---------------- 1. 账号托管接口 ---------------- #
 
 @router.get("/accounts")
@@ -209,11 +230,34 @@ async def create_or_update_account(data: Dict[str, Any] = Body(...)):
 @router.put("/accounts/{key}")
 @router.post("/accounts/{key}/profile")
 async def update_account_profile_endpoint(key: str, data: Dict[str, Any] = Body(...)):
-    """更新小蚕账号资料 (自定义昵称、Silk ID、城市、会员等级、到期时间等)"""
+    """更新小蚕账号资料 (自定义昵称、Silk ID、绑定定位、会员等级、到期时间等)"""
     acc = db.get_account_by_key(key)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
+
+    loc_keys = ("city_code", "city_name", "longitude", "latitude", "address_name")
+    if any(k in data for k in loc_keys):
+        merged_loc = {
+            "city_code": data.get("city_code", acc.get("city_code")),
+            "city_name": data.get("city_name", acc.get("city_name")),
+            "longitude": data.get("longitude", acc.get("longitude")),
+            "latitude": data.get("latitude", acc.get("latitude")),
+        }
+        is_clearing = (
+            int(data.get("city_code") or 0) == 0
+            and not str(data.get("city_name") or "").strip()
+            and not str(data.get("longitude") or "").strip()
+            and not str(data.get("latitude") or "").strip()
+        )
+        if not is_clearing and not db.has_valid_location(merged_loc):
+            raise HTTPException(status_code=400, detail="定位信息不完整：必须包含有效的城市代码、城市名称与非零经纬度")
+
     updated = db.update_account_profile(key, data)
+    try:
+        from ..core.appointment_worker import invalidate_worker_cache
+        invalidate_worker_cache()
+    except Exception:
+        pass
     return {"ok": True, "account": updated, "message": "账号资料已更新"}
 
 
@@ -309,7 +353,26 @@ async def get_account_detail_endpoint(key: str):
     token = acc.get("token")
     silk_id = acc.get("silk_id")
     user_id = acc.get("user_id")
-    city_code = acc.get("city_code") or 440303
+
+    if not db.has_valid_location(acc):
+        return {
+            "ok": True,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
+            "message": _location_required_msg(acc, key),
+            "account": acc,
+            "user_info": {
+                "nickname": acc.get("nickname"),
+                "avatar": acc.get("avatar"),
+            },
+            "task_info": {},
+            "card_stats": {"can_use_number": 0, "expiring_soon_number": 0},
+            "cards": [],
+            "redpack_stats": {"num": 0},
+            "redpacks": []
+        }
+
+    city_code = int(acc["city_code"])
 
     card_stats = {"can_use_number": 0, "expiring_soon_number": 0}
     cards = []
@@ -422,7 +485,18 @@ async def get_account_cards_endpoint(key: str, status: int = Query(0, descriptio
     token = acc.get("token")
     silk_id = acc.get("silk_id")
     user_id = acc.get("user_id")
-    city_code = acc.get("city_code") or 440303
+
+    if not db.has_valid_location(acc):
+        return {
+            "ok": False,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
+            "message": _location_required_msg(acc, key),
+            "cards": [],
+            "status": status
+        }
+
+    city_code = int(acc["city_code"])
     cards = []
     if token:
         try:
@@ -466,7 +540,7 @@ async def parse_token_endpoint(data: Dict[str, Any] = Body(...)):
     user_id = extract_user_id_from_payload(payload)
     exp = payload.get("exp")
     exp_date = time_service.format_ts(int(exp), "%Y-%m-%d %H:%M:%S") if exp else "长期有效"
-    city_code = extract_city_code_from_text(raw_text) or 420100
+    city_code = extract_city_code_from_text(raw_text) or 0
 
     nickname = ""
     avatar = ""
@@ -585,9 +659,10 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
     unreceived_points = int(cred.get("unreceived_points") or 0)
 
     # 尝试直连小蚕官方获取真实微信昵称、头像和官方会员档案及原生资产 (自动补全真实 Silk ID)
+    init_city_code = int(cred.get("city_code") or 0)
     if token:
         try:
-            info_res = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id)
+            info_res = await client.get_user_info(token=token, silk_id=silk_id, user_id=user_id, city_code=init_city_code)
             uinfo = info_res.get("user_info") or {}
 
             # 关键：从官方用户详情中提取真正的 Silk ID 回填入库
@@ -636,7 +711,7 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
 
         # 同步元宝乐园原生资产
         try:
-            task_res = await client.get_user_task_v2(token=token, silk_id=silk_id, user_id=user_id)
+            task_res = await client.get_user_task_v2(token=token, silk_id=silk_id, user_id=user_id, city_code=init_city_code)
             tdata = task_res.get("data") or {}
             if tdata.get("yb_point") is not None:
                 yb_point = int(tdata["yb_point"])
@@ -668,6 +743,7 @@ async def _enrich_and_save_account(cred: Dict[str, Any]) -> Dict[str, Any]:
         "city_name": cred.get("city_name") or "",
         "longitude": cred.get("longitude") or "",
         "latitude": cred.get("latitude") or "",
+        "address_name": cred.get("address_name") or "",
         "expires_at": expires_at
     }
     saved = db.save_account(acc_payload)
@@ -965,6 +1041,15 @@ async def toggle_task(data: Dict[str, Any] = Body(...)):
     cron_time = data.get("cron_time")
     params = data.get("params")
 
+    acc = db.get_account_by_key(account_key)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if enabled and not db.has_valid_location(acc):
+        raise HTTPException(
+            status_code=400,
+            detail=f"开启【{TASK_META.get(task_id, {}).get('label', task_id)}】前，{_location_required_msg(acc, account_key)}"
+        )
+
     if task_id == "dual_rebate_monitor":
         if isinstance(params, dict) and "interval_minutes" in params:
             try:
@@ -1001,7 +1086,8 @@ async def get_flash_sale_shelf_endpoint(account_key: str = Query(...)):
     user_id = acc.get("user_id")
     is_plus = bool(acc.get("is_plus", 0))
     vip_level = int(acc.get("vip_level", 5) or 5)
-    city_code = int(acc.get("city_code", 440303) or 440303)
+    city_code = int(acc.get("city_code") or 0)
+    location_bound = db.has_valid_location(acc)
 
     OFFICIAL_CATALOG = {
         "redpack_1": {
@@ -1042,20 +1128,21 @@ async def get_flash_sale_shelf_endpoint(account_key: str = Query(...)):
     }
 
     live_map = {}
-    try:
-        fs_res = await client.list_flash_sale_exchanges(
-            token=token,
-            silk_id=silk_id,
-            user_id=user_id,
-            city_code=city_code,
-            new_level=vip_level,
-            is_plus=is_plus
-        )
-        raw_list = fs_res.get("list") or {}
-        live_items = (raw_list.get("svip") if is_plus else raw_list.get("vip")) or []
-        live_map = {it.get("exchange_id"): it for it in live_items if it.get("exchange_id")}
-    except Exception as e:
-        logger.warning(f"获取秒杀实时货架失败 (降级为离线字典): {e}")
+    if location_bound:
+        try:
+            fs_res = await client.list_flash_sale_exchanges(
+                token=token,
+                silk_id=silk_id,
+                user_id=user_id,
+                city_code=city_code,
+                new_level=vip_level,
+                is_plus=is_plus
+            )
+            raw_list = fs_res.get("list") or {}
+            live_items = (raw_list.get("svip") if is_plus else raw_list.get("vip")) or []
+            live_map = {it.get("exchange_id"): it for it in live_items if it.get("exchange_id")}
+        except Exception as e:
+            logger.warning(f"获取秒杀实时货架失败 (降级为离线字典): {e}")
 
     now_dt = time_service.now_dt()
     now_sec = now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
@@ -1149,7 +1236,7 @@ async def exchange_flash_sale_endpoint(data: Dict[str, Any] = Body(...)):
     token = acc.get("token") or ""
     silk_id = acc.get("silk_id")
     user_id = acc.get("user_id")
-    city_code = int(acc.get("city_code", 440303) or 440303)
+    city_code = _require_account_location(acc, account_key)
     yb_point = int(acc.get("yb_point", 0) or 0)
 
     if cost_silk > yb_point:
@@ -1243,6 +1330,8 @@ async def batch_run_daily_tasks(data: Optional[Dict[str, Any]] = Body(None)):
         single = db.get_account_by_key(specified_key)
         if not single or not single.get("is_active", 1):
             raise HTTPException(status_code=404, detail="指定小蚕账号不存在或已停用")
+        if not db.has_valid_location(single):
+            raise HTTPException(status_code=400, detail=_location_required_msg(single, specified_key))
         all_accounts = [single]
     else:
         all_accounts = [a for a in db.get_all_accounts() if a.get("is_active", 1) and a.get("platform") != "meituan"]
@@ -2269,45 +2358,47 @@ async def get_stores(
     silk_id = target_acc.get("silk_id")
     user_id = target_acc.get("user_id")
 
-    if target_acc:
-        if not longitude and target_acc.get("longitude"):
-            longitude = target_acc.get("longitude")
-        if not latitude and target_acc.get("latitude"):
-            latitude = target_acc.get("latitude")
-        if not city_code and target_acc.get("city_code"):
-            city_code = target_acc.get("city_code")
-
-    if not longitude or not latitude:
+    if not db.has_valid_location(target_acc):
         return {
-            "ok": True,
+            "ok": False,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
             "stores": [],
             "total": 0,
             "source": "empty",
             "has_more": False,
-            "message": "请先配置抢单定位以获取周边商户"
+            "message": _location_required_msg(target_acc, account_key or "")
         }
+
+    # 定位信息严格以账号数据库中绑定保存的地址为准
+    longitude = str(target_acc["longitude"]).strip()
+    latitude = str(target_acc["latitude"]).strip()
+    city_code = int(target_acc["city_code"])
 
     try:
         lat = float(latitude)
         lon = float(longitude)
     except Exception:
         return {
-            "ok": True,
+            "ok": False,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
             "stores": [],
             "total": 0,
             "source": "empty",
             "has_more": False,
-            "message": "抢单定位坐标格式无效，请重新设置定位"
+            "message": "账号定位坐标格式无效，请重新绑定地址"
         }
 
-    city_name = ""
-    try:
-        from ..core.tianditu import infer_city_from_coords
-        c_tuple = infer_city_from_coords(lat, lon)
-        if c_tuple and len(c_tuple) >= 2:
-            city_name = c_tuple[1]
-    except Exception:
-        pass
+    city_name = str(target_acc.get("city_name") or "").strip()
+    if not city_name:
+        try:
+            from ..core.tianditu import infer_city_from_coords
+            c_tuple = infer_city_from_coords(lat, lon)
+            if c_tuple and len(c_tuple) >= 2:
+                city_name = c_tuple[1]
+        except Exception:
+            pass
 
     stores = []
     source = "feed"
@@ -3191,7 +3282,8 @@ async def scan_dual_rebate_stores(
             "total_scanned_stores": 0,
             "dual_rebate_count": 0,
             "stores": [],
-            "message": f"当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中（剩余约 {remain_sec} 秒），系统已自动拦截批量扫描以避免延长封锁。如需立即恢复，请切换手机热点或重启光猫更换IP。"
+            "waf_block_detail": get_waf_block_detail(),
+            "message": format_waf_block_message(cooldown=remain_sec),
         }
 
     accounts = db.get_all_accounts()
@@ -3218,23 +3310,22 @@ async def scan_dual_rebate_stores(
     silk_id = target_acc.get("silk_id")
     user_id = target_acc.get("user_id")
 
-    if target_acc:
-        if not longitude and target_acc.get("longitude"):
-            longitude = target_acc.get("longitude")
-        if not latitude and target_acc.get("latitude"):
-            latitude = target_acc.get("latitude")
-        if not city_code and target_acc.get("city_code"):
-            city_code = target_acc.get("city_code")
-
-    if not longitude or not latitude:
+    if not db.has_valid_location(target_acc):
         return {
             "ok": False,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
             "total_scanned_promotions": 0,
             "total_scanned_stores": 0,
             "dual_rebate_count": 0,
             "stores": [],
-            "message": "请先配置抢单定位以获取周边商户"
+            "message": _location_required_msg(target_acc, account_key or "")
         }
+
+    # 定位信息严格以账号数据库中绑定保存的地址为准
+    longitude = str(target_acc["longitude"]).strip()
+    latitude = str(target_acc["latitude"]).strip()
+    city_code = int(target_acc["city_code"])
 
     try:
         lat = float(latitude)
@@ -3749,6 +3840,7 @@ async def grab_store_now(data: Dict[str, Any] = Body(...)):
     account = db.get_account_by_key(account_key)
     if not account or not account.get("token"):
         raise HTTPException(status_code=400, detail="当前账号已退出或凭据失效")
+    _require_account_location(account, account_key)
 
     promotion_id = data.get("promotion_id")
     if not promotion_id:
@@ -3805,6 +3897,7 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
     account = db.get_account_by_key(account_key)
     if not account or not account.get("token"):
         raise HTTPException(status_code=400, detail="账号凭据失效或未登录")
+    city_code = _require_account_location(account, account_key)
 
     job_id = f"job_cancel_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
     nickname = account.get("nickname") or account_key
@@ -3820,7 +3913,7 @@ async def cancel_promotion_order(data: Dict[str, Any] = Body(...)):
             token=account["token"],
             silk_id=account.get("silk_id"),
             user_id=account.get("user_id"),
-            city_code=account.get("city_code") or 440303
+            city_code=city_code
         )
         t_fin = time_service.format_now_ms()
         cancel_steps.append(f"[{t_fin}] 步骤 2/2: 官方响应成功，订单名额已退还，本地及远程锁定解除")
@@ -3857,13 +3950,14 @@ async def get_signup_redpacks(data: Dict[str, Any] = Body(...)):
     account = db.get_account_by_key(account_key)
     if not account or not account.get("token"):
         raise HTTPException(status_code=400, detail="账号未登录")
+    city_code = _require_account_location(account, account_key)
 
     try:
         res = await client.get_user_max_redpack(
             token=account["token"],
             silk_id=account.get("silk_id"),
             user_id=account.get("user_id"),
-            city_code=account.get("city_code") or 440303
+            city_code=city_code
         )
         packs = res.get("platform_red_packs") or []
         items = []
@@ -3885,8 +3979,10 @@ async def get_signup_redpacks(data: Dict[str, Any] = Body(...)):
 async def create_appointment(data: Dict[str, Any] = Body(...)):
     """提交店铺抢单预约或名额监听任务"""
     account_key = data.get("account_key")
-    if not account_key or not db.get_account_by_key(account_key):
+    account = db.get_account_by_key(account_key) if account_key else None
+    if not account_key or not account:
         raise HTTPException(status_code=400, detail="未登录有效小蚕账号，无法创建预约或监听任务")
+    _require_account_location(account, account_key)
     
     task_type = data.get("task_type") or ("monitor" if data.get("mode") == "monitor" else "countdown")
     data["task_type"] = task_type
@@ -3929,8 +4025,10 @@ async def create_appointment(data: Dict[str, Any] = Body(...)):
 async def create_stock_watch(data: Dict[str, Any] = Body(...)):
     """创建名额监控捡漏任务 (对齐小蚕会员助手 /api/store/stock-watch)"""
     account_key = data.get("account") or data.get("account_key")
-    if not account_key or not db.get_account_by_key(account_key):
+    account = db.get_account_by_key(account_key) if account_key else None
+    if not account_key or not account:
         raise HTTPException(status_code=400, detail="未找到有效账号")
+    _require_account_location(account, account_key)
 
     timeout_sec = int(data.get("timeout_sec") or 3600)
     poll_sec = int(data.get("poll_sec") or 5)
@@ -3983,8 +4081,10 @@ async def create_stock_watch(data: Dict[str, Any] = Body(...)):
 async def create_keyword_watch(data: Dict[str, Any] = Body(...)):
     """创建定时搜索捡漏任务 (对齐小蚕会员助手 /api/store/keyword-watch)"""
     account_key = data.get("account") or data.get("account_key")
-    if not account_key or not db.get_account_by_key(account_key):
+    account = db.get_account_by_key(account_key) if account_key else None
+    if not account_key or not account:
         raise HTTPException(status_code=400, detail="未找到有效账号")
+    _require_account_location(account, account_key)
 
     keyword = (data.get("keyword") or "").strip()
     if not keyword:
@@ -4047,8 +4147,10 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
     最低返利金额、最低返利比例、最高起送门槛、成功后自动停止等全方位配置。
     """
     account_key = data.get("account") or data.get("account_key")
-    if not account_key or not db.get_account_by_key(account_key):
+    account = db.get_account_by_key(account_key) if account_key else None
+    if not account_key or not account:
         raise HTTPException(status_code=400, detail="未找到有效账号")
+    _require_account_location(account, account_key)
 
     keyword = (data.get("keyword") or data.get("store_name") or "").strip()
     if not keyword:
@@ -4078,8 +4180,9 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
         until_str = "23:59"
 
     job_id = f"job_namemon_{time_service.now_int()}_{uuid.uuid4().hex[:6]}"
-    account = db.get_account_by_key(account_key)
-    nick = account.get("nickname") if account else account_key
+    nick = account.get("nickname") or account_key
+    loc_label = f"{account.get('city_name', '')} {account.get('address_name', '')}".strip()
+    loc_coords = f"({account.get('longitude', '')}, {account.get('latitude', '')})"
 
     plat_desc = "全平台 (美团/饿了么)" if platform == "all" else ("美团外卖" if platform == "meituan" else "饿了么")
     match_desc = "包含匹配" if match_mode == "contains" else "精确完全匹配"
@@ -4101,7 +4204,7 @@ async def create_name_monitor(data: Dict[str, Any] = Body(...)):
         f"[{t_now_init}] 方案筛选要求: {filter_desc} | 阈值规则: {req_str}\n"
         f"[{t_now_init}] 卡券加速策略: {'已启用超前抢单券加速 (进入开抢前30分钟自动触发)' if use_advance_card else '常规开抢 (准点开火)'}\n"
         f"[{t_now_init}] 监听策略: 准点放单智能对齐 (每分钟 00 秒必嗅探) + 每 {poll_sec} 秒轮询 | 时段: {start_at} 至 {until_str} | 抢成自停: {'开启' if auto_stop_on_success else '关闭'}\n"
-        f"[{t_now_init}] 执行账号: 【{nick}】，高频嗅探与自动秒抢通道已就绪..."
+        f"[{t_now_init}] 执行账号: 【{nick}】| 绑定定位: {loc_label or '已绑定'} {loc_coords}，高频嗅探与自动秒抢通道已就绪..."
     )
     log_id = 0
     try:
@@ -4263,9 +4366,26 @@ async def list_orders(
     if not token:
         return {"ok": True, "orders": [], "total": 0, "message": "当前账号凭据已失效或已退出"}
 
-    city_code = acc.get("city_code", 440303)
     silk_id = acc.get("silk_id")
     user_id = acc.get("user_id")
+    if not db.has_valid_location(acc):
+        orders = db.get_orders(
+            account_key=account_key,
+            status=status,
+            platform=platform,
+            keyword=keyword,
+            limit=limit,
+            offset=offset
+        )
+        return {
+            "ok": True,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
+            "message": _location_required_msg(acc, account_key or ""),
+            "orders": orders,
+            "total": len(orders)
+        }
+    city_code = int(acc["city_code"])
 
     # 转换前端状态过滤参数为官方 RPC order_status
     # 官方真实状态集：0=待上传, 1=审核中, 2=已完成, 3=已驳回, 4=已取消, 99=全部
@@ -4642,6 +4762,7 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
 
     rpc_success = True
     if promo_order_id and token:
+        loc_city_code = _require_account_location(acc, account_key or "")
         try:
             upstream_res = await client.invoke_rpc(
                 server_name="SilkwormPromotion",
@@ -4652,7 +4773,7 @@ async def submit_platform_order_id(order_id: int, data: Dict[str, Any] = Body(..
                     "order_type": 0,
                     "app_id": 20
                 },
-                city_code=acc.get("city_code", 420100),
+                city_code=loc_city_code,
                 token=token
             )
             logger.info(f"小蚕官方提交外卖单号结果: {upstream_res}")
@@ -4703,14 +4824,14 @@ async def remove_order(order_id: int):
     acc = db.get_account_by_key(account_key) if account_key else None
     promo_order_id = target_order.get("promotion_order_id") or 0
 
-    if promo_order_id and acc and acc.get("token"):
+    if promo_order_id and acc and acc.get("token") and db.has_valid_location(acc):
         try:
             await client.delete_promotion_order(
                 promotion_order_id=promo_order_id,
                 token=acc["token"],
                 silk_id=acc.get("silk_id"),
                 user_id=acc.get("user_id"),
-                city_code=acc.get("city_code") or 440303
+                city_code=int(acc["city_code"])
             )
         except Exception as e:
             logger.info(f"官方删除订单微服务返回或已在远端删除: {e}")
@@ -4754,7 +4875,7 @@ async def cancel_order(order_id: int):
             token=acc["token"],
             silk_id=acc.get("silk_id"),
             user_id=acc.get("user_id"),
-            city_code=acc.get("city_code") or 440303
+            city_code=_require_account_location(acc, account_key or "")
         )
         db.update_order(order_id, {"status": "cancelled"})
         return {"ok": True, "message": "霸王餐报名已成功取消，名额已释放", "raw": res}
@@ -4814,12 +4935,13 @@ async def delay_order_voucher(order_id: int):
         f"[{now_str}] 发起营销任务 RPC: SilkwormMarketing.CompleteTaskEvent (task_type={task_type})"
     ]
 
+    loc_city_code = _require_account_location(acc, account_key or "")
     try:
         res = await client.complete_task_event(
             token=acc["token"],
             silk_id=acc.get("silk_id"),
             user_id=acc.get("user_id"),
-            city_code=acc.get("city_code") or 440303,
+            city_code=loc_city_code,
             promotion_order_id=promo_order_id,
             task_type=task_type
         )
@@ -4904,7 +5026,7 @@ async def get_order_delay_card_info(order_id: int):
             token=acc["token"],
             silk_id=acc.get("silk_id"),
             user_id=acc.get("user_id"),
-            city_code=acc.get("city_code") or 440303,
+            city_code=_require_account_location(acc, account_key or ""),
             status=0,
             number=100
         )
@@ -5000,6 +5122,7 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
         f"[{now_str}] 发起官方延时 RPC: Silkworm.SilkwormService.DelayPromotionQuota (delay_card_number={count})"
     ]
 
+    loc_city_code = _require_account_location(acc, account_key or "")
     try:
         res = await client.delay_promotion_quota(
             token=acc["token"],
@@ -5007,7 +5130,7 @@ async def use_order_delay_card(order_id: int, data: Dict[str, Any] = Body(defaul
             user_id=acc.get("user_id"),
             promotion_order_id=promo_order_id,
             delay_card_number=count,
-            city_code=acc.get("city_code") or 440303
+            city_code=loc_city_code
         )
         curr_tt = int(target_order.get("timeout_time") or 0)
         new_tt = curr_tt + count * 3600
@@ -5085,7 +5208,7 @@ async def use_order_free_card(order_id: int, data: Dict[str, Any] = Body(default
                 token=acc["token"],
                 silk_id=acc.get("silk_id"),
                 user_id=acc.get("user_id"),
-                city_code=acc.get("city_code") or 440303
+                city_code=_require_account_location(acc, account_key or "")
             )
             info_data = f_info_res.get("info") or {}
             if not info_data.get("had"):
@@ -5101,6 +5224,7 @@ async def use_order_free_card(order_id: int, data: Dict[str, Any] = Body(default
     if not user_free_card_id:
         user_free_card_id = 0
 
+    loc_city_code = _require_account_location(acc, account_key or "")
     try:
         res = await client.use_free_order_card(
             order_no=str(platform_order_id),
@@ -5109,7 +5233,7 @@ async def use_order_free_card(order_id: int, data: Dict[str, Any] = Body(default
             token=acc["token"],
             silk_id=acc.get("silk_id"),
             user_id=acc.get("user_id"),
-            city_code=acc.get("city_code") or 440303
+            city_code=loc_city_code
         )
         return {
             "ok": True,
@@ -5169,7 +5293,7 @@ async def get_settings():
     return {
         "ok": True,
         # 微信 ClawBot (腾讯 iLink 原生内置通道)
-        "clawbot_enabled": db.get_setting("clawbot_enabled", True),
+        "clawbot_enabled": db.get_setting("clawbot_enabled", False),
         "clawbot_auth_path": db.get_setting("clawbot_auth_path", ""),
         "clawbot_auth_json": db.get_setting("clawbot_auth_json", ""),
         "clawbot_status": {
@@ -5234,10 +5358,10 @@ async def get_settings():
         "discord_webhook": db.get_setting("discord_webhook", ""),
         "discord_username": db.get_setting("discord_username", "小蚕小帮手"),
         # QQ 机器人 (OneBot V11 / mystool-bot)
-        "qq_bot_enabled": db.get_setting("qq_bot_enabled", True),
-        "qq_bot_api": db.get_setting("qq_bot_api", "http://127.0.0.1:8080"),
-        "qq_bot_group_id": db.get_setting("qq_bot_group_id", "954658571"),
-        "qq_bot_user_id": db.get_setting("qq_bot_user_id", "2371445972"),
+        "qq_bot_enabled": db.get_setting("qq_bot_enabled", False),
+        "qq_bot_api": db.get_setting("qq_bot_api", ""),
+        "qq_bot_group_id": db.get_setting("qq_bot_group_id", ""),
+        "qq_bot_user_id": db.get_setting("qq_bot_user_id", ""),
         "qq_bot_target_type": db.get_setting("qq_bot_target_type", "group"),
         "qq_bot_token": db.get_setting("qq_bot_token", ""),
         # 触发策略 (对标 BetterGI 事件订阅)
@@ -5249,15 +5373,19 @@ async def get_settings():
         "notify_on_coupon_expire": db.get_setting("notify_on_coupon_expire", True),
         "notify_on_task_fail": db.get_setting("notify_on_task_fail", False),
         # 位置服务与天地图 Web API (tianditu.gov.cn)
-        "tianditu_key": db.get_setting("tianditu_key", "109fd484f999e3c0472ab15fa38fe2ac")
+        "tianditu_key": db.get_setting("tianditu_key", "109fd484f999e3c0472ab15fa38fe2ac"),
+        # 协议自适应档案与网关风控诊断摘要 (脱敏只读状态)
+        "active_protocol_profile": get_active_protocol_profile(),
+        "waf_block_detail": get_waf_block_detail(include_expired=True),
     }
 
 
 @router.post("/settings")
 async def save_settings(data: Dict[str, Any] = Body(...)):
     """保存系统设置"""
+    readonly_keys = {"clawbot_status", "active_protocol_profile", "waf_block_detail"}
     for k, v in data.items():
-        if k != "clawbot_status":
+        if k not in readonly_keys:
             db.set_setting(k, v)
     return {"ok": True, "message": "设置已保存"}
 
@@ -5410,26 +5538,30 @@ async def search_location(keyword: str = Query("", description="搜索地址或�
         candidates = []
 
     if candidates:
+        valid_candidates = []
         for c in candidates:
             if not c.get("city_code"):
                 c_name = c.get("city_name", "")
-                c["city_code"] = CITY_CODE_MAP.get(c_name) or CITY_CODE_MAP.get(f"{c_name}市") or 420100
+                c["city_code"] = CITY_CODE_MAP.get(c_name) or CITY_CODE_MAP.get(f"{c_name}市") or 0
+            if int(c.get("city_code") or 0) > 0 and str(c.get("city_name") or "").strip():
+                valid_candidates.append(c)
 
-        top = candidates[0]
-        return {
-            "ok": True,
-            "keyword": clean_kw,
-            "candidates": candidates,
-            "city_code": top.get("city_code", 420100),
-            "city_name": top.get("city_name", ""),
-            "district_name": top.get("district_name", ""),
-            "town_name": top.get("town_name", ""),
-            "short_name": top.get("short_name", clean_kw),
-            "full_address": top.get("full_address", ""),
-            "latitude": top.get("latitude", ""),
-            "longitude": top.get("longitude", ""),
-            "source": top.get("source", "tianditu")
-        }
+        if valid_candidates:
+            top = valid_candidates[0]
+            return {
+                "ok": True,
+                "keyword": clean_kw,
+                "candidates": valid_candidates,
+                "city_code": int(top["city_code"]),
+                "city_name": top.get("city_name", ""),
+                "district_name": top.get("district_name", ""),
+                "town_name": top.get("town_name", ""),
+                "short_name": top.get("short_name", clean_kw),
+                "full_address": top.get("full_address", ""),
+                "latitude": top.get("latitude", ""),
+                "longitude": top.get("longitude", ""),
+                "source": top.get("source", "tianditu")
+            }
 
     # 兜底：尝试从已有预设城市快速匹配
     for code, (cname, clng, clat) in CITY_COORDS.items():
@@ -5479,27 +5611,28 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
             loc = tianditu_res.get("district", "")
             prov = tianditu_res.get("province", "")
             addr_str = tianditu_res.get("address_name", f"{c_name} · {loc}")
-            c_code = tianditu_res.get("city_code") or CITY_CODE_MAP.get(c_name) or CITY_CODE_MAP.get(f"{c_name}市") or 420100
-            return {
-                "ok": True,
-                "city_code": c_code,
-                "city_name": c_name,
-                "locality": loc,
-                "province": prov,
-                "address_name": addr_str,
-                "latitude": f"{latitude:.6f}",
-                "longitude": f"{longitude:.6f}",
-                "source": "tianditu",
-                "accuracy": "high"
-            }
+            c_code = tianditu_res.get("city_code") or CITY_CODE_MAP.get(c_name) or CITY_CODE_MAP.get(f"{c_name}市") or 0
+            if int(c_code or 0) > 0 and c_name != "未知":
+                return {
+                    "ok": True,
+                    "city_code": int(c_code),
+                    "city_name": c_name,
+                    "locality": loc,
+                    "province": prov,
+                    "address_name": addr_str,
+                    "latitude": f"{latitude:.6f}",
+                    "longitude": f"{longitude:.6f}",
+                    "source": "tianditu",
+                    "accuracy": "high"
+                }
     except Exception as e:
         logger.warning(f"天地图逆地理编码异常，切换降级通道: {e}")
 
-    # 2. 降级备用通道 (BigDataCloud)
-    city_name = "武汉"
+    # 2. 降级备用通道 (BigDataCloud，禁止伪造默认城市)
+    city_name = ""
     locality = ""
     province = ""
-    addr = "本机定位点"
+    addr = ""
 
     try:
         url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={latitude}&longitude={longitude}&localityLanguage=zh"
@@ -5520,6 +5653,19 @@ async def resolve_location(latitude: float = Query(...), longitude: float = Quer
 
     # 匹配 city_code
     city_code = CITY_CODE_MAP.get(city_name) or CITY_CODE_MAP.get(f"{city_name}市") or 0
+    if not city_name or int(city_code or 0) <= 0:
+        return {
+            "ok": False,
+            "city_code": 0,
+            "city_name": "",
+            "locality": locality,
+            "province": province,
+            "address_name": addr,
+            "latitude": f"{latitude:.6f}",
+            "longitude": f"{longitude:.6f}",
+            "source": "fallback",
+            "message": "无法解析当前坐标所属城市，请使用搜索框手动输入城市及商圈地址"
+        }
 
     return {
         "ok": True,
@@ -5608,7 +5754,17 @@ async def get_messages(
     token = acc.get("token")
     silk_id = str(acc.get("silk_id") or "")
     user_id = str(acc.get("user_id") or "")
-    city_code = acc.get("city_code") or 440303
+    if not db.has_valid_location(acc):
+        return {
+            "ok": False,
+            "location_required": True,
+            "code": "LOCATION_REQUIRED",
+            "channels": [],
+            "messages": [],
+            "unread_total": 0,
+            "message": _location_required_msg(acc, account_key or "")
+        }
+    city_code = int(acc["city_code"])
 
     try:
         channels_res, msgs_res = await asyncio.gather(
@@ -5658,7 +5814,7 @@ async def read_all_messages(req: ReadAllMessagesRequest):
     token = acc.get("token")
     silk_id = str(acc.get("silk_id") or "")
     user_id = str(acc.get("user_id") or "")
-    city_code = acc.get("city_code") or 440303
+    city_code = _require_account_location(acc, req.account_key)
 
     try:
         await client.set_all_messages_read(

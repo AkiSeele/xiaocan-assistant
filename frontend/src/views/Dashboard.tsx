@@ -16,7 +16,8 @@ import {
   Select,
   RadioGroup,
   Radio,
-  Descriptions
+  Descriptions,
+  Banner
 } from '@douyinfe/semi-ui';
 import {
   IconPlay,
@@ -35,9 +36,10 @@ import {
   IconBell,
   IconBolt,
   IconTick,
-  IconList
+  IconList,
+  IconMapPin
 } from '@douyinfe/semi-icons';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, hasValidAccountLocation } from '../store/useAppStore';
 import { api } from '../api';
 import { getNtpDate, getNtpNowSec } from '../utils/ntpTime';
 import { TaskIcon } from '../components/TaskIcons';
@@ -165,6 +167,7 @@ export const Dashboard: React.FC = () => {
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const openLocationModal = useAppStore((s) => s.openLocationModal);
   const dashboardRef = useRef<HTMLDivElement>(null);
   const ordersSectionRef = useRef<HTMLDivElement>(null);
   const tasksListRef = useRef<HTMLDivElement>(null);
@@ -308,6 +311,12 @@ export const Dashboard: React.FC = () => {
     const key = currentAccountKey || accounts[0]?.key;
     if (!key) {
       Toast.warning('请先选择或登录执行账号');
+      return;
+    }
+    const targetAcc = accounts.find((a) => a.key === key);
+    if (!hasValidAccountLocation(targetAcc)) {
+      Toast.warning(`账号【${targetAcc?.nickname || key}】未绑定地址，请先绑定地址后再执行任务`);
+      openLocationModal(key);
       return;
     }
     setRunningTaskId(taskId);
@@ -782,6 +791,11 @@ export const Dashboard: React.FC = () => {
     }
     const accKey = currentAccountKey || accounts[0]?.key;
     const curAcc = accounts.find((a) => a.key === accKey);
+    if (!hasValidAccountLocation(curAcc)) {
+      Toast.warning(`账号【${curAcc?.nickname || accKey}】未绑定地址，请先绑定地址后再打卡`);
+      openLocationModal(accKey);
+      return;
+    }
     const accLabel = curAcc ? (curAcc.nickname || curAcc.phone || '当前账号') : '当前账号';
 
     setBatchAllLoading(true);
@@ -948,6 +962,34 @@ export const Dashboard: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {(() => {
+        const dashAcc = accounts.find((a) => a.key === (currentAccountKey || accounts[0]?.key));
+        if (!dashAcc || hasValidAccountLocation(dashAcc)) return null;
+        return (
+          <Banner
+            type="warning"
+            closeIcon={null}
+            icon={<IconMapPin />}
+            title={`当前账号【${dashAcc.nickname || dashAcc.key}】尚未绑定抢单位置`}
+            description={
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <span>系统不设默认地址，地址跟随账号独立保存。请先绑定城市与坐标位置，才能正常执行任务或抢单。</span>
+                <Button
+                  theme="solid"
+                  type="warning"
+                  size="small"
+                  icon={<IconMapPin />}
+                  onClick={() => openLocationModal(dashAcc.key)}
+                >
+                  立即绑定地址
+                </Button>
+              </div>
+            }
+            className="rounded-xl border border-amber-200 shrink-0"
+          />
+        );
+      })()}
 
       {/* 4 大核心资产 Bento 卡片 (大字号聚焦核心资产与调度，完美边缘对齐与均等自适应) */}
       <div className="w-full grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 shrink-0">

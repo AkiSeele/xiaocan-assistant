@@ -16,7 +16,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.combining import OrTrigger
 
 from ..models import database as db
-from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked
+from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, format_waf_block_message
 from . import time_service
 from .notifier import send_system_notification
 from .notification import NotificationEvent, NotificationLevel
@@ -222,7 +222,7 @@ async def prepare_warmup_and_wait(
     token: str,
     silk_id: Optional[str] = None,
     user_id: Optional[str] = None,
-    city_code: int = 440303,
+    city_code: int = 0,
     early_ms: int = 50,
     trigger_type: str = "cron"
 ) -> str:
@@ -300,7 +300,12 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
         db.add_job_log(job_id, account_key, task_id, "error", msg)
         return {"ok": False, "msg": msg}
 
-    city_code = account.get("city_code") or 440303
+    if not db.has_valid_location(account):
+        msg = f"账号 [{account.get('nickname') or account_key}] 尚未绑定有效定位地址，请先绑定地址后再执行自动化任务"
+        db.add_job_log(job_id, account_key, task_id, "error", msg)
+        return {"ok": False, "code": "LOCATION_REQUIRED", "msg": msg, "output": msg}
+
+    city_code = int(account["city_code"])
     nickname = account.get("nickname") or account_key
     silk_id = account.get("silk_id")
     user_id = account.get("user_id")
@@ -690,7 +695,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         except XiaoCanRPCError as je:
                             log_output += f"[{ts_fmt}] [公共红包雨] 第{try_idx}次接入提示: {je.msg} (代码: {je.code})\n"
                             if je.code in (403, 429) or is_waf_blocked():
-                                log_output += f"[{ts_fmt}] [公共红包雨] 触发腾讯云 WAF 频次保护拦截 (代码: {je.code})，立即终止重试以防延长封禁\n"
+                                log_output += f"[{ts_fmt}] [公共红包雨] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                                 break
                             if je.code == 40023:
                                 log_output += f"[{ts_fmt}] [公共红包雨] 提示: 该账号在此场次中已完成抽奖，无需重复参与\n"
@@ -757,7 +762,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                             except XiaoCanRPCError as ge:
                                 log_output += f"[{ts_fmt}] [公共红包雨] 第{try_idx}次结算提示: {ge.msg} (代码: {ge.code})\n"
                                 if ge.code in (403, 429) or is_waf_blocked():
-                                    log_output += f"[{ts_fmt}] [公共红包雨] 触发腾讯云 WAF 频次保护拦截 (代码: {ge.code})，立即终止重试以防延长封禁\n"
+                                    log_output += f"[{ts_fmt}] [公共红包雨] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                                     break
                                 elif ge.code == 40023:
                                     break
@@ -891,7 +896,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                         last_err_code = e.code
                         log_output += f"[{ts_fmt}] [抢每日大牌券] 第{try_idx}次请求提示: {e.msg} (代码: {e.code})\n"
                         if e.code in (403, 429) or is_waf_blocked():
-                            log_output += f"[{ts_fmt}] [抢每日大牌券] 触发腾讯云 WAF 频次保护拦截 (代码: {e.code})，立即终止重试以防延长封禁\n"
+                            log_output += f"[{ts_fmt}] [抢每日大牌券] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                             break
 
                         now_ts = time_service.now_ts()
@@ -1158,7 +1163,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                 except XiaoCanRPCError as ce:
                     log_output += f"[{ts_fmt}] [抢SVIP返利券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
                     if ce.code in (403, 429) or is_waf_blocked():
-                        log_output += f"[{ts_fmt}] [抢SVIP返利券] 触发腾讯云 WAF 频次保护拦截 (代码: {ce.code})，立即终止重试以防延长封禁\n"
+                        log_output += f"[{ts_fmt}] [抢SVIP返利券] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                         break
                     if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
                         break
@@ -1215,7 +1220,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     except XiaoCanRPCError as ce:
                         log_output += f"[{ts_fmt}] [抢每月免单券] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
                         if ce.code in (403, 429) or is_waf_blocked():
-                            log_output += f"[{ts_fmt}] [抢每月免单券] 触发腾讯云 WAF 频次保护拦截 (代码: {ce.code})，立即终止重试以防延长封禁\n"
+                            log_output += f"[{ts_fmt}] [抢每月免单券] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                             break
                         if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
                             break
@@ -1493,7 +1498,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     except XiaoCanRPCError as ce:
                         log_output += f"[{ts_fmt}] [元宝秒杀抢券] 第{try_idx}次调用提示: {ce.msg} (代码: {ce.code})\n"
                         if ce.code in (403, 429) or is_waf_blocked():
-                            log_output += f"[{ts_fmt}] [元宝秒杀抢券] 触发腾讯云 WAF 频次保护拦截 (代码: {ce.code})，立即终止重试以防延长封禁\n"
+                            log_output += f"[{ts_fmt}] [元宝秒杀抢券] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                             break
                         # 代码 7: 本周已达上限; 代码 29: 秒杀已结束; 400xx 等非重试错误均立即终止
                         if ce.code in (7, 29, 40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
@@ -1601,7 +1606,7 @@ async def execute_task_job(account_key: str, task_id: str, trigger_type: str = "
                     except XiaoCanRPCError as ce:
                         log_output += f"[{ts_fmt}] [影音会员周卡] 第{try_idx}次请求提示: {ce.msg} (代码: {ce.code})\n"
                         if ce.code in (403, 429) or is_waf_blocked():
-                            log_output += f"[{ts_fmt}] [影音会员周卡] 触发腾讯云 WAF 频次保护拦截 (代码: {ce.code})，立即终止重试以防延长封禁\n"
+                            log_output += f"[{ts_fmt}] [影音会员周卡] {format_waf_block_message()}，立即终止重试以防延长封禁\n"
                             break
                         if ce.code in (40003, 40004, 40017, 40021, 40037, 40038, 40039, 40040):
                             break

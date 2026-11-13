@@ -180,8 +180,8 @@ def scan_wechat_credentials() -> Optional[Dict[str, Any]]:
             "silk_id": best_silk_id or "",
             "nickname": best_nickname or "小蚕微信用户",
             "expires_at": best_exp or "长期有效",
-            "city_code": 420100,
-            "city_name": "武汉",
+            "city_code": 0,
+            "city_name": "",
         }
 
     return None

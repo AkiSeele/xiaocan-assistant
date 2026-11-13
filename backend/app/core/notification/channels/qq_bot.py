@@ -86,7 +86,7 @@ class QqBotNotifier(BaseNotifier):
         return {"ok": ok, "channel": self.name, "message": msg, "errors": errors}
 
     async def send(self, data: NotificationData) -> Dict[str, Any]:
-        if not db.get_setting("qq_bot_enabled", True):
+        if not db.get_setting("qq_bot_enabled", False):
             return {"ok": False, "channel": self.name, "skipped": True, "message": "QQ 机器人通道已关闭"}
 
         api_url = db.get_setting("qq_bot_api", "http://127.0.0.1:8080")

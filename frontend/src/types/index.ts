@@ -15,6 +15,8 @@ export interface Account {
   city_name?: string;
   longitude?: string;
   latitude?: string;
+  address_name?: string;
+  has_location?: boolean;
   silk?: number;
   withdrawing?: number;
   withdraw_total?: number;

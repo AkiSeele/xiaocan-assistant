@@ -276,6 +276,7 @@ export const StoreSniping: React.FC = () => {
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const activeLocation = useAppStore((s) => s.activeLocation);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const openLocationModal = useAppStore((s) => s.openLocationModal);
   const currentAccount = useMemo(() => accounts.find(a => a.key === currentAccountKey) || accounts[0], [accounts, currentAccountKey]);
 
   const [stores, setStores] = useState<StoreItem[]>([]);
@@ -1390,6 +1391,11 @@ export const StoreSniping: React.FC = () => {
       Toast.warning('请先选择或绑定账号');
       return;
     }
+    if (!activeLocation) {
+      Toast.warning('当前账号未绑定抢单地址，请先绑定地址后再操作');
+      openLocationModal(currentAccountKey);
+      return;
+    }
 
     const currentPid = store.selected_promotion_id || store.promotion_id;
     const targetPromo = promo || (store.promotions?.find(p => p.promotion_id === currentPid)) || store;
@@ -1441,6 +1447,11 @@ export const StoreSniping: React.FC = () => {
 
   const handleSubmitAppoint = async (values: any) => {
     if (!selectedStore || !selectedPromo || !currentAccountKey) return;
+    if (!activeLocation) {
+      Toast.warning('当前账号未绑定抢单地址，请先绑定地址后再提交预约');
+      openLocationModal(currentAccountKey);
+      return;
+    }
     setAppointSubmitting(true);
     try {
       const isMonitor = appointModalMode === 'monitor';
@@ -1492,12 +1503,22 @@ export const StoreSniping: React.FC = () => {
       Toast.warning('请先选择或绑定账号');
       return;
     }
+    if (!activeLocation) {
+      Toast.warning('当前账号未绑定抢单地址，请先绑定地址后再使用按店名监听');
+      openLocationModal(currentAccountKey);
+      return;
+    }
     setNameMonitorInitialKeyword(kw || searchKeyword || '');
     setNameMonitorVisible(true);
-  }, [currentAccountKey, searchKeyword]);
+  }, [currentAccountKey, searchKeyword, activeLocation, openLocationModal]);
 
   const handleSubmitNameMonitor = async (values: any) => {
     if (!currentAccountKey) return;
+    if (!activeLocation) {
+      Toast.warning('当前账号未绑定抢单地址，请先绑定地址后再创建监听');
+      openLocationModal(currentAccountKey);
+      return;
+    }
     const kw = (values.keyword || '').trim();
     if (!kw) {
       Toast.warning('请输入商户名称或搜索关键词');
@@ -2812,21 +2833,18 @@ export const StoreSniping: React.FC = () => {
           type="warning"
           closeIcon={null}
           icon={<IconMapPin />}
-          title="尚未配置抢单定位"
+          title={`当前账号${currentAccount?.nickname ? `【${currentAccount.nickname}】` : ''}尚未绑定抢单地址`}
           description={
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mt-0.5">
-              <span>系统不设默认定位。抢单前请先获取本机真实定位或搜索目标商圈，以精确匹配周边霸王餐与满返商户名额。</span>
+              <span>系统不设默认地址，位置跟随账号单独保存。请先为该账号绑定所在城市与坐标位置，才能检索附近店铺与执行抢单。</span>
               <Button
                 theme="solid"
                 type="warning"
                 size="small"
                 icon={<IconMapPin />}
-                onClick={() => {
-                  const btn = document.getElementById('header-location-btn');
-                  if (btn) btn.click();
-                }}
+                onClick={() => openLocationModal(currentAccountKey)}
               >
-                获取定位
+                立即绑定地址
               </Button>
             </div>
           }
@@ -3137,21 +3155,18 @@ export const StoreSniping: React.FC = () => {
                         <div className="flex flex-col items-center justify-center">
                           <IconMapPin size="extra-large" className="text-semi-color-primary mb-3" />
                           <div className="mb-2 text-base font-medium text-semi-color-text-1">
-                            尚未配置抢单定位
+                            当前账号尚未绑定抢单地址
                           </div>
                           <div className="text-xs mb-4 text-semi-color-text-2 max-w-sm">
-                            系统不设默认定位。请先获取定位以精准拉取周边的商户与活动名额。
+                            系统不设默认定位，地址跟随账号保存。请先为当前账号绑定地址后再检索周边商户与活动名额。
                           </div>
                           <Button
                             theme="solid"
                             type="primary"
                             icon={<IconMapPin />}
-                            onClick={() => {
-                              const btn = document.getElementById('header-location-btn');
-                              if (btn) btn.click();
-                            }}
+                            onClick={() => openLocationModal(currentAccountKey)}
                           >
-                            获取抢单定位
+                            立即绑定地址
                           </Button>
                         </div>
                       ) : (
@@ -3397,21 +3412,18 @@ export const StoreSniping: React.FC = () => {
                           <div className="py-16 flex flex-col items-center justify-center text-semi-color-text-3">
                             <IconMapPin size="extra-large" className="text-semi-color-primary mb-3" />
                             <div className="mb-2 text-base font-medium text-semi-color-text-1">
-                              尚未配置抢单定位
+                              当前账号尚未绑定抢单地址
                             </div>
                             <div className="text-xs mb-4 text-semi-color-text-2 max-w-sm">
-                              双返利扫描需基于实际地理位置检索周边商户，请先获取定位。
+                              双返利扫描需基于账号绑定的实际地理位置检索周边商户，请先绑定地址。
                             </div>
                             <Button
                               theme="solid"
                               type="primary"
                               icon={<IconMapPin />}
-                              onClick={() => {
-                                const btn = document.getElementById('header-location-btn');
-                                if (btn) btn.click();
-                              }}
+                              onClick={() => openLocationModal(currentAccountKey)}
                             >
-                              获取抢单定位
+                              立即绑定地址
                             </Button>
                           </div>
                         ) : (

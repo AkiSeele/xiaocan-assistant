@@ -8,7 +8,7 @@ import smtplib
 import socket
 from email.mime.text import MIMEText
 from email.header import Header
-from email.utils import formatdate
+from email.utils import formatdate, formataddr
 import logging
 from typing import Dict, Any, List
 from .base import BaseNotifier
@@ -36,8 +36,8 @@ class EmailNotifier(BaseNotifier):
     ) -> Dict[str, Any]:
         msg = MIMEText(content, "plain", "utf-8")
         msg["Subject"] = Header(subject, "utf-8")
-        msg["From"] = Header(f"小蚕小帮手 <{from_addr}>", "utf-8")
-        msg["To"] = Header(", ".join(to_addrs), "utf-8")
+        msg["From"] = formataddr((str(Header("小蚕小帮手", "utf-8")), from_addr))
+        msg["To"] = ", ".join(to_addrs)
         msg["Date"] = formatdate(localtime=True)
 
         try:

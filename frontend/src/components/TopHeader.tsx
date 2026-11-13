@@ -54,17 +54,24 @@ export const TopHeader: React.FC = () => {
   const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
   const loadAccounts = useAppStore((s) => s.loadAccounts);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const locModalVisible = useAppStore((s) => s.locationModalVisible);
+  const locationModalAccountKey = useAppStore((s) => s.locationModalAccountKey);
+  const openLocationModal = useAppStore((s) => s.openLocationModal);
+  const closeLocationModal = useAppStore((s) => s.closeLocationModal);
 
-  const [locModalVisible, setLocModalVisible] = useState(false);
   const [guideVisible, setGuideVisible] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [ntpOffset, setNtpOffset] = useState<number>(0);
   const [ntpSynced, setNtpSynced] = useState<boolean>(false);
   const [nowTime, setNowTime] = useState<Date>(() => getNtpDate());
 
-  // 初次使用无定位时自动启动 UserGuide 引导
+  const currentAccount = useMemo(() => {
+    return accounts.find(a => a.key === currentAccountKey) || accounts[0];
+  }, [accounts, currentAccountKey]);
+
+  // 存在已登录账号但尚未绑定地址时自动启动 UserGuide 引导
   useEffect(() => {
-    if (!activeLocation) {
+    if (currentAccount && !activeLocation) {
       const dismissed = sessionStorage.getItem('xiaocan_loc_guide_dismissed');
       if (!dismissed) {
         const timer = setTimeout(() => {
@@ -75,11 +82,7 @@ export const TopHeader: React.FC = () => {
     } else {
       setGuideVisible(false);
     }
-  }, [activeLocation]);
-
-  const currentAccount = useMemo(() => {
-    return accounts.find(a => a.key === currentAccountKey) || accounts[0];
-  }, [accounts, currentAccountKey]);
+  }, [currentAccount, activeLocation]);
 
   // 毫秒级时钟走字
   useEffect(() => {
@@ -171,31 +174,37 @@ export const TopHeader: React.FC = () => {
 
       {/* 右侧：位置展示、时间展示、明暗切换、最右侧用户头像区域 */}
       <Space spacing="medium" align="center">
-        {/* 1. 位置设置 */}
+        {/* 1. 位置设置 (跟随当前主控账号) */}
         <Tooltip
           content={
-            activeLocation?.cityName
-              ? `${activeLocation.cityName} · ${activeLocation.addressName || '已选'}`
-              : '未设置抢单位置，点击立即获取或搜索'
+            !currentAccount
+              ? '请先在【小蚕账号】添加账号，再为账号绑定地址'
+              : activeLocation?.cityName
+              ? `账号【${currentAccount.nickname}】绑定地址：${activeLocation.cityName} · ${activeLocation.addressName}`
+              : `账号【${currentAccount.nickname}】尚未绑定地址，点击立即绑定`
           }
           position="bottom"
         >
           <div
             id="header-location-btn"
-            onClick={() => setLocModalVisible(true)}
+            onClick={() => openLocationModal(currentAccount?.key)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-colors text-xs select-none cursor-pointer ${
-              !activeLocation
+              currentAccount && !activeLocation
                 ? 'bg-amber-500/10 border-amber-400 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
                 : 'bg-semi-color-fill-0 border-semi-color-border hover:bg-semi-color-fill-1 hover:border-semi-color-primary'
             }`}
           >
-            <IconMapPin className={!activeLocation ? 'text-amber-500 shrink-0' : 'text-semi-color-primary shrink-0'} />
+            <IconMapPin className={currentAccount && !activeLocation ? 'text-amber-500 shrink-0' : 'text-semi-color-primary shrink-0'} />
             <span className="font-medium text-semi-color-text-0 text-[13px] truncate max-w-[150px] sm:max-w-[200px]">
-              {activeLocation?.cityName ? `${activeLocation.cityName} · ${activeLocation.addressName || '已选'}` : '获取抢单定位'}
+              {!currentAccount
+                ? '未接入账号'
+                : activeLocation?.cityName
+                ? `${activeLocation.cityName} · ${activeLocation.addressName || '已绑定'}`
+                : '未绑定地址'}
             </span>
-            {!activeLocation && (
+            {currentAccount && !activeLocation && (
               <span className="text-[10px] bg-amber-500 text-white rounded px-1 py-0.5 font-normal shrink-0">
-                待设置
+                待绑定
               </span>
             )}
           </div>
@@ -383,13 +392,14 @@ export const TopHeader: React.FC = () => {
         </Dropdown>
       </Space>
 
-      {/* 全局位置设置弹窗 */}
+      {/* 全局账号位置绑定弹窗 */}
       <LocationModal
         visible={locModalVisible}
-        onClose={() => setLocModalVisible(false)}
+        targetAccountKey={locationModalAccountKey}
+        onClose={closeLocationModal}
       />
 
-      {/* 首次使用无定位引导 */}
+      {/* 账号无绑定地址引导 */}
       <UserGuide
         mode="popup"
         theme="primary"
@@ -398,16 +408,16 @@ export const TopHeader: React.FC = () => {
         steps={[
           {
             target: () => document.getElementById('header-location-btn') || document.body,
-            title: '请先获取抢单定位',
-            description: '系统不设默认定位。抢单前请点击此处获取本机真实定位或搜索商圈，以精确匹配周边霸王餐与满返名额。',
+            title: '请先绑定账号定位地址',
+            description: '系统不设默认地址，地址将跟随当前账号永久保存。绑定真实地址后才可使用选店、抢单、监听及自动化功能。',
             position: 'bottom',
           }
         ]}
-        finishText="立即设置"
+        finishText="立即绑定"
         showSkipButton={true}
         onFinish={() => {
           setGuideVisible(false);
-          setLocModalVisible(true);
+          openLocationModal(currentAccount?.key);
         }}
         onSkip={() => {
           setGuideVisible(false);

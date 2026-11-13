@@ -13,17 +13,43 @@ export interface ActiveLocation {
 const LOCATION_HISTORY_KEY = 'xiaocan_location_history';
 const LOCATION_HISTORY_LIMIT = 10;
 
-const getStoredLocation = (): ActiveLocation | null => {
-  try {
-    const raw = localStorage.getItem('xiaocan_active_location');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.longitude && parsed.latitude && parsed.cityName) {
-        return parsed;
-      }
-    }
-  } catch (e) {}
-  return null;
+// 清理旧版游离的全局定位缓存，确保定位严格跟随账号保存到后端
+try {
+  localStorage.removeItem('xiaocan_active_location');
+} catch (e) {}
+
+export const hasValidAccountLocation = (account?: Account | null): boolean => {
+  if (!account) return false;
+  const code = Number(account.city_code || 0);
+  const cityName = String(account.city_name || '').trim();
+  const lonStr = String(account.longitude || '').trim();
+  const latStr = String(account.latitude || '').trim();
+  const lon = Number(lonStr);
+  const lat = Number(latStr);
+  return (
+    Number.isFinite(code) &&
+    code > 0 &&
+    Boolean(cityName) &&
+    cityName !== '未知' &&
+    Boolean(lonStr) &&
+    Boolean(latStr) &&
+    Number.isFinite(lon) &&
+    Number.isFinite(lat) &&
+    lon !== 0 &&
+    lat !== 0
+  );
+};
+
+export const deriveAccountLocation = (account?: Account | null): ActiveLocation | null => {
+  if (!account || !hasValidAccountLocation(account)) return null;
+  const cityName = String(account.city_name || '').trim();
+  return {
+    cityCode: Number(account.city_code),
+    cityName,
+    addressName: String(account.address_name || '').trim() || `${cityName}已绑定地址`,
+    longitude: String(account.longitude || '').trim(),
+    latitude: String(account.latitude || '').trim(),
+  };
 };
 
 const getStoredLocationHistory = (): LocationHistoryItem[] => {
@@ -87,12 +113,16 @@ interface AppState {
   loading: boolean;
   activeLocation: ActiveLocation | null;
   locationHistory: LocationHistoryItem[];
+  locationModalVisible: boolean;
+  locationModalAccountKey: string | null;
   isSidebarCollapsed: boolean;
   
   setActiveTab: (tab: string) => void;
   setDarkMode: (dark: boolean) => void;
   setCurrentAccountKey: (key: string) => void;
-  setActiveLocation: (loc: Partial<ActiveLocation> | null) => void;
+  openLocationModal: (accountKey?: string | null) => void;
+  closeLocationModal: () => void;
+  bindAccountLocation: (accountKey: string, loc: ActiveLocation) => Promise<Account>;
   addLocationHistory: (loc: ActiveLocation) => void;
   removeLocationHistory: (loc: { longitude: string; latitude: string }) => void;
   clearLocationHistory: () => void;
@@ -110,6 +140,8 @@ export const useAppStore = create<AppState>((set, get) => {
       ? storedKey
       : initialAccounts[0]?.key || storedKey;
 
+  const initialAccount = initialAccounts.find((a) => a.key === initialKey) || null;
+
   return {
     activeTab: 'dashboard',
     tabActivationTick: 0,
@@ -118,8 +150,10 @@ export const useAppStore = create<AppState>((set, get) => {
     isDarkMode: false,
     userInfo: null,
     loading: false,
-    activeLocation: getStoredLocation(),
+    activeLocation: deriveAccountLocation(initialAccount),
     locationHistory: getStoredLocationHistory(),
+    locationModalVisible: false,
+    locationModalAccountKey: null,
     isSidebarCollapsed: getStoredSidebarCollapsed(),
 
   setActiveTab: (tab: string) =>
@@ -143,26 +177,41 @@ export const useAppStore = create<AppState>((set, get) => {
     set({ isSidebarCollapsed: next });
   },
 
-  setActiveLocation: (loc: Partial<ActiveLocation> | null) => {
-    if (!loc) {
-      try {
-        localStorage.removeItem('xiaocan_active_location');
-      } catch (e) {}
-      set({ activeLocation: null });
-      return;
-    }
-    const prev = get().activeLocation || {
-      cityCode: 0,
-      cityName: '',
-      addressName: '',
-      longitude: '',
-      latitude: '',
-    };
-    const updated = { ...prev, ...loc } as ActiveLocation;
+  openLocationModal: (accountKey?: string | null) =>
+    set({
+      locationModalVisible: true,
+      locationModalAccountKey: accountKey || get().currentAccountKey || null,
+    }),
+
+  closeLocationModal: () =>
+    set({
+      locationModalVisible: false,
+      locationModalAccountKey: null,
+    }),
+
+  bindAccountLocation: async (accountKey: string, loc: ActiveLocation) => {
+    const res = await api.updateAccountLocation(accountKey, {
+      city_code: loc.cityCode,
+      city_name: loc.cityName,
+      longitude: loc.longitude,
+      latitude: loc.latitude,
+      address_name: loc.addressName,
+    });
+    const updatedAcc = res.account;
+    const prevAccounts = get().accounts;
+    const nextAccounts = prevAccounts.some((a) => a.key === accountKey)
+      ? prevAccounts.map((a) => (a.key === accountKey ? updatedAcc : a))
+      : [updatedAcc, ...prevAccounts];
     try {
-      localStorage.setItem('xiaocan_active_location', JSON.stringify(updated));
+      localStorage.setItem('xiaocan_cached_accounts', JSON.stringify(nextAccounts));
     } catch (e) {}
-    set({ activeLocation: updated });
+    const currentKey = get().currentAccountKey;
+    const activeAcc = nextAccounts.find((a) => a.key === currentKey) || null;
+    set({
+      accounts: nextAccounts,
+      activeLocation: deriveAccountLocation(activeAcc),
+    });
+    return updatedAcc;
   },
 
   addLocationHistory: (loc: ActiveLocation) => {
@@ -202,7 +251,11 @@ export const useAppStore = create<AppState>((set, get) => {
     try {
       localStorage.setItem('xiaocan_current_account_key', key);
     } catch (e) {}
-    set({ currentAccountKey: key });
+    const nextAcc = get().accounts.find((a) => a.key === key) || null;
+    set({
+      currentAccountKey: key,
+      activeLocation: deriveAccountLocation(nextAcc),
+    });
   },
 
   loadAccounts: async () => {
@@ -233,7 +286,13 @@ export const useAppStore = create<AppState>((set, get) => {
             } catch (e) {}
           }
         }
-        set({ accounts, currentAccountKey: newCurrent, loading: false });
+        const activeAcc = accounts.find((a) => a.key === newCurrent) || null;
+        set({
+          accounts,
+          currentAccountKey: newCurrent,
+          activeLocation: deriveAccountLocation(activeAcc),
+          loading: false,
+        });
       } catch (e) {
         set({ loading: false });
       } finally {

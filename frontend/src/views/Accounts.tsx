@@ -64,9 +64,10 @@ import {
   IconAlertCircle,
   IconQrCode,
   IconEdit,
-  IconMore
+  IconMore,
+  IconMapPin
 } from '@douyinfe/semi-icons';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, hasValidAccountLocation } from '../store/useAppStore';
 import { api } from '../api';
 import { getNtpNowMs } from '../utils/ntpTime';
 import { useOnActivated } from '../utils/useOnActivated';
@@ -188,6 +189,7 @@ export const Accounts: React.FC = () => {
   const loadUserInfo = useAppStore((s) => s.loadUserInfo);
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const setCurrentAccountKey = useAppStore((s) => s.setCurrentAccountKey);
+  const openLocationModal = useAppStore((s) => s.openLocationModal);
   const accountsRef = useRef<HTMLDivElement>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [targetUpdateAccount, setTargetUpdateAccount] = useState<Account | null>(null);
@@ -630,8 +632,13 @@ export const Accounts: React.FC = () => {
       Toast.success((saveRes as any)?.message || (isUpdated ? `已成功更新已有账号【${nick}】凭证！` : `账号【${nick}】已成功接入托管！`));
       handleCloseModal(false);
       await loadAccounts();
-      if ((saveRes as any)?.account?.key) {
-        setCurrentAccountKey((saveRes as any).account.key);
+      const savedAcc = (saveRes as any)?.account as Account | undefined;
+      if (savedAcc?.key) {
+        setCurrentAccountKey(savedAcc.key);
+        if (!hasValidAccountLocation(savedAcc)) {
+          Toast.warning(`请先为账号【${nick}】绑定所在城市与坐标位置后，再使用抢单或自动任务功能`);
+          openLocationModal(savedAcc.key);
+        }
       }
     } catch (e: any) {
       Toast.error(`保存失败: ${e.message || '网络异常'}`);
@@ -655,6 +662,10 @@ export const Accounts: React.FC = () => {
         await loadAccounts();
         if (res.account.key) {
           setCurrentAccountKey(res.account.key);
+          if (!hasValidAccountLocation(res.account)) {
+            Toast.warning(`请先为账号【${res.account.nickname || '小蚕用户'}】绑定所在城市与坐标位置`);
+            openLocationModal(res.account.key);
+          }
         }
       } else {
         Toast.warning(res.message || '未能从电脑微信检测到小蚕小程序凭证，请先在电脑微信中打开一次【小蚕霸王餐】小程序');
@@ -708,6 +719,10 @@ export const Accounts: React.FC = () => {
                   await loadAccounts();
                   if (statusRes.status.account.key) {
                     setCurrentAccountKey(statusRes.status.account.key);
+                    if (!hasValidAccountLocation(statusRes.status.account)) {
+                      Toast.warning(`请先为账号【${nick}】绑定所在城市与坐标位置`);
+                      openLocationModal(statusRes.status.account.key);
+                    }
                   }
                 }
               } else if (!statusRes.status.is_running) {
@@ -1167,6 +1182,32 @@ export const Accounts: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                  </div>
+
+                  {/* 账号专属绑定位置栏 (位置跟随账号保存，未绑定不可用) */}
+                  <div
+                    className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg mb-3 border text-xs cursor-pointer transition-colors ${
+                      hasValidAccountLocation(acc)
+                        ? 'bg-emerald-500/5 border-emerald-500/20 text-semi-color-text-1 hover:bg-emerald-500/10'
+                        : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/15'
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openLocationModal(acc.key);
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <IconMapPin size="small" className="shrink-0" />
+                      <span className="truncate font-medium">
+                        {hasValidAccountLocation(acc)
+                          ? `${acc.city_name || '已定位'}${acc.address_name ? ` · ${acc.address_name}` : ''}`
+                          : '未绑定抢单地址（不可抢单/跑任务）'}
+                      </span>
+                    </div>
+                    <span className="shrink-0 text-[11px] font-medium flex items-center gap-0.5 text-semi-color-primary">
+                      <IconEdit size="extra-small" />
+                      {hasValidAccountLocation(acc) ? '更改' : '绑定'}
+                    </span>
                   </div>
 
                   {/* 官方原生资产概览 */}
@@ -2931,7 +2972,7 @@ export const Accounts: React.FC = () => {
                       <div className="space-y-1">
                         <Text strong className="text-xs">接收群号（选填）：</Text>
                         <Input
-                          placeholder="例如: 954658571"
+                          placeholder="例如: 123456789"
                           value={(notifyConfig as any).qq_bot_group_id || ''}
                           onChange={(val) => setNotifyConfig({ ...notifyConfig, qq_bot_group_id: val } as any)}
                         />

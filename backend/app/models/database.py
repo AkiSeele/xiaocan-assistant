@@ -43,10 +43,11 @@ def init_db():
         avatar TEXT,
         token TEXT,
         vip_level INTEGER DEFAULT 5,
-        city_code INTEGER DEFAULT 420100,
-        city_name TEXT DEFAULT '武汉',
-        longitude TEXT DEFAULT '114.305393',
-        latitude TEXT DEFAULT '30.593099',
+        city_code INTEGER DEFAULT 0,
+        city_name TEXT DEFAULT '',
+        longitude TEXT DEFAULT '',
+        latitude TEXT DEFAULT '',
+        address_name TEXT DEFAULT '',
         expires_at TEXT DEFAULT '2099-12-31',
         is_active INTEGER DEFAULT 1,
         created_at TEXT,
@@ -114,6 +115,8 @@ def init_db():
         c.execute("ALTER TABLE accounts ADD COLUMN meituan_history_pool TEXT DEFAULT '[]'")
     if "meituan_is_active" not in acc_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN meituan_is_active INTEGER DEFAULT 0")
+    if "address_name" not in acc_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN address_name TEXT DEFAULT ''")
 
     # 2. 自动化任务开关与调度表
     c.execute("""
@@ -329,6 +332,31 @@ def init_db():
     except Exception:
         pass
 
+    # 一次性迁移：清洗历史默认武汉占位定位（无 address_name 且坐标为旧默认 114.305393, 30.593099），强制引导用户绑定真实地址
+    try:
+        cleaned_flag = c.execute(
+            "SELECT value FROM settings WHERE key = 'location_default_cleanup_v1'"
+        ).fetchone()
+        if not cleaned_flag:
+            c.execute("""
+                UPDATE accounts
+                SET city_code = 0,
+                    city_name = '',
+                    longitude = '',
+                    latitude = '',
+                    address_name = ''
+                WHERE COALESCE(address_name, '') = ''
+                  AND COALESCE(longitude, '') = '114.305393'
+                  AND COALESCE(latitude, '') = '30.593099'
+            """)
+            c.execute("""
+                INSERT INTO settings (key, value)
+                VALUES ('location_default_cleanup_v1', '1')
+                ON CONFLICT(key) DO UPDATE SET value = '1'
+            """)
+    except Exception:
+        pass
+
     # 自愈修复：将异常关机或超时残留的 running 孤儿日志自动更新为 aborted
     try:
         c.execute("""
@@ -469,6 +497,7 @@ def _format_account_row(d: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
     d["is_token_expired"] = is_expired
+    d["has_location"] = has_valid_location(d)
     return d
 
 
@@ -523,6 +552,33 @@ def find_account(
             except Exception:
                 pass
     return None
+
+
+def has_valid_location(acc: Optional[Dict[str, Any]]) -> bool:
+    """校验账号是否已绑定完整有效的定位地址（城市代码、城市名、非零合法经纬度）"""
+    if not isinstance(acc, dict):
+        return False
+    try:
+        city_code = int(acc.get("city_code") or 0)
+    except (TypeError, ValueError):
+        return False
+    if city_code <= 0:
+        return False
+    city_name = str(acc.get("city_name") or "").strip()
+    if not city_name or city_name == "未知":
+        return False
+    lon_str = str(acc.get("longitude") or "").strip()
+    lat_str = str(acc.get("latitude") or "").strip()
+    if not lon_str or not lat_str:
+        return False
+    try:
+        lon = float(lon_str)
+        lat = float(lat_str)
+    except (TypeError, ValueError):
+        return False
+    if lon == 0.0 or lat == 0.0:
+        return False
+    return -180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0
 
 
 def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -586,11 +642,26 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
     phone = data.get("phone") or (existing.get("phone") if existing else "")
     real_name = data.get("real_name") or (existing.get("real_name") if existing else "")
 
-    # 城市与定位保护 (优先保留用户已设置的城市与经纬度，避免被默认值覆盖)
-    city_code = data.get("city_code") or (existing.get("city_code") if existing else 420100)
-    city_name = data.get("city_name") or (existing.get("city_name") if existing else "武汉")
-    longitude = data.get("longitude") or (existing.get("longitude") if existing else "114.305393")
-    latitude = data.get("latitude") or (existing.get("latitude") if existing else "30.593099")
+    # 城市与定位保护：禁止任何默认城市/坐标兜底；仅接受完整合法坐标绑定或保留已有合法绑定
+    has_existing_loc = bool(existing and has_valid_location(existing))
+    if has_valid_location(data):
+        city_code = int(data["city_code"])
+        city_name = str(data["city_name"]).strip()
+        longitude = str(data["longitude"]).strip()
+        latitude = str(data["latitude"]).strip()
+        address_name = str(data.get("address_name") or "").strip()
+    elif has_existing_loc and existing is not None:
+        city_code = int(existing["city_code"])
+        city_name = str(existing["city_name"]).strip()
+        longitude = str(existing["longitude"]).strip()
+        latitude = str(existing["latitude"]).strip()
+        address_name = str(existing.get("address_name") or "").strip()
+    else:
+        city_code = 0
+        city_name = ""
+        longitude = ""
+        latitude = ""
+        address_name = ""
 
     # 真实官方资产字段保护
     silk = int(data.get("silk", existing.get("silk", 0) if existing else 0))
@@ -610,8 +681,8 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
 
     with get_conn() as conn:
         conn.execute("""
-        INSERT INTO accounts (key, user_id, silk_id, nickname, avatar, token, vip_level, is_plus, phone, real_name, vip_score, vip_expired_at, silk, withdrawing, withdraw_total, completed_number, yb_point, unreceived_points, city_code, city_name, longitude, latitude, expires_at, client_mode, is_active, created_at, updated_at)
-        VALUES (:key, :user_id, :silk_id, :nickname, :avatar, :token, :vip_level, :is_plus, :phone, :real_name, :vip_score, :vip_expired_at, :silk, :withdrawing, :withdraw_total, :completed_number, :yb_point, :unreceived_points, :city_code, :city_name, :longitude, :latitude, :expires_at, :client_mode, :is_active, :created_at, :updated_at)
+        INSERT INTO accounts (key, user_id, silk_id, nickname, avatar, token, vip_level, is_plus, phone, real_name, vip_score, vip_expired_at, silk, withdrawing, withdraw_total, completed_number, yb_point, unreceived_points, city_code, city_name, longitude, latitude, address_name, expires_at, client_mode, is_active, created_at, updated_at)
+        VALUES (:key, :user_id, :silk_id, :nickname, :avatar, :token, :vip_level, :is_plus, :phone, :real_name, :vip_score, :vip_expired_at, :silk, :withdrawing, :withdraw_total, :completed_number, :yb_point, :unreceived_points, :city_code, :city_name, :longitude, :latitude, :address_name, :expires_at, :client_mode, :is_active, :created_at, :updated_at)
         ON CONFLICT(key) DO UPDATE SET
             user_id=excluded.user_id,
             silk_id=CASE WHEN excluded.silk_id != '' THEN excluded.silk_id ELSE accounts.silk_id END,
@@ -634,6 +705,7 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
             city_name=excluded.city_name,
             longitude=excluded.longitude,
             latitude=excluded.latitude,
+            address_name=excluded.address_name,
             expires_at=excluded.expires_at,
             client_mode=COALESCE(excluded.client_mode, accounts.client_mode),
             is_active=1,
@@ -661,6 +733,7 @@ def save_account(data: Dict[str, Any]) -> Dict[str, Any]:
             "city_name": city_name,
             "longitude": longitude,
             "latitude": latitude,
+            "address_name": address_name,
             "expires_at": final_expires_at,
             "client_mode": client_mode,
             "is_active": 1,
@@ -685,7 +758,7 @@ def update_account_profile(key: str, profile: Dict[str, Any]) -> Optional[Dict[s
         "phone", "real_name", "vip_score", "vip_expired_at",
         "silk", "withdrawing", "withdraw_total", "completed_number",
         "yb_point", "unreceived_points",
-        "city_code", "city_name", "expires_at", "longitude", "latitude",
+        "city_code", "city_name", "expires_at", "longitude", "latitude", "address_name",
         "notify_mode", "notify_config", "client_mode",
         "meituan_token", "meituan_nickname", "meituan_saved_at",
         "meituan_last_claimed_at", "meituan_last_claimed_count",
