@@ -9,20 +9,23 @@ import {
   Card,
   Typography,
   Space,
-  Divider
+  Divider,
+  Banner
 } from '@douyinfe/semi-ui';
 import {
   IconDesktop,
   IconSearch,
-  IconRefresh
+  IconRefresh,
+  IconUser
 } from '@douyinfe/semi-icons';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, deriveAccountLocation } from '../store/useAppStore';
 import { api } from '../api';
 import type { LocationCandidate, LocationHistoryItem } from '../types';
 
 interface LocationModalProps {
   visible: boolean;
   onClose: () => void;
+  targetAccountKey?: string | null;
 }
 
 const formatCityTag = (rawCity?: string, district?: string) => {
@@ -39,22 +42,29 @@ const formatCityTag = (rawCity?: string, district?: string) => {
   return '地点';
 };
 
-export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }) => {
-  const activeLocation = useAppStore((s) => s.activeLocation);
-  const setActiveLocation = useAppStore((s) => s.setActiveLocation);
+export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose, targetAccountKey }) => {
+  const accounts = useAppStore((s) => s.accounts);
+  const currentAccountKey = useAppStore((s) => s.currentAccountKey);
+  const locationModalAccountKey = useAppStore((s) => s.locationModalAccountKey);
+  const bindAccountLocation = useAppStore((s) => s.bindAccountLocation);
   const locationHistory = useAppStore((s) => s.locationHistory);
   const addLocationHistory = useAppStore((s) => s.addLocationHistory);
   const removeLocationHistory = useAppStore((s) => s.removeLocationHistory);
   const clearLocationHistory = useAppStore((s) => s.clearLocationHistory);
 
-  const [editLng, setEditLng] = useState<string>(activeLocation?.longitude || '');
-  const [editLat, setEditLat] = useState<string>(activeLocation?.latitude || '');
-  const [resolvedCityCode, setResolvedCityCode] = useState<number>(activeLocation?.cityCode || 0);
-  const [resolvedCityName, setResolvedCityName] = useState<string>(activeLocation?.cityName || '');
-  const [resolvedAddress, setResolvedAddress] = useState<string>(activeLocation?.addressName || '');
+  const effectiveAccountKey = targetAccountKey || locationModalAccountKey || currentAccountKey;
+  const targetAccount = accounts.find((a) => a.key === effectiveAccountKey) || null;
+  const targetAccountLoc = deriveAccountLocation(targetAccount);
+
+  const [editLng, setEditLng] = useState<string>(targetAccountLoc?.longitude || '');
+  const [editLat, setEditLat] = useState<string>(targetAccountLoc?.latitude || '');
+  const [resolvedCityCode, setResolvedCityCode] = useState<number>(targetAccountLoc?.cityCode || 0);
+  const [resolvedCityName, setResolvedCityName] = useState<string>(targetAccountLoc?.cityName || '');
+  const [resolvedAddress, setResolvedAddress] = useState<string>(targetAccountLoc?.addressName || '');
 
   const [resolving, setResolving] = useState<boolean>(false);
   const [locating, setLocating] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
 
   // 搜索关键词与浮层下拉状态
   const [searchKeyword, setSearchKeyword] = useState<string>('');
@@ -77,11 +87,11 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
 
   useEffect(() => {
     if (visible) {
-      setEditLng(activeLocation?.longitude || '');
-      setEditLat(activeLocation?.latitude || '');
-      setResolvedCityCode(activeLocation?.cityCode || 0);
-      setResolvedCityName(activeLocation?.cityName || '');
-      setResolvedAddress(activeLocation?.addressName || '');
+      setEditLng(targetAccountLoc?.longitude || '');
+      setEditLat(targetAccountLoc?.latitude || '');
+      setResolvedCityCode(targetAccountLoc?.cityCode || 0);
+      setResolvedCityName(targetAccountLoc?.cityName || '');
+      setResolvedAddress(targetAccountLoc?.addressName || '');
       setSearchKeyword('');
       setCandidates([]);
       setDropdownVisible(false);
@@ -99,7 +109,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     } else {
       setDropdownVisible(false);
     }
-  }, [visible, activeLocation]);
+  }, [visible, effectiveAccountKey]);
 
   // 反查经纬度对应地址
   const handleResolveCoords = async (latStr?: string, lngStr?: string, showToast = true) => {
@@ -116,8 +126,8 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     setResolving(true);
     try {
       const res = await api.resolveLocation(latVal, lngVal);
-      if (res && res.ok && res.city_name) {
-        setResolvedCityCode(res.city_code || 420100);
+      if (res && res.ok && res.city_name && Number(res.city_code || 0) > 0) {
+        setResolvedCityCode(Number(res.city_code));
         setResolvedCityName(res.city_name);
         setResolvedAddress(res.address_name || `${res.city_name}市`);
         if (showToast) {
@@ -125,7 +135,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
         }
         return true;
       } else {
-        if (showToast) Toast.warning('未解析到该坐标的地址信息');
+        if (showToast) Toast.warning('未解析到该坐标的有效城市信息，请通过上方搜索框选取地址');
         return false;
       }
     } catch {
@@ -140,21 +150,21 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
   const handleSelectCandidate = (cand: LocationCandidate) => {
     setEditLng(cand.longitude);
     setEditLat(cand.latitude);
-    setResolvedCityCode(cand.city_code || 420100);
+    setResolvedCityCode(Number(cand.city_code || 0));
     setResolvedCityName(cand.city_name);
     setResolvedAddress(cand.full_address || `${cand.city_name} · ${cand.short_name}`);
     setDropdownVisible(false);
-    Toast.success(`已切换：${cand.city_name} · ${cand.short_name}`);
+    Toast.success(`已选择：${cand.city_name} · ${cand.short_name}`);
   };
 
   // 选中历史位置
   const handleSelectHistory = (item: LocationHistoryItem) => {
     setEditLng(item.longitude);
     setEditLat(item.latitude);
-    setResolvedCityCode(item.cityCode || 420100);
+    setResolvedCityCode(Number(item.cityCode || 0));
     setResolvedCityName(item.cityName);
     setResolvedAddress(item.addressName);
-    Toast.success(`已切换历史位置：${item.cityName} · ${item.addressName}`);
+    Toast.success(`已填入历史位置：${item.cityName} · ${item.addressName}`);
   };
 
   // 仅在用户主动按 Enter 或点击【搜索】时单次触发检索 (严禁打字实时触发)
@@ -198,15 +208,15 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     const fallbackToIp = async () => {
       try {
         const ipRes = await api.getIpLocation();
-        if (ipRes && ipRes.ok && ipRes.latitude && ipRes.longitude) {
+        if (ipRes && ipRes.ok && ipRes.latitude && ipRes.longitude && Number(ipRes.city_code || 0) > 0 && ipRes.city_name) {
           setEditLng(ipRes.longitude);
           setEditLat(ipRes.latitude);
-          setResolvedCityCode(ipRes.city_code || 420100);
+          setResolvedCityCode(Number(ipRes.city_code));
           setResolvedCityName(ipRes.city_name);
           setResolvedAddress(ipRes.address_name || `${ipRes.city_name}市`);
           Toast.success(`已成功获取定位：${ipRes.city_name} · ${ipRes.address_name}`);
         } else {
-          Toast.error('获取定位失败，请尝试搜索地址');
+          Toast.error('获取定位失败，请尝试搜索目标城市或商圈地址');
         }
       } catch {
         Toast.error('定位服务暂时不可用，请尝试搜索地址');
@@ -228,8 +238,8 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
         setEditLat(lat.toFixed(6));
         try {
           const res = await api.resolveLocation(lat, lng);
-          if (res && res.ok && res.city_name) {
-            setResolvedCityCode(res.city_code || 420100);
+          if (res && res.ok && res.city_name && Number(res.city_code || 0) > 0) {
+            setResolvedCityCode(Number(res.city_code));
             setResolvedCityName(res.city_name);
             setResolvedAddress(res.address_name || `${res.city_name}市`);
             Toast.success(`已成功获取高精定位：${res.city_name} · ${res.address_name}`);
@@ -247,26 +257,31 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
     );
   };
 
-  // 确认保存
+  // 确认绑定保存到账号数据库
   const handleConfirmLocation = async () => {
+    if (!targetAccount) {
+      Toast.warning('当前尚未登录小蚕账号，请先在账号中心添加账号后再绑定地址');
+      return;
+    }
+
     const latVal = parseFloat(editLat);
     const lngVal = parseFloat(editLng);
 
-    if (isNaN(latVal) || isNaN(lngVal)) {
-      Toast.error('请输入有效的经度和纬度');
+    if (isNaN(latVal) || isNaN(lngVal) || latVal === 0 || lngVal === 0) {
+      Toast.error('请输入有效的非零经纬度坐标，或使用搜索/定位获取');
       return;
     }
 
     let cName = resolvedCityName;
-    let cCode = resolvedCityCode;
+    let cCode = Number(resolvedCityCode || 0);
     let addr = resolvedAddress;
 
-    if (!addr || !cName) {
+    if (!addr || !cName || cName === '未知' || cName === '未知城市' || cCode <= 0) {
       try {
         const res = await api.resolveLocation(latVal, lngVal);
-        if (res && res.ok && res.city_name) {
+        if (res && res.ok && res.city_name && Number(res.city_code || 0) > 0) {
           cName = res.city_name;
-          cCode = res.city_code || 0;
+          cCode = Number(res.city_code);
           addr = res.address_name || `${res.city_name}市`;
         }
       } catch {
@@ -274,32 +289,64 @@ export const LocationModal: React.FC<LocationModalProps> = ({ visible, onClose }
       }
     }
 
+    if (!cCode || cCode <= 0 || !cName || cName === '未知' || cName === '未知城市') {
+      Toast.error('未能识别该坐标所属城市，请通过关键词搜索选择具体地点后保存');
+      return;
+    }
+
     const newLoc = {
-      cityCode: cCode || 0,
-      cityName: cName || '未知城市',
-      addressName: addr || '高精定位点',
+      cityCode: cCode,
+      cityName: cName.trim(),
+      addressName: (addr || `${cName.trim()}定位点`).trim(),
       longitude: (editLng || '').trim(),
       latitude: (editLat || '').trim()
     };
 
-    setActiveLocation(newLoc);
-    addLocationHistory(newLoc);
-    Toast.success(`抢单位置已更新：${newLoc.cityName} · ${newLoc.addressName}`);
-    onClose();
+    setSaving(true);
+    try {
+      await bindAccountLocation(targetAccount.key, newLoc);
+      addLocationHistory(newLoc);
+      Toast.success(`账号【${targetAccount.nickname}】已绑定定位：${newLoc.cityName} · ${newLoc.addressName}`);
+      onClose();
+    } catch (err: any) {
+      Toast.error(err?.response?.data?.detail || err?.message || '保存账号定位失败，请重试');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <Modal
-      title="抢单位置设置"
+      title="账号定位地址绑定"
       visible={visible}
       onOk={handleConfirmLocation}
       onCancel={onClose}
-      okText="确定"
+      okText="绑定并保存"
       cancelText="取消"
+      confirmLoading={saving}
+      okButtonProps={{ disabled: !targetAccount }}
       width={580}
       centered
     >
       <div className="space-y-3.5 py-1">
+        {targetAccount ? (
+          <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-semi-color-fill-0 border border-semi-color-border">
+            <Space spacing="tight">
+              <IconUser className="text-semi-color-primary" />
+              <Typography.Text size="small">当前绑定账号：</Typography.Text>
+              <Typography.Text strong size="small">{targetAccount.nickname}</Typography.Text>
+            </Space>
+            <Tag size="small" color={targetAccountLoc ? 'green' : 'amber'}>
+              {targetAccountLoc ? `已绑: ${targetAccountLoc.cityName}` : '尚未绑定地址'}
+            </Tag>
+          </div>
+        ) : (
+          <Banner
+            type="warning"
+            closeIcon={null}
+            description="系统尚未接入任何小蚕账号。地址必须跟随账号保存，请先添加小蚕账号后再绑定地址。"
+          />
+        )}
         {/* 1. 当前位置展示与一键获取本机定位 (重点核心卡片) */}
         <Card
           bordered

@@ -71,6 +71,8 @@ export const api = {
   getAccounts: () => client.get<{ ok: boolean; accounts: Account[]; total: number }>('/accounts').then(r => r.data),
   createAccount: (data: Partial<Account>) => client.post<{ ok: boolean; account: Account }>('/accounts', data).then(r => r.data),
   updateAccount: (key: string, data: Partial<Account>) => client.post<{ ok: boolean; account: Account; message: string }>(`/accounts/${key}/profile`, data).then(r => r.data),
+  updateAccountLocation: (key: string, loc: { city_code: number; city_name: string; longitude: string; latitude: string; address_name: string }) =>
+    client.post<{ ok: boolean; account: Account; message: string }>(`/accounts/${key}/profile`, loc).then(r => r.data),
   syncAccount: (key: string) => client.post<{ ok: boolean; account: Account; message: string }>(`/accounts/${key}/sync`).then(r => r.data),
   getAccountDetail: (key: string) => client.get<AccountDetailData>(`/accounts/${key}/detail`).then(r => r.data),
   getAccountCards: (key: string, status = 0) => client.get<{ ok: boolean; cards: UserCardItem[]; status: number }>(`/accounts/${key}/cards`, { params: { status } }).then(r => r.data),
@@ -123,7 +125,7 @@ export const api = {
 
   // 店铺与附近霸王餐 (支持经纬度、平台、搜索过滤、触底流式分页)
   getStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; keyword?: string; platform?: string; condition?: string; rebate_type?: string; sort_by?: string; limit?: number; offset?: number; page_pv_id?: string }, signal?: AbortSignal) => 
-    client.get<{ ok: boolean; stores: StoreItem[]; total: number; raw_total?: number; source?: string; has_more?: boolean; next_offset?: number; page_pv_id?: string; keyword?: string; error?: string }>('/store/list', { params, signal }).then(r => r.data),
+    client.get<{ ok: boolean; stores: StoreItem[]; total: number; raw_total?: number; source?: string; has_more?: boolean; next_offset?: number; page_pv_id?: string; keyword?: string; location_required?: boolean; code?: string; message?: string; error?: string }>('/store/list', { params, signal }).then(r => r.data),
   scanDualRebateStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; platform?: string; keyword?: string; max_stores?: number; delay_min?: number; delay_max?: number; page_delay?: number }) =>
     client.get<{
       ok: boolean;
@@ -133,6 +135,8 @@ export const api = {
       returned_count?: number;
       max_stores?: number;
       stores: StoreItem[];
+      location_required?: boolean;
+      code?: string;
       message?: string;
     }>('/store/dual-rebate-scan', { params, timeout: 120000 }).then(r => r.data),
   grabStoreNow: (data: { account_key: string; store_id?: string; store_name?: string; store_icon?: string; promotion_id: string; platform?: string; order_money?: number; rebate_price?: number; rebate_desc?: string; rebate_type?: string; advance?: boolean; redpack_id?: string; redpack_name?: string; redpack_mode?: number }) =>

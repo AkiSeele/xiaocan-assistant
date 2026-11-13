@@ -30,8 +30,9 @@ import {
   IconCheckCircleStroked,
   IconAlertCircle,
   IconCalendarClockStroked,
+  IconMapPin,
 } from '@douyinfe/semi-icons';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, hasValidAccountLocation } from '../store/useAppStore';
 import { api } from '../api';
 import { getNtpDate } from '../utils/ntpTime';
 import { useGSAP, animateStaggerEnter } from '../utils/animations';
@@ -435,6 +436,7 @@ export const Automation: React.FC = () => {
   const currentAccountKey = useAppStore((s) => s.currentAccountKey);
   const accounts = useAppStore((s) => s.accounts);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const openLocationModal = useAppStore((s) => s.openLocationModal);
   const tasksRef = useRef<HTMLDivElement>(null);
   const [accountTasksMap, setAccountTasksMap] = useState<Record<string, TaskItem[]>>({});
   const [activeCategory, setActiveCategory] = useState<string>('member');
@@ -546,6 +548,13 @@ export const Automation: React.FC = () => {
     const key = `${accountKey}:${taskId}`;
     if (togglingKeys[key] || togglingAllTasks[taskId]) return;
 
+    const acc = accounts.find((a) => a.key === accountKey);
+    if (enabled && !hasValidAccountLocation(acc)) {
+      Toast.warning(`账号【${acc?.nickname || accountKey}】未绑定抢单地址，请先绑定地址后再开启自动化任务`);
+      openLocationModal(accountKey);
+      return;
+    }
+
     setTogglingKeys((prev) => ({ ...prev, [key]: true }));
     try {
       await api.toggleTask({
@@ -582,6 +591,15 @@ export const Automation: React.FC = () => {
   const handleToggleAllAccounts = async (taskId: string, enabled: boolean) => {
     if (togglingAllTasks[taskId]) return;
 
+    if (enabled) {
+      const unbound = accounts.filter((a) => !hasValidAccountLocation(a));
+      if (unbound.length > 0) {
+        Toast.warning(`账号【${unbound[0].nickname || unbound[0].key}】等 ${unbound.length} 个账号未绑定地址，请先绑定后再批量开启`);
+        openLocationModal(unbound[0].key);
+        return;
+      }
+    }
+
     setTogglingAllTasks((prev) => ({ ...prev, [taskId]: true }));
     try {
       await Promise.all(
@@ -617,8 +635,14 @@ export const Automation: React.FC = () => {
 
   // 单个执行任务
   const handleRun = async (task: TaskItem, accountKey: string) => {
-    setRunningTaskId(task.task_id);
     const targetKey = accountKey || currentAccountKey;
+    const targetAcc = accounts.find((a) => a.key === targetKey);
+    if (!hasValidAccountLocation(targetAcc)) {
+      Toast.warning(`账号【${targetAcc?.nickname || targetKey}】尚未绑定地址，请先绑定地址后再执行`);
+      openLocationModal(targetKey);
+      return;
+    }
+    setRunningTaskId(task.task_id);
     try {
       const res = await api.runTaskNow(targetKey, task.task_id);
       if (res.ok) {
@@ -643,6 +667,12 @@ export const Automation: React.FC = () => {
   const handleBatchRunDaily = async () => {
     if (accounts.length === 0) {
       Toast.warning('当前无托管账号，请先添加或绑定账号');
+      return;
+    }
+    const boundAccounts = accounts.filter((a) => hasValidAccountLocation(a));
+    if (boundAccounts.length === 0) {
+      Toast.warning('暂无已绑定地址的账号，请先为账号绑定城市与坐标位置');
+      openLocationModal(currentAccountKey || accounts[0].key);
       return;
     }
     setBatchRunning(true);
@@ -819,6 +849,11 @@ export const Automation: React.FC = () => {
   // 分类任务批量启停 (仅针对当前选中的Tab分类)
   const handleBatchToggleCategory = async (category: string, enable: boolean) => {
     if (batchCategoryToggling !== null) return;
+    if (enable && !hasValidAccountLocation(currentAccount)) {
+      Toast.warning(`当前账号【${currentAccount?.nickname || currentAccountKey}】未绑定地址，请先绑定地址后再开启任务`);
+      openLocationModal(currentAccountKey);
+      return;
+    }
     const currentTasks = accountTasksMap[currentAccountKey] || [];
     const targetTasks = currentTasks.filter((t) => (t.category || 'daily') === category);
 
@@ -991,6 +1026,30 @@ export const Automation: React.FC = () => {
           </Button>
         </Space>
       </div>
+
+      {currentAccount && !hasValidAccountLocation(currentAccount) && (
+        <Banner
+          type="warning"
+          closeIcon={null}
+          icon={<IconMapPin />}
+          title={`当前账号【${currentAccount.nickname || currentAccount.key}】尚未绑定位置地址`}
+          description={
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span>为避免误用默认城市坐标导致任务或监听异常，请先为当前账号绑定真实所在城市与位置后再开启/执行自动化任务。</span>
+              <Button
+                theme="solid"
+                type="warning"
+                size="small"
+                icon={<IconMapPin />}
+                onClick={() => openLocationModal(currentAccount.key)}
+              >
+                立即绑定账号地址
+              </Button>
+            </div>
+          }
+          className="rounded-xl border border-amber-200"
+        />
+      )}
 
       {/* 4 统计指标栅格 */}
       <div
