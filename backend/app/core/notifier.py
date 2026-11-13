@@ -473,7 +473,7 @@ def is_any_notify_channel_enabled() -> bool:
             return True
 
     # 13. QQ 机器人
-    if db.get_setting("qq_bot_enabled", True):
+    if db.get_setting("qq_bot_enabled", False):
         qq_api = (db.get_setting("qq_bot_api", "") or "").strip()
         if qq_api and (db.get_setting("qq_bot_group_id") or db.get_setting("qq_bot_user_id")):
             return True

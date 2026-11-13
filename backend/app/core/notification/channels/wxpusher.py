@@ -42,6 +42,32 @@ class WxPusherNotifier(BaseNotifier):
                     res_data = resp.json()
                     code = res_data.get("code")
                     if code == 1000:
+                        data_list = res_data.get("data") or []
+                        if isinstance(data_list, list) and len(data_list) > 0:
+                            ok_count = 0
+                            failed_msgs: List[str] = []
+                            for item in data_list:
+                                if not isinstance(item, dict):
+                                    continue
+                                item_code = item.get("code")
+                                item_uid = item.get("uid") or ""
+                                item_status = item.get("status") or item.get("msg") or f"错误码 {item_code}"
+                                if item_code == 1000:
+                                    ok_count += 1
+                                else:
+                                    failed_msgs.append(f"{item_uid or 'UID'}: {item_status}")
+                            if ok_count == 0 and failed_msgs:
+                                return {
+                                    "ok": False,
+                                    "channel": self.name,
+                                    "message": f"WxPusher 投递失败（{'; '.join(failed_msgs)}）。请确认该 UID 已微信扫码关注当前应用对应的 WxPusher 公众号",
+                                }
+                            if failed_msgs:
+                                return {
+                                    "ok": True,
+                                    "channel": self.name,
+                                    "message": f"WxPusher 部分成功（成功 {ok_count} 个，失败: {'; '.join(failed_msgs)}）",
+                                }
                         return {"ok": True, "channel": self.name, "message": "WxPusher 消息发送成功"}
                     err_msg = res_data.get("msg") or str(res_data)
                     return {"ok": False, "channel": self.name, "message": f"WxPusher 返回错误: {err_msg}"}

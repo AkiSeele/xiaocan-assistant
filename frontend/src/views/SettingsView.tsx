@@ -605,7 +605,7 @@ export const SettingsView: React.FC = () => {
   const [activeTab, setActiveTab] = useState('channels');
   const [selectedChannelKey, setSelectedChannelKey] = useState<string>('clawbot');
   const [initialValues, setInitialValues] = useState<Partial<SystemSettings>>({
-    clawbot_enabled: true,
+    clawbot_enabled: false,
     clawbot_auth_path: '',
     clawbot_auth_json: '',
     serverchan_enabled: false,
@@ -650,10 +650,10 @@ export const SettingsView: React.FC = () => {
     discord_enabled: false,
     discord_webhook: '',
     discord_username: '小蚕小帮手',
-    qq_bot_enabled: true,
-    qq_bot_api: 'http://127.0.0.1:8080',
-    qq_bot_group_id: '954658571',
-    qq_bot_user_id: '2371445972',
+    qq_bot_enabled: false,
+    qq_bot_api: '',
+    qq_bot_group_id: '',
+    qq_bot_user_id: '',
     qq_bot_target_type: 'group',
     qq_bot_token: '',
     notify_on_grab: true,
@@ -856,9 +856,16 @@ export const SettingsView: React.FC = () => {
   const handleSave = async (values: any) => {
     setLoading(true);
     try {
-      await api.saveSettings(values);
+      const payload: Record<string, any> = { ...values };
+      for (const [k, defVal] of Object.entries(initialValues)) {
+        if (k === 'ok' || k === 'clawbot_status') continue;
+        if (payload[k] === undefined || payload[k] === null) {
+          payload[k] = typeof defVal === 'boolean' ? false : typeof defVal === 'number' ? 0 : '';
+        }
+      }
+      await api.saveSettings(payload);
       Toast.success('系统设置已成功保存');
-      loadData();
+      await loadData();
     } catch {
       Toast.error('保存设置失败');
     } finally {
@@ -953,6 +960,7 @@ export const SettingsView: React.FC = () => {
       </div>
 
       <Form
+        allowEmpty
         getFormApi={(api) => {
           formApiRef.current = api;
         }}
@@ -1534,7 +1542,7 @@ export const SettingsView: React.FC = () => {
                                           <Form.Input
                                             field="qq_bot_group_id"
                                             label="目标群号"
-                                            placeholder="954658571"
+                                            placeholder="请输入接收提醒的 QQ 群号"
                                             helpText="接收抢单提醒的 QQ 群号"
                                           />
                                         </Col>
@@ -1542,7 +1550,7 @@ export const SettingsView: React.FC = () => {
                                           <Form.Input
                                             field="qq_bot_user_id"
                                             label="管理员 QQ 号"
-                                            placeholder="2371445972"
+                                            placeholder="请输入管理员 QQ 号"
                                             helpText="接收私聊提醒的管理员 QQ 号"
                                           />
                                         </Col>
