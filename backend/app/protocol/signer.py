@@ -8,8 +8,57 @@ import json
 import os
 import time
 import uuid
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from ..core import time_service
+
+
+DEFAULT_PROTOCOL_PROFILE_ID = "android_webview"
+
+# 已实测验证且兼容 App 网关 (X-Platform=Android, appid=10) 与腾讯云 STGW/WAF 的合规协议指纹档案
+# 严禁将 okhttp/* 与 Dalvik/* 等已知会触发 STGW 规则 403 的非标脚本 UA 列入自动候选池
+PROTOCOL_PROFILES: Dict[str, Dict[str, str]] = {
+    "android_webview": {
+        "id": "android_webview",
+        "label": "Android WebView 标准通道",
+        "transport_mode": "okhttp",
+        "user_agent": (
+            "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230804.001; wv) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.186 Mobile Safari/537.36"
+        ),
+    },
+    "android_chrome131": {
+        "id": "android_chrome131",
+        "label": "Android Chrome 131 浏览器通道",
+        "transport_mode": "chrome131",
+        "user_agent": (
+            "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230804.001) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        ),
+    },
+    "wechat_app_compat": {
+        "id": "wechat_app_compat",
+        "label": "WeChat WebView 兼容 App 通道",
+        "transport_mode": "chrome131",
+        "user_agent": (
+            "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230804.001; wv) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.103 "
+            "Mobile Safari/537.36 XWEB/1300255 MMWEBSDK/20241102 MicroMessenger/8.0.54.2760(0x28003639) "
+            "WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64"
+        ),
+    },
+}
+
+
+def get_protocol_profile(profile_id: Optional[str] = None) -> Dict[str, str]:
+    """获取指定或默认的合规协议指纹档案（非法/未知 ID 自动回退至默认档案）"""
+    if profile_id and profile_id in PROTOCOL_PROFILES:
+        return dict(PROTOCOL_PROFILES[profile_id])
+    return dict(PROTOCOL_PROFILES[DEFAULT_PROTOCOL_PROFILE_ID])
+
+
+def list_protocol_profiles() -> List[Dict[str, str]]:
+    """按优先级顺序列出所有自动自愈候选合规协议档案"""
+    return [dict(item) for item in PROTOCOL_PROFILES.values()]
 
 
 def md5_hex(s: str) -> str:
@@ -34,13 +83,15 @@ def get_ashe(time_millis: int, server_name: str, method_name: str, nami: str) ->
 def generate_headers(
     server_name: str,
     method_name: str,
-    city_code: int = 440303,
+    city_code: int = 0,
     token: Optional[str] = None,
     user_id: Optional[str] = None,
     silk_id: Optional[str] = None,
     nami: Optional[str] = None,
     time_millis: Optional[int] = None,
-    platform: str = "app"
+    platform: str = "app",
+    user_agent: Optional[str] = None,
+    profile_id: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     生成小蚕霸王餐网关调用所需的全部请求头 (英雄联盟特征头规范)
@@ -97,7 +148,16 @@ def generate_headers(
         headers["x-channel"] = "xiaocan"
         headers["X-CityCode"] = str(city_code)
         headers["X-Model"] = "Android Phone"
-        headers["User-Agent"] = os.getenv("XIAOCAN_USER_AGENT") or "okhttp/4.12.0"
+        # 腾讯云 WAF (stgw) 会直接 403 拦截 okhttp/x.x 与 Dalvik/x.x 类非浏览器 UA
+        # 优先级: 显式传入 user_agent > 显式指定 profile_id > 环境变量 XIAOCAN_USER_AGENT > 默认合规档案
+        explicit_ua = str(user_agent).strip() if user_agent else ""
+        if explicit_ua:
+            headers["User-Agent"] = explicit_ua
+        elif profile_id and profile_id in PROTOCOL_PROFILES:
+            headers["User-Agent"] = get_protocol_profile(profile_id)["user_agent"]
+        else:
+            env_ua = (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
+            headers["User-Agent"] = env_ua or get_protocol_profile()["user_agent"]
 
     if user_id:
         headers["x-Vayne"] = str(user_id)

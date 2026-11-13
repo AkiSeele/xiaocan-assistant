@@ -102,10 +102,10 @@ async def run_dual_rebate_monitor(
     log_lines.append(f"[{now_str}] 启动美团同店双返利巡检: 触发方式={trigger_type}, 范围={max_stores}家, 关键词='{keyword}'")
 
     # 0. 前置 WAF 拦截状态检查，避免封禁期间盲目发起巡检
-    from ..protocol.client import is_waf_blocked, get_waf_cooldown_seconds
+    from ..protocol.client import is_waf_blocked, get_waf_cooldown_seconds, format_waf_block_message
     if is_waf_blocked():
         remain = get_waf_cooldown_seconds()
-        err_msg = f"[{now_str}] 巡检跳过: 当前网络IP处于官方腾讯云WAF临时频次拦截保护冷却中 (剩余约 {remain} 秒)，已自动暂停本次巡检以避免延长封锁。切换手机热点或重启光猫更换IP可立即恢复。"
+        err_msg = f"[{now_str}] 巡检跳过: {format_waf_block_message(cooldown=remain)}"
         log_lines.append(err_msg)
         return "\n".join(log_lines) + "\n", False
 
@@ -122,9 +122,15 @@ async def run_dual_rebate_monitor(
         log_lines.append(err_msg)
         return "\n".join(log_lines) + "\n", False
 
-    city_code = acc.get("city_code") or 440303
-    longitude = acc.get("longitude") or "114.13166"
-    latitude = acc.get("latitude") or "22.548361"
+    if not db.has_valid_location(acc):
+        nickname = acc.get("nickname") or account_key
+        err_msg = f"[{now_str}] [已跳过] 账号【{nickname}】尚未绑定有效定位地址，禁止使用默认定位扫描，请先为该账号绑定地址！"
+        log_lines.append(err_msg)
+        return "\n".join(log_lines) + "\n", False
+
+    city_code = int(acc["city_code"])
+    longitude = str(acc["longitude"]).strip()
+    latitude = str(acc["latitude"]).strip()
     nickname = acc.get("nickname") or account_key
 
     # 前置动态协同检查：若当前账号正在执行高优任务 (红包雨、秒杀、预约抢单)，动态监听其完成事件

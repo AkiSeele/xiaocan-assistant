@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List, Set
 
 from ..models import database as db
-from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds
+from ..protocol.client import XiaoCanClient, XiaoCanRPCError, is_waf_blocked, get_waf_cooldown_seconds, format_waf_block_message
 from .scheduler import mark_task_started, mark_task_finished
 from .notifier import send_system_notification
 from .notification import NotificationEvent, NotificationLevel
@@ -102,12 +102,19 @@ def _parse_time_today(time_str: str) -> Optional[float]:
 async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, Any], advance: bool = False, action_source: str = "store_grab") -> Dict[str, Any]:
     """执行小蚕官方抢单接口，并全程记录高精步骤日志入系统运行流水"""
     aid = apt.get("id") or 0
+    account_key = apt.get("account_key") or account.get("key", "")
+    nickname = account.get("nickname") or account_key
+    if not db.has_valid_location(account):
+        err_msg = f"账号【{nickname}】尚未绑定有效定位地址，请先在账号设置中绑定地址后再试"
+        if aid:
+            db.update_appointment(aid, {"status": "failed", "outcome": err_msg})
+            invalidate_worker_cache()
+        return {"ok": False, "code": -400, "message": err_msg}
+
     token = account.get("token")
     silk_id = account.get("silk_id")
     user_id = account.get("user_id")
-    city_code = account.get("city_code") or 440303
-    account_key = apt.get("account_key") or account.get("key", "")
-    nickname = account.get("nickname") or account_key
+    city_code = int(account["city_code"])
     store_name = apt.get("store_name", "店铺活动")
     promotion_id = apt.get("promotion_id", "")
     platform_name = "美团外卖" if apt.get("platform") == "meituan" else ("饿了么" if apt.get("platform") == "eleme" else "京东外卖")
@@ -457,6 +464,19 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             invalidate_worker_cache()
             continue
 
+        if not db.has_valid_location(account):
+            nick = account.get("nickname") or acc_key
+            err_msg = f"账号【{nick}】尚未绑定定位地址，任务已停止，请先绑定地址后重试"
+            db.update_appointment(aid, {
+                "status": "failed",
+                "outcome": err_msg
+            })
+            linked_log_id = int(apt.get("log_id") or 0)
+            if linked_log_id > 0:
+                _append_apt_log(aid, linked_log_id, f"[{time_service.format_now_ms()}] [已拦截] {err_msg}", sync_db=True, status="error")
+            invalidate_worker_cache()
+            continue
+
         # ---------------- 分支一：店名抢单监听与智能嗅探 (name_monitor / keyword) ---------------- #
         if task_type in ("name_monitor", "keyword", "keyword_monitor"):
             linked_log_id = int(apt.get("log_id") or 0)
@@ -495,12 +515,12 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             elif last_checked and (now_ts - last_checked) < interval:
                 continue
 
-            # 如果当前网络处于 WAF 熔断冷却期，主动跳过嗅探，避免延长封锁
+            # 如果当前处于 WAF 熔断冷却期，主动跳过嗅探，避免延长封锁
             if is_waf_blocked():
                 remain = get_waf_cooldown_seconds()
                 if (int(now_ts) % 30) < 2 and linked_log_id > 0:
                     t_now = time_service.format_now_ms()
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] 当前网络IP处于官方腾讯云WAF临时拦截冷却中 (剩余约 {remain} 秒)，已自动暂停嗅探以避免延长封锁。切换手机热点或重启光猫更换IP可立即恢复。", sync_db=True, status="running")
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] {format_waf_block_message(cooldown=remain)}，已自动暂停嗅探以避免触发升级冷却", sync_db=True, status="running")
                 continue
 
             apt["last_checked_at"] = now_str
@@ -526,9 +546,9 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             token = account.get("token")
             silk_id = account.get("silk_id")
             user_id = account.get("user_id")
-            city_code = int(account.get("city_code") or 440300)
-            lon = str(account.get("longitude") or "114.13166")
-            lat = str(account.get("latitude") or "22.548361")
+            city_code = int(account["city_code"])
+            lon = str(account["longitude"]).strip()
+            lat = str(account["latitude"]).strip()
 
             try:
                 from ..api.endpoints import _extract_all_promos_from_raw, _normalize_shangjin_item
@@ -777,14 +797,15 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     )
                     continue
 
-                is_waf = is_waf_blocked() or (getattr(se, "code", None) == 403) or ("WAF" in str(se))
+                is_waf = is_waf_blocked() or (getattr(se, "code", None) in (403, 429)) or ("WAF" in str(se)) or ("STGW" in str(se))
                 if is_waf:
-                    cooldown = get_waf_cooldown_seconds() or 180
+                    cooldown = get_waf_cooldown_seconds() or 60
                     future_time = datetime.fromtimestamp(now_ts + cooldown).strftime("%Y-%m-%d %H:%M:%S")
                     db.update_appointment(aid, {"last_checked_at": future_time})
                     if linked_log_id > 0:
                         t_err = time_service.format_now_ms()
-                        _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] 当前网络IP触发官方腾讯云WAF临时频次拦截，系统已自动休眠熔断保护 (剩余冷却约 {cooldown} 秒)。建议切换手机热点或重启光猫更换IP立即恢复。", sync_db=True, status="running")
+                        detail_raw = (getattr(se, "raw", None) or {}).get("detail") if hasattr(se, "raw") else None
+                        _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] {format_waf_block_message(cooldown=cooldown, detail=detail_raw)}", sync_db=True, status="running")
                 else:
                     if linked_log_id > 0:
                         t_err = time_service.format_now_ms()
@@ -819,12 +840,12 @@ async def process_active_appointments() -> Tuple[bool, bool]:
             elif last_checked and (now_ts - last_checked) < interval:
                 continue
 
-            # 如果当前网络处于 WAF 熔断冷却期，主动跳过库存查询，避免延长封锁
+            # 如果当前处于 WAF 熔断冷却期，主动跳过库存查询，避免延长封锁
             if is_waf_blocked():
                 remain = get_waf_cooldown_seconds()
                 if (int(now_ts) % 30) < 2 and linked_log_id > 0:
                     t_now = time_service.format_now_ms()
-                    _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] 当前网络IP处于官方腾讯云WAF临时拦截冷却中 (剩余约 {remain} 秒)，已自动暂停库存轮询以避免延长封锁。", sync_db=True, status="running")
+                    _append_apt_log(aid, linked_log_id, f"[{t_now}] [风控熔断守护] {format_waf_block_message(cooldown=remain)}，已自动暂停库存轮询以避免触发升级冷却", sync_db=True, status="running")
                 continue
 
             # 更新最后检查时间戳
@@ -840,10 +861,10 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                     token=account["token"],
                     silk_id=account.get("silk_id"),
                     user_id=account.get("user_id"),
-                    city_code=account.get("city_code", 440303),
+                    city_code=int(account["city_code"]),
                     store_name=str(apt.get("store_name") or ""),
-                    latitude=float(account.get("latitude") or 22.54836),
-                    longitude=float(account.get("longitude") or 114.13166)
+                    latitude=float(account["latitude"]),
+                    longitude=float(account["longitude"])
                 )
                 pdetail = detail.get("promotion_detail") or {}
                 mt_left = pdetail.get("meituan_left_number", 0)
@@ -903,14 +924,15 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                             _append_apt_log(aid, linked_log_id, wait_str, sync_db=(poll_cnt == 1 or poll_cnt % 3 == 0 or is_on_minute_probe), status="running")
             except Exception as e:
                 logger.debug(f"轮询活动实时库存异常 (非致命): {e}")
-                is_waf = is_waf_blocked() or (getattr(e, "code", None) == 403) or ("WAF" in str(e))
+                is_waf = is_waf_blocked() or (getattr(e, "code", None) in (403, 429)) or ("WAF" in str(e)) or ("STGW" in str(e))
                 if is_waf:
-                    cooldown = get_waf_cooldown_seconds() or 180
+                    cooldown = get_waf_cooldown_seconds() or 60
                     future_time = datetime.fromtimestamp(now_ts + cooldown).strftime("%Y-%m-%d %H:%M:%S")
                     db.update_appointment(aid, {"last_checked_at": future_time})
                     if linked_log_id > 0:
                         t_err = time_service.format_now_ms()
-                        _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] 当前网络IP触发官方腾讯云WAF临时频次拦截，系统已自动休眠熔断保护 (剩余冷却约 {cooldown} 秒)", sync_db=True, status="running")
+                        detail_raw = (getattr(e, "raw", None) or {}).get("detail") if hasattr(e, "raw") else None
+                        _append_apt_log(aid, linked_log_id, f"[{t_err}] [风控熔断] {format_waf_block_message(cooldown=cooldown, detail=detail_raw)}", sync_db=True, status="running")
 
         # ---------------- 分支三：倒计时预约任务 (status in 'scheduled', 'primed', 'pending') ---------------- #
         elif status in ("scheduled", "primed", "pending"):
@@ -959,10 +981,11 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                 if linked_log_id > 0:
                     _append_apt_log(aid, linked_log_id, f"[{t_now}] 提前 25 秒唤醒：长连接握手热激活，预检锁定红包资产，微秒自旋压枪...", sync_db=True, status="running")
                 try:
+                    prewarm_city = int(account["city_code"])
                     # 提前探测一次连接与锁定最优红包
-                    await client.get_user_info(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
+                    await client.get_user_info(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=prewarm_city)
                     if apt.get("redpack_mode", 0) == 0 and not apt.get("cached_redpack_id"):
-                        max_rp = await client.get_user_max_redpack(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303))
+                        max_rp = await client.get_user_max_redpack(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=prewarm_city)
                         rep_pack = max_rp.get("rep_pack") or {}
                         if not rep_pack and max_rp.get("platform_red_packs"):
                             rep_pack = max_rp["platform_red_packs"][0]
@@ -971,7 +994,7 @@ async def process_active_appointments() -> Tuple[bool, bool]:
                             logger.info(f"预约任务 #{aid} 已提前锁定最优红包 #{apt['cached_redpack_id']}")
                     elif apt.get("redpack_mode") == 1 and apt.get("redpack_id") and not apt.get("cached_redpack_id"):
                         spec_id = int(apt["redpack_id"])
-                        rplist_res = await client.get_app_redpack_list(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=account.get("city_code", 440303), page=1, page_size=50)
+                        rplist_res = await client.get_app_redpack_list(token=account["token"], silk_id=account.get("silk_id"), user_id=account.get("user_id"), city_code=prewarm_city, page=1, page_size=50)
                         unused = rplist_res.get("unused_items") or []
                         matched = any(int(item.get("user_red_pack_id") or 0) == spec_id for item in unused)
                         if matched:

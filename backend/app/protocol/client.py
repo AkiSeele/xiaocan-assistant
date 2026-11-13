@@ -13,7 +13,7 @@ import tempfile
 import sys
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import httpx
 
 try:
@@ -24,7 +24,13 @@ except ImportError:
     _curl_requests = None
     _CurlOpt = None
 
-from .signer import generate_headers
+from .signer import (
+    DEFAULT_PROTOCOL_PROFILE_ID,
+    PROTOCOL_PROFILES,
+    generate_headers,
+    get_protocol_profile,
+    list_protocol_profiles,
+)
 from ..core import time_service
 
 logger = logging.getLogger("xiaocan.protocol")
@@ -188,13 +194,15 @@ class _CurlCffiTransport:
         await self.session.close()
 
 
-def _build_transport(timeout: float):
-    """按 XIAOCAN_TLS_IMPERSONATE 构建传输层, 返回 (engine, session)。
+def _build_transport(timeout: float, transport_mode: Optional[str] = None):
+    """按指定模式或 XIAOCAN_TLS_IMPERSONATE 构建传输层, 返回 (engine, session)。
 
     session 统一具备 post(url, json=..., headers=...) 与 aclose(), XiaoCanClient 与
     backend/tls_fingerprint_check.py 共用本函数, 保证验证脚本与实际请求同一指纹。
     """
-    mode = (os.getenv(TLS_IMPERSONATE_ENV) or "okhttp").strip().lower() or "okhttp"
+    explicit_mode = str(transport_mode).strip().lower() if transport_mode else ""
+    env_mode = (os.getenv(TLS_IMPERSONATE_ENV) or "").strip().lower()
+    mode = env_mode or explicit_mode or "okhttp"
     if mode == "off" or _curl_requests is None:
         if mode != "off":
             logger.warning(
@@ -275,11 +283,184 @@ class XiaoCanRPCError(Exception):
 # 官方腾讯云 WAF 熔断状态守护 (自适应阶梯式冷却)
 _waf_blocked_until: float = 0.0
 _waf_consecutive_blocks: int = 0
+_last_waf_block_detail: Optional[Dict[str, Any]] = None
+
+# 多 Profile 合规协议档案活跃状态与本地持久化键名
+PROTOCOL_PROFILE_SETTING_KEY = "active_protocol_profile"
+_active_profile_id: Optional[str] = None
+_profile_db_loaded: bool = False
+_waf_failover_lock = asyncio.Lock()
 
 # 全局通信安全流控：防止瞬时并发脉冲击穿腾讯云 WAF 频控阈值
 _RPC_SEMAPHORE = asyncio.Semaphore(2)  # 全局最多允许 2 个并发 RPC 在网关同时执行
 _RPC_RATE_LOCK = asyncio.Lock()
 _last_rpc_timestamp: float = 0.0
+
+
+def is_protocol_env_locked() -> bool:
+    """检查是否通过环境变量显式锁定了 UA 或 TLS 指纹，锁定时不自动轮换 Profile"""
+    return bool(
+        (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
+        or (os.getenv(TLS_IMPERSONATE_ENV) or "").strip()
+    )
+
+
+def _summarize_ua(user_agent: Optional[str]) -> str:
+    """生成不含隐私凭据的精简 UA 摘要标签"""
+    ua = str(user_agent or "").strip()
+    if not ua:
+        return "unknown"
+    if "MicroMessenger/" in ua:
+        m = re.search(r"MicroMessenger/([^\s(]+)", ua)
+        ver = m.group(1) if m else "WeChat"
+        return f"WeChat-WebView/{ver}"
+    if "; wv)" in ua:
+        m = re.search(r"Chrome/([^\s]+)", ua)
+        return f"Android-WebView Chrome/{m.group(1)}" if m else "Android-WebView"
+    if "Chrome/" in ua:
+        m = re.search(r"Chrome/([^\s]+)", ua)
+        return f"Android Chrome/{m.group(1)}" if m else "Android-Chrome"
+    return ua[:48]
+
+
+def _load_profile_id_from_db() -> str:
+    try:
+        from ..models import database as db
+        saved = (db.get_setting(PROTOCOL_PROFILE_SETTING_KEY, DEFAULT_PROTOCOL_PROFILE_ID) or "").strip()
+        if saved in PROTOCOL_PROFILES:
+            return saved
+    except Exception:
+        pass
+    return DEFAULT_PROTOCOL_PROFILE_ID
+
+
+def _persist_profile_id_to_db(profile_id: str) -> None:
+    try:
+        from ..models import database as db
+        db.set_setting(PROTOCOL_PROFILE_SETTING_KEY, profile_id)
+    except Exception as exc:
+        logger.debug("持久化活跃协议档案失败 (忽略): %s", exc)
+
+
+def get_active_protocol_profile() -> Dict[str, Any]:
+    """获取当前生效的协议通信档案（若未加载则优先从 SQLite settings 恢复）"""
+    global _active_profile_id, _profile_db_loaded
+    if not _profile_db_loaded:
+        _active_profile_id = _load_profile_id_from_db()
+        _profile_db_loaded = True
+    profile = get_protocol_profile(_active_profile_id)
+    env_ua = (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
+    env_tls = (os.getenv(TLS_IMPERSONATE_ENV) or "").strip().lower()
+    effective_ua = env_ua or profile["user_agent"]
+    effective_tls = env_tls or profile["transport_mode"]
+    return {
+        "id": profile["id"],
+        "label": profile["label"],
+        "transport_mode": effective_tls,
+        "user_agent": effective_ua,
+        "ua_summary": _summarize_ua(effective_ua),
+        "env_locked": bool(env_ua or env_tls),
+    }
+
+
+def set_active_protocol_profile(profile_id: str, persist: bool = True) -> Dict[str, Any]:
+    """切换并按需持久化当前活跃协议档案"""
+    global _active_profile_id, _profile_db_loaded
+    resolved = get_protocol_profile(profile_id)["id"]
+    _active_profile_id = resolved
+    _profile_db_loaded = True
+    if persist:
+        _persist_profile_id_to_db(resolved)
+    return get_active_protocol_profile()
+
+
+def _get_next_failover_profile_id(current_id: str) -> Optional[str]:
+    """按环形顺序挑选下一套合规备用 Profile，跳过当前正受阻档案"""
+    profiles = list_protocol_profiles()
+    if len(profiles) <= 1:
+        return None
+    ids = [p["id"] for p in profiles]
+    if current_id not in ids:
+        return ids[0]
+    idx = ids.index(current_id)
+    next_id = ids[(idx + 1) % len(ids)]
+    return next_id if next_id != current_id else None
+
+
+def _extract_html_title(text: str) -> str:
+    if not text:
+        return ""
+    match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()[:80]
+
+
+def classify_block_reason(
+    status_code: int,
+    resp_headers: Optional[Dict[str, Any]] = None,
+    resp_text: str = "",
+    profile_id: Optional[str] = None,
+    engine: str = "",
+    user_agent: Optional[str] = None,
+) -> Dict[str, Any]:
+    """精确区分 403/429 拦截根因，避免误判为本地网络 IP 被封"""
+    headers_lower = {str(k).lower(): str(v) for k, v in (resp_headers or {}).items()}
+    server_header = headers_lower.get("server", "").strip()
+    text = resp_text or ""
+    text_lower = text.lower()
+    body_title = _extract_html_title(text)
+    occurred_at = time_service.now_dt().strftime("%Y-%m-%d %H:%M:%S")
+
+    if "tcaptcha.js" in text_lower or "__captcha" in text_lower or "cap_union" in text_lower:
+        reason_code = "waf_captcha_challenge"
+        reason_label = "腾讯云 WAF 验证码/滑块挑战 (TCaptcha)"
+        suggestion = (
+            "当前请求触发官方人机验证挑战，系统已自动进入冷却保护。"
+            "请暂停高频操作等待冷却结束；若持续触发，可切换网络或在手机端打开官方小程序完成一次正常访问"
+        )
+        is_waf = True
+    elif int(status_code or 0) == 429:
+        reason_code = "rate_limit_429"
+        reason_label = "网关频次限流 (HTTP 429)"
+        suggestion = (
+            "短期请求频率触发网关限流阈值，系统已自动进入冷却保护。"
+            "请等待冷却结束并适当降低轮询与批量扫描并发"
+        )
+        is_waf = True
+    elif (
+        "stgw" in server_header.lower()
+        or "waf拦截" in text
+        or "waf" in text_lower
+        or "waf" in body_title.lower()
+    ):
+        reason_code = "waf_stgw_rule"
+        reason_label = "腾讯云 STGW/WAF 请求特征规则拦截"
+        suggestion = (
+            "网关边缘节点 (STGW/WAF) 依据请求头、User-Agent 或 TLS 特征拦截了请求，通常并非网络 IP 问题；"
+            "系统已尝试切换兼容协议档案自愈，若全部档案仍受阻将进入短暂冷却保护"
+        )
+        is_waf = True
+    else:
+        reason_code = "origin_forbidden_403"
+        reason_label = f"源站业务拒绝访问 (HTTP {int(status_code or 403)})"
+        preview = body_title or re.sub(r"\s+", " ", text).strip()[:80] or "无详细摘要"
+        suggestion = f"上游服务返回拒绝响应 ({preview})，请核对账号登录状态、接口权限或稍后重试"
+        is_waf = False
+
+    return {
+        "reason_code": reason_code,
+        "reason_label": reason_label,
+        "suggestion": suggestion,
+        "is_waf": is_waf,
+        "http_status": int(status_code or 403),
+        "server_header": server_header or "-",
+        "profile_id": profile_id or get_active_protocol_profile()["id"],
+        "ua_summary": _summarize_ua(user_agent),
+        "engine": engine or "unknown",
+        "body_title": body_title,
+        "occurred_at": occurred_at,
+    }
 
 
 async def _wait_rpc_rate_limit(is_burst: bool = False):
@@ -308,42 +489,143 @@ def get_waf_cooldown_seconds() -> int:
     return max(0, int(_waf_blocked_until - time_service.now_ts()))
 
 
-def mark_waf_blocked(duration_seconds: Optional[int] = None):
+def mark_waf_blocked(duration_seconds: Optional[int] = None, detail: Optional[Dict[str, Any]] = None):
     """
     自适应智能弹性退避：
-    采用轻量梯级 (初次 15 秒，二次 30 秒，上限 60 秒)，杜绝旧版动辄 5~10 分钟死板封锁。
+    采用轻量梯级 (初次 15 秒，二次 30 秒，上限 60 秒)，并记录真实拦截分类明细。
     任何一次通信成功均会立即重置并解除冷却 (实时自愈)。
     """
-    global _waf_blocked_until, _waf_consecutive_blocks
+    global _waf_blocked_until, _waf_consecutive_blocks, _last_waf_block_detail
     _waf_consecutive_blocks += 1
     if duration_seconds is None or duration_seconds <= 15:
         cooldown = 15 if _waf_consecutive_blocks == 1 else (30 if _waf_consecutive_blocks == 2 else 60)
     else:
         cooldown = min(duration_seconds, 60)
     _waf_blocked_until = max(_waf_blocked_until, time_service.now_ts() + cooldown)
+    if detail:
+        sanitized = {
+            "reason_code": detail.get("reason_code"),
+            "reason_label": detail.get("reason_label"),
+            "suggestion": detail.get("suggestion"),
+            "is_waf": bool(detail.get("is_waf", True)),
+            "http_status": detail.get("http_status"),
+            "server_header": detail.get("server_header"),
+            "profile_id": detail.get("profile_id"),
+            "ua_summary": detail.get("ua_summary"),
+            "engine": detail.get("engine"),
+            "body_title": detail.get("body_title"),
+            "occurred_at": detail.get("occurred_at"),
+            "tried_profiles": list(detail.get("tried_profiles") or []),
+            "cooldown_seconds": cooldown,
+            "consecutive_blocks": _waf_consecutive_blocks,
+        }
+        _last_waf_block_detail = sanitized
 
 
 def record_waf_success():
     """通信成功，立即解除阻断与冷却状态 (实时动态自愈)"""
-    global _waf_blocked_until, _waf_consecutive_blocks
+    global _waf_blocked_until, _waf_consecutive_blocks, _last_waf_block_detail
     _waf_blocked_until = 0.0
     _waf_consecutive_blocks = 0
+    _last_waf_block_detail = None
 
 
 def clear_waf_block():
-    global _waf_blocked_until, _waf_consecutive_blocks
+    global _waf_blocked_until, _waf_consecutive_blocks, _last_waf_block_detail
     _waf_blocked_until = 0.0
     _waf_consecutive_blocks = 0
+    _last_waf_block_detail = None
+
+
+def get_waf_block_detail(include_expired: bool = False) -> Optional[Dict[str, Any]]:
+    """获取最近一次脱敏后的 403/WAF 诊断明细（默认仅在冷却期内返回）"""
+    blocked = is_waf_blocked()
+    if not blocked and not include_expired:
+        return None
+    if not _last_waf_block_detail:
+        if not blocked:
+            return None
+        active_prof = get_active_protocol_profile()
+        return {
+            "reason_code": "waf_cooldown_active",
+            "reason_label": "网关风控冷却保护",
+            "suggestion": "系统当前处于自适应频控冷却中，请等待冷却结束自动恢复",
+            "is_waf": True,
+            "http_status": 403,
+            "server_header": "-",
+            "profile_id": active_prof["id"],
+            "ua_summary": active_prof["ua_summary"],
+            "engine": "unknown",
+            "body_title": "",
+            "occurred_at": time_service.now_dt().strftime("%Y-%m-%d %H:%M:%S"),
+            "tried_profiles": [],
+            "cooldown_seconds": get_waf_cooldown_seconds(),
+            "consecutive_blocks": _waf_consecutive_blocks,
+            "remaining_seconds": get_waf_cooldown_seconds(),
+            "blocked": True,
+        }
+    snapshot = dict(_last_waf_block_detail)
+    snapshot["remaining_seconds"] = get_waf_cooldown_seconds()
+    snapshot["blocked"] = blocked
+    return snapshot
+
+
+def format_waf_block_message(
+    cooldown: Optional[int] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> str:
+    """根据真实分类明细构造无误导性的 WAF/403 诊断提示文本"""
+    info = detail or get_waf_block_detail(include_expired=True)
+    remain = cooldown if cooldown is not None else get_waf_cooldown_seconds()
+    if info:
+        label = info.get("reason_label") or "网关安全风控拦截"
+        suggestion = info.get("suggestion") or "请稍候等待自动恢复"
+        prof_id = info.get("profile_id") or "-"
+        status_num = info.get("http_status") or 403
+        tried = info.get("tried_profiles") or []
+        tried_str = f", 已尝试档案: {' -> '.join(tried)}" if tried else ""
+        if remain > 0:
+            return f"[{label}] 剩余冷却约 {remain} 秒 (HTTP {status_num}, 档案: {prof_id}{tried_str})。{suggestion}"
+        return f"[{label}] (HTTP {status_num}, 档案: {prof_id}{tried_str})。{suggestion}"
+    return f"[网关风控冷却保护] 剩余冷却约 {remain} 秒，系统已自动暂停非高优请求以防冷却升级，请稍候等待自动恢复。"
 
 
 class XiaoCanClient:
     def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
-        # 传输层按 XIAOCAN_TLS_IMPERSONATE 选择 (issue #14), post()/aclose() 接口保持不变
-        self.engine, self.session = _build_transport(timeout)
+        # 按协议档案的 transport_mode 懒加载并复用对应的 TLS 传输会话，确保跨 Profile 切换时 TLS 与 UA 成对生效
+        self._transports: Dict[str, tuple[str, Any]] = {}
+        init_prof = get_active_protocol_profile()
+        self.engine, self.session = self._get_transport(init_prof["transport_mode"])
+        self._initial_session = self.session
+
+    def _get_transport(self, transport_mode: Optional[str] = None) -> tuple[str, Any]:
+        mode = (os.getenv(TLS_IMPERSONATE_ENV) or "").strip().lower() or str(transport_mode or "okhttp").strip().lower() or "okhttp"
+        if hasattr(self, "_initial_session") and self.session is not self._initial_session:
+            return self.engine, self.session
+        cached = self._transports.get(mode)
+        if cached is not None:
+            self.engine, _ = cached
+            return cached
+        built = _build_transport(self.timeout, transport_mode=mode)
+        self._transports[mode] = built
+        self.engine = built[0]
+        return built
 
     async def close(self):
-        await self.session.aclose()
+        closed_ids = set()
+        for _, sess in list(self._transports.values()):
+            if id(sess) not in closed_ids:
+                closed_ids.add(id(sess))
+                try:
+                    await sess.aclose()
+                except Exception:
+                    pass
+        if self.session is not None and id(self.session) not in closed_ids:
+            try:
+                await self.session.aclose()
+            except Exception:
+                pass
 
     async def __aenter__(self):
         return self
@@ -356,7 +638,7 @@ class XiaoCanClient:
         server_name: str,
         method_name: str,
         body: Optional[Dict[str, Any]] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         token: Optional[str] = None,
         user_id: Optional[str] = None,
         silk_id: Optional[str] = None,
@@ -365,14 +647,25 @@ class XiaoCanClient:
         priority: int = 50
     ) -> Dict[str, Any]:
         # 任务优先级天梯架构与熔断隔离策略：
-        # Tier 1 (用户交互 / 秒杀抢单 / 核心操作, priority >= 70 或 is_burst=True): 100% 豁免本地熔断，绝对直连，畅通无阻！
-        # Tier 2 (常规自动化收益任务, 30 <= priority < 70): 允许真实尝试，通信成功即自愈解除熔断，不无故本地前置阻断；
-        # Tier 3 (重型后台批量全城大扫描, priority < 30): 仅重型扫描在前置礼让避让，防止高频脉冲加重网络风控。
-        if is_waf_blocked() and not is_burst and priority < 30:
-            remain_sec = get_waf_cooldown_seconds()
+        # Tier 1 (秒杀抢单 / 显式高优核心操作, is_burst=True 或 priority >= 70): 豁免本地熔断，直射直连；
+        # Tier 2/3 (常规列表/详情/巡检/扫描, not is_burst 且 priority < 70): WAF 冷却期间立即前置退避，杜绝连续补刀加重风控。
+        def _raise_if_waf_cooldown() -> None:
+            if is_waf_blocked() and not is_burst and priority < 70:
+                remain_sec = get_waf_cooldown_seconds()
+                raise XiaoCanRPCError(
+                    code=403,
+                    msg=format_waf_block_message(cooldown=remain_sec),
+                )
+
+        _raise_if_waf_cooldown()
+
+        if int(city_code or 0) <= 0 and method_name not in (
+            "SilkwormService.GetClientUserInfo",
+            "ActivityTaskService.GetUserTaskV2",
+        ):
             raise XiaoCanRPCError(
-                code=403,
-                msg=f"重型批量任务自律退避中 (WAF防护剩余约 {remain_sec} 秒)，已自动暂停扫描以保护账号与网络安全。"
+                code=-400,
+                msg="账号尚未绑定定位地址（缺少有效城市代码 city_code），请先绑定地址后再试。"
             )
 
         payload = dict(body) if body else {}
@@ -382,39 +675,47 @@ class XiaoCanClient:
         else:
             payload["app_id"] = 10
 
-        headers = generate_headers(
-            server_name=server_name,
-            method_name=method_name,
-            city_code=city_code,
-            token=token,
-            user_id=user_id,
-            silk_id=silk_id,
-            platform=plat
-        )
-
         # 2. 全局请求速率平滑与并发控制 (防 WAF 瞬时脉冲)
         await _wait_rpc_rate_limit(is_burst=is_burst)
 
-        async def _execute_post() -> Dict[str, Any]:
+        async def _send_with_profile(profile_dict: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+            env_ua = (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
+            headers = generate_headers(
+                server_name=server_name,
+                method_name=method_name,
+                city_code=city_code,
+                token=token,
+                user_id=user_id,
+                silk_id=silk_id,
+                platform=plat,
+                user_agent=(None if env_ua else profile_dict["user_agent"]),
+                profile_id=profile_dict["id"],
+            )
+            req_ua = headers.get("User-Agent", "")
+            eng, sess = self._get_transport(profile_dict.get("transport_mode"))
             try:
-                resp = await self.session.post(
+                resp = await sess.post(
                     GW_BASE_URL,
                     json=payload,
-                    headers=headers
+                    headers=headers,
                 )
-                if resp.status_code == 403 or "TCaptcha.js" in resp.text or "__captcha" in resp.text:
-                    is_waf = (
-                        "WAF" in resp.text
-                        or "TCaptcha.js" in resp.text
-                        or "__captcha" in resp.text
-                        or "stgw" in resp.headers.get("server", "").lower()
+                resp_text = getattr(resp, "text", "") or ""
+                resp_headers = getattr(resp, "headers", None) or {}
+                if (
+                    resp.status_code in (403, 429)
+                    or "TCaptcha.js" in resp_text
+                    or "__captcha" in resp_text
+                    or "cap_union" in resp_text
+                ):
+                    detail = classify_block_reason(
+                        status_code=resp.status_code,
+                        resp_headers=resp_headers,
+                        resp_text=resp_text,
+                        profile_id=profile_dict["id"],
+                        engine=eng,
+                        user_agent=req_ua,
                     )
-                    if is_waf:
-                        mark_waf_blocked()
-                    remain_sec = get_waf_cooldown_seconds()
-                    hint = f"已被腾讯云 WAF 防火墙拦截，系统已进入 {remain_sec} 秒自适应频次缓冲保护。请勿高频连续点击重试，可切换手机热点或等待冷却" if is_waf else "请求被服务器拒绝 [403 Forbidden]"
-                    logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
-                    raise XiaoCanRPCError(code=403, msg=hint, raw={"status_code": resp.status_code, "text": resp.text[:200]})
+                    return "blocked", detail, None
 
                 if resp.status_code != 200:
                     err_text = ""
@@ -422,25 +723,25 @@ class XiaoCanClient:
                         err_json = resp.json()
                         err_text = (err_json.get("status") or {}).get("msg") or err_json.get("detail") or err_json.get("msg") or err_json.get("error") or ""
                     except Exception:
-                        err_text = resp.text.strip()
+                        err_text = resp_text.strip()
 
                     if resp.status_code == 401:
                         hint = err_text or "登录凭据已过期或鉴权失效 (HTTP 401 Unauthorized)，请在「账号管理」中重新获取并更新 Token 凭据"
                         logger.warning(f"RPC {server_name}.{method_name} 鉴权失效: {hint}")
-                        raise XiaoCanRPCError(code=401, msg=hint, raw={"status_code": 401, "text": resp.text[:200]})
+                        raise XiaoCanRPCError(code=401, msg=hint, raw={"status_code": 401, "text": resp_text[:200]})
 
                     msg = err_text or f"HTTP {resp.status_code} 异常"
-                    logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp.text[:200]}")
-                    raise XiaoCanRPCError(code=resp.status_code, msg=msg, raw={"status_code": resp.status_code, "text": resp.text[:200]})
+                    logger.error(f"RPC {server_name}.{method_name} HTTP {resp.status_code} 异常响应: {resp_text[:200]}")
+                    raise XiaoCanRPCError(code=resp.status_code, msg=msg, raw={"status_code": resp.status_code, "text": resp_text[:200]})
 
                 try:
-                    return resp.json()
+                    return "ok", None, resp.json()
                 except Exception as json_err:
-                    logger.error(f"RPC {server_name}.{method_name} 响应解析非 JSON 异常: {resp.text[:200]}")
+                    logger.error(f"RPC {server_name}.{method_name} 响应解析非 JSON 异常: {resp_text[:200]}")
                     raise XiaoCanRPCError(
                         code=502,
                         msg=f"网关响应格式异常: {str(json_err)[:100]}",
-                        raw={"status_code": resp.status_code, "text": resp.text[:200]}
+                        raw={"status_code": resp.status_code, "text": resp_text[:200]}
                     )
             except XiaoCanRPCError:
                 raise
@@ -448,12 +749,72 @@ class XiaoCanClient:
                 logger.error(f"RPC {server_name}.{method_name} network failure: {e}")
                 raise
 
-        # 秒杀爆发请求 (is_burst=True) 绝对零等待直射开火，不经任何流控与并发信号量，保障多账号准时并发毫秒级命中
+        def _raise_blocked_error(detail: Dict[str, Any]) -> None:
+            if detail.get("is_waf"):
+                mark_waf_blocked(detail=detail)
+            hint = format_waf_block_message(detail=detail)
+            logger.error(f"RPC {server_name}.{method_name} 访问受阻: {hint}")
+            raise XiaoCanRPCError(
+                code=int(detail.get("http_status") or 403),
+                msg=hint,
+                raw={
+                    "status_code": detail.get("http_status"),
+                    "detail": detail,
+                },
+            )
+
+        # 秒杀爆发请求 (is_burst=True) 绝对零等待直射开火，不经任何流控与信号量阻塞
         if is_burst:
-            data = await _execute_post()
+            burst_prof = get_active_protocol_profile()
+            status, detail, data = await _send_with_profile(burst_prof)
+            if status == "blocked" and detail is not None:
+                _raise_blocked_error(detail)
         else:
             async with _RPC_SEMAPHORE:
-                data = await _execute_post()
+                # 排队获取信号量后再次检查 WAF 冷却，防止并发同批请求在首个 403 后继续补刀
+                _raise_if_waf_cooldown()
+                current_prof = get_active_protocol_profile()
+                status, detail, data = await _send_with_profile(current_prof)
+                if status == "blocked" and detail is not None:
+                    can_failover = (
+                        detail.get("reason_code") == "waf_stgw_rule"
+                        and not is_protocol_env_locked()
+                        and plat != "mini"
+                    )
+                    if not can_failover:
+                        _raise_blocked_error(detail)
+
+                    async with _waf_failover_lock:
+                        latest_prof = get_active_protocol_profile()
+                        if latest_prof["id"] != current_prof["id"]:
+                            retry_prof = latest_prof
+                        else:
+                            next_id = _get_next_failover_profile_id(current_prof["id"])
+                            if not next_id:
+                                _raise_blocked_error(detail)
+                            retry_prof = get_protocol_profile(next_id)
+                            logger.warning(
+                                "RPC %s.%s 触发 %s，自动切换至兼容协议档案 [%s] 进行单次安全自愈重试",
+                                server_name,
+                                method_name,
+                                detail.get("reason_label"),
+                                retry_prof["id"],
+                            )
+
+                        status2, detail2, data2 = await _send_with_profile(retry_prof)
+                        if status2 == "ok":
+                            if retry_prof["id"] != latest_prof["id"]:
+                                set_active_protocol_profile(retry_prof["id"], persist=True)
+                                logger.info(
+                                    "协议自适应自愈成功: 已切换并持久化活跃协议档案 [%s] -> [%s]",
+                                    current_prof["id"],
+                                    retry_prof["id"],
+                                )
+                            data = data2
+                        else:
+                            final_detail = detail2 or detail
+                            final_detail["tried_profiles"] = [current_prof["id"], retry_prof["id"]]
+                            _raise_blocked_error(final_detail)
 
         # 3. 请求成功，重置 WAF 连续阻断计数
         record_waf_success()
@@ -532,9 +893,10 @@ class XiaoCanClient:
                 user_id=user_id,
                 silk_id=silk_id
             )
-            if res.get("feed_items"):
+            if isinstance(res, dict) and "feed_items" in res:
+                feed_items = res.get("feed_items") or []
                 pv = str(fusion_body.get("page_pv_id") or "")
-                for item in res["feed_items"]:
+                for item in feed_items:
                     if isinstance(item, dict) and (item.get("source") == 5 or item.get("wm_poi_id")):
                         register_shangjin_poi_dict(item, meituan_pv_id=pv)
                 return res
@@ -657,7 +1019,7 @@ class XiaoCanClient:
         order_status: int = 99,
         offset: int = 0,
         number: int = 20,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取用户霸王餐订单列表 (Silkworm.SilkwormService.GetPromotionOrderList)"""
         # 官方真实状态集：0=待上传, 1=审核中, 2=已完成, 3=已驳回, 4=已取消, 15=待处理角标, 99=全部
@@ -691,7 +1053,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440304,
+        city_code: int = 0,
         sort_type: int = 3,
         page_pv_id: str = ""
     ) -> Dict[str, Any]:
@@ -725,7 +1087,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         platform: Optional[str] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
@@ -754,7 +1116,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取元宝总览与待领取状态 (ActivityTask.ActivityTaskMobileService.UserTaskV2)"""
         body = {
@@ -778,7 +1140,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         page: int = 1,
         page_size: int = 10,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取待领取元宝明细列表 (ActivityTask.ActivityTaskMobileService.GetUnReceivedPointRecords)"""
         body = {
@@ -803,7 +1165,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取待领取的元宝点数统计 (ActivityTask.ActivityTaskMobileService.WaitClaimedPoints)"""
         body = {
@@ -825,7 +1187,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取会员每日连续签到天数与今日签到状态 (SilkwormVip.VipRightsService.UserSignInDays)"""
         body = {
@@ -847,7 +1209,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取签到里程碑节点奖励状态 (SilkwormVip.VipRightsService.SignInNode)"""
         body = {
@@ -870,7 +1232,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """会员专属每日签到抽奖 (SilkwormVip.VipRightsService.SignInLottery)"""
         body = {
@@ -892,7 +1254,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """检查用户活动与红包雨参与资格 (SilkwormShareSupport.SilkwormShareSupportService.CheckActivityEligibility)"""
         body = {
@@ -919,7 +1281,7 @@ class XiaoCanClient:
         user_id: Optional[str] = None,
         offset: int = 0,
         number: int = 10,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取提现记录列表 (Silkworm.SilkwormService.GetClientWithdrawList)"""
         body = {
@@ -945,7 +1307,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取消息中心频道分类及未读数 (SilkwormMessageCenter.MessageCenterService.ListChannelsSimple)"""
         body = {
@@ -972,7 +1334,7 @@ class XiaoCanClient:
         channel_id: Optional[int] = None,
         page: int = 1,
         page_size: int = 20,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取消息列表 (SilkwormMessageCenter.MessageCenterService.ListMessages)"""
         body = {
@@ -1001,7 +1363,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """将当前账号所有消息标记为已读 (SilkwormMessageCenter.MessageCenterService.SetMessageAllRead)"""
         body = {
@@ -1025,7 +1387,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """元宝乐园每日签到打卡 (官方原生微服务 ActivityTaskMobileService.SignIn)"""
         body = {
@@ -1047,7 +1409,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取元宝乐园签到历史记录与连续签到天数 (ActivityTaskMobileService.SignInHistory)"""
         body = {
@@ -1064,7 +1426,7 @@ class XiaoCanClient:
             user_id=user_id
         )
 
-    async def do_checkin(self, token: str, city_code: int = 440303, silk_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
+    async def do_checkin(self, token: str, city_code: int = 0, silk_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
         """每日签到打卡 (兼容旧接口别名)"""
         return await self.do_user_sign(token=token, silk_id=silk_id, user_id=user_id, city_code=city_code)
 
@@ -1074,7 +1436,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """完成任务领奖励 (SilkwormMobileMarketingService.CompleteTaskEvent: 3=饿了么, 4=美团, 6=社群)"""
         body = {
@@ -1096,7 +1458,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """增加每日抽奖机会 (SilkwormMobileMarketingService.UserIncrLotteryNumber)"""
         body = {
@@ -1118,7 +1480,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取/激活会员升级及每日专属成长礼包 (SilkwormMobileMarketingService.GetUserUpVipGift)"""
         body = {
@@ -1139,7 +1501,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取会员专属权益礼包列表 (SilkwormMobileMarketingService.ListVipGifts)"""
         body = {
@@ -1160,7 +1522,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取各VIP等级特权卡券明细 (SilkwormMobileMarketingService.ListVipGiftDetails)"""
         body = {
@@ -1181,7 +1543,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取会员成长任务状态 (SilkwormVipMobile.GetVipTask)"""
         body = {
@@ -1202,7 +1564,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         platform: str = "app"
     ) -> Dict[str, Any]:
         """获取会员专属每日膨胀红包池与成长值 (SilkwormVipMobile.VipPrizes)"""
@@ -1225,7 +1587,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取会员专属大牌秒杀与返利库存 (SilkwormVipMobile.GetVipRebateInfo)"""
         body = {
@@ -1248,7 +1610,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取今日幸运转盘配置与剩余抽奖机会 (SilkwormLotteryMobile.LotteryInfo)"""
         body = {
@@ -1270,7 +1632,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """领取免费任务赠送的开红包机会 (SilkwormLotteryMobile.AddLotteryTimes: 1=签到, 2=分享, 4=沾一沾, 8=饿了么, 9=美团, 10=到店, 11=福利)"""
         body = {
@@ -1293,7 +1655,7 @@ class XiaoCanClient:
         prize_type: int = 1,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """执行幸运转盘抽奖/免费开红包 (SilkwormLotteryMobile.Lottery)"""
         body = {
@@ -1316,7 +1678,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """领取阶梯累计开红包奖励 (SilkwormLotteryMobile.ReceiveExtraLottery: step 1=第一阶段/3次, step 2=第二阶段/9次)"""
         body = {
@@ -1339,7 +1701,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """激励视频/商城广告浏览完成获取额外抽奖 (SilkwormLotteryMobile.OnAdViewed: bus_type 2=视频广告, 4=抖音商城)"""
         import hmac
@@ -1377,7 +1739,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """免费开红包页面自动赠送红包机制 (PartnerPromotionService.LotterySendRedPack)"""
         body = {
@@ -1398,7 +1760,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取阶梯累计抽奖进度 (SilkwormLotteryMobile.GetLotteryProgress)"""
         body = {
@@ -1421,7 +1783,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取当前或即将开始的红包雨场次信息 (SilkwormLotteryMobile.GetRedPackRainEvent)"""
         body = {
@@ -1444,7 +1806,7 @@ class XiaoCanClient:
         event_id: Optional[int] = None,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """报名/接入整点红包雨场次 (SilkwormLotteryMobile.JoinRedPackRainEvent)"""
         body = {
@@ -1470,7 +1832,7 @@ class XiaoCanClient:
         click_num: int = 15,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """在红包雨进行时抢抓红包额度 (SilkwormLotteryMobile.RedPackRainGrabNum)"""
         body = {
@@ -1495,7 +1857,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询用户领取的红包雨红包记录 (SilkwormLotteryMobile.ListUserRedPack)"""
         body = {
@@ -1520,7 +1882,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         card_type: int = 1
     ) -> Dict[str, Any]:
         """查询每月保底 SVIP 大牌神券总额度与剩余保底配额 (SilkwormVip.VipRightsService.BrandCardInfo)"""
@@ -1544,7 +1906,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         card_type: int = 1
     ) -> Dict[str, Any]:
         """手动领取每月保底 SVIP 大牌神券 (SilkwormVip.VipRightsService.GrabBrandCard - 注意：此接口直接扣减当月保底张数，日常定时任务绝不可调用！)"""
@@ -1569,7 +1931,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询每日 09:30 SVIP 额外大牌放量券配置与实时库存 (SilkwormVip.VipRightsService.ExtraBrandCardPool)"""
         body = {
@@ -1591,7 +1953,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         card_type: int = 99
     ) -> Dict[str, Any]:
         """秒杀抢占每日 09:30 SVIP 额外大牌放量券 (SilkwormVip.VipRightsService.GrabExtraBrandCard - 默认 card_type=99)"""
@@ -1617,7 +1979,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询每月影音周卡(网易云音乐/腾讯视频等)用户状态与余量 (SilkwormVip.VipRightsService.UserTencentVipInfo)"""
         body = {
@@ -1639,7 +2001,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         page: int = 1,
         page_size: int = 10
     ) -> Dict[str, Any]:
@@ -1665,7 +2027,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """秒杀抢占影音会员周卡(网易云音乐/腾讯视频等)配额 (SilkwormVip.VipRightsService.GrabTencentVipQuota)"""
         body = {
@@ -1688,7 +2050,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询每月外卖免单券持有与核销状态 (SilkwormVip.VipRightsService.UserFreeOrderInfo)"""
         body = {
@@ -1710,7 +2072,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """秒杀抢占 14:00 每月外卖霸王餐免单神券配额 (SilkwormVip.VipRightsService.GrabFreeOrderQuota)"""
         body = {
@@ -1736,7 +2098,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """对指定外卖订单核销使用免单券 (SilkwormVip.VipRightsService.UseFreeOrderCard)"""
         body = {
@@ -1761,7 +2123,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询 SVIP 专属返利券档位列表 (SilkwormVip.VipRightsService.PlusVipRebateCardInfos)"""
         body = {
@@ -1783,7 +2145,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """秒杀抢占今日 09:00 SVIP 专属大额返利券 (SilkwormVip.VipRightsService.GrabRebateCardQuota)"""
         body = {
@@ -1806,7 +2168,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询会员打卡签到天数与今日签到状态 (SilkwormVip.VipRightsService.UserSignInDays)"""
         body = {
@@ -1828,7 +2190,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         new_level: int = 5,
         is_plus: bool = True
     ) -> Dict[str, Any]:
@@ -1855,7 +2217,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """秒杀兑换今日元宝商品 (SilkwormCommunity.SilkwormMobileCommunityService.TodayExchange)"""
         return await self.exchange_goods_v2(
@@ -1872,7 +2234,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """元宝商城限量秒杀兑换商品 (SilkwormCommunity.SilkwormMobileCommunityService.ExchangeGoodsV2)"""
         body = {
@@ -1896,7 +2258,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         promotion_order_id: Optional[int] = None,
         task_type: int = 4,
         platform: str = "app"
@@ -1927,7 +2289,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         vip_level: int = 0,
         platform: str = "app"
     ) -> Dict[str, Any]:
@@ -1956,7 +2318,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """查询每日 09:00 SVIP 专属返利券库存与进度 (SilkwormVipMobile.GetVipRebateInfo)"""
         body = {
@@ -1978,7 +2340,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """元宝商城限量秒杀兑换商品 (SilkwormMobileCommunityService.ExchangeGoodsV2)"""
         return await self.exchange_goods_v2(
@@ -1995,7 +2357,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         store_platform: int = 1,
         if_advance_order: bool = False,
         latitude: float = 0.0,
@@ -2096,7 +2458,7 @@ class XiaoCanClient:
             "advance_order_time": 0,
             "latitude": float(latitude or 0.0),
             "longitude": float(longitude or 0.0),
-            "city_code": int(city_code or 440303)
+            "city_code": int(city_code)
         }
         if redpack_id is not None:
             try:
@@ -2184,7 +2546,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取用户当前可用红包清单与最大红包 (RedPackService.GetUserMaxRedPack)"""
         body = {
@@ -2206,7 +2568,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """取消已抢到的霸王餐订单名额 (SilkwormService.CancelPromotionQuota)"""
         body = {
@@ -2229,7 +2591,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """删除官方霸王餐订单 (SilkwormService.DeletePromotionOrder)"""
         body = {
@@ -2253,7 +2615,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         store_name: Optional[str] = None,
         latitude: float = 0.0,
         longitude: float = 0.0
@@ -2357,7 +2719,7 @@ class XiaoCanClient:
         redpack_id: Optional[str] = None,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """提交店铺霸王餐预约抢单 (PromotionService.AppointOrder)"""
         body = {
@@ -2387,7 +2749,7 @@ class XiaoCanClient:
         withdraw_type: int = 1,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """钱包余额申请提现到微信或支付宝 (SilkwormService.ClientWithdraw)
         withdraw_type: 0 微信钱包, 1 支付宝
@@ -2414,7 +2776,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取元宝乐园任务列表与完成状态 (ActivityTaskMobileService.GetDailyTask)"""
         body = {
@@ -2437,7 +2799,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """完成元宝乐园指定任务 (如任务57抖音电商浏览30s) (ActivityTaskMobileService.CompleteTask)"""
         body = {
@@ -2460,7 +2822,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取待收取的未收元宝与气泡任务明细 (ActivityTaskMobileService.WaitClaimedPoints)"""
         body = {
@@ -2481,7 +2843,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """一键收取账户所有待领气泡元宝与达标任务元宝 (ActivityTask.ActivityTaskMobileService.CollectPoints)"""
         body = {
@@ -2504,7 +2866,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """收取指定的已完成任务元宝或气泡元宝 (ActivityTaskMobileService.UserClaimPoints)"""
         body = {
@@ -2528,7 +2890,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """领取页面礼包 (SilkwormMobileMarketingService.DrawPageGift)"""
         body = {
@@ -2550,7 +2912,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取用户特权卡券数量统计 (SilkwormCardService.GetUserCardNumber)"""
         body = {
@@ -2573,7 +2935,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         status: int = 0,
         offset: int = 0,
         number: int = 30
@@ -2605,7 +2967,7 @@ class XiaoCanClient:
         token: str,
         silk_id: str | None = None,
         user_id: str | None = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         card_type: int = 2,
         number: int = 1,
         promotion_order_id: int | None = None,
@@ -2639,7 +3001,7 @@ class XiaoCanClient:
         promotion_order_id: int | None = None,
         delay_card_number: int = 1,
         hh_delay_card_number: int = 0,
-        city_code: int = 440303,
+        city_code: int = 0,
         user_id: str | None = None
     ) -> dict:
         """
@@ -2668,7 +3030,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303
+        city_code: int = 0
     ) -> Dict[str, Any]:
         """获取用户可用红包总数 (RedPackService.GetUserRedPackNum)"""
         body = {
@@ -2690,7 +3052,7 @@ class XiaoCanClient:
         token: str,
         silk_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        city_code: int = 440303,
+        city_code: int = 0,
         page: int = 1,
         page_size: int = 30
     ) -> Dict[str, Any]:
